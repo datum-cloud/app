@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use lib::{TcpConnection, TcpListener};
+use lib::{ConnectionInfo, ListnerInfo};
 
 use crate::{
     components::{Button, CloseButton, Subhead},
@@ -56,7 +56,7 @@ pub fn TempProxies() -> Element {
 }
 
 #[component]
-fn ProxyConnectionItem(conn: TcpConnection, connections: Signal<Vec<TcpConnection>>) -> Element {
+fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionInfo>>) -> Element {
     let conn_2 = conn.clone();
     rsx! {
         div {
@@ -73,7 +73,7 @@ fn ProxyConnectionItem(conn: TcpConnection, connections: Signal<Vec<TcpConnectio
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.disconnect_tcp(&conn_2).await.unwrap();
+                            node.disconnect(&conn_2).await.unwrap();
 
                             // refresh list of connections
                             let conns = node.connections().await;
@@ -92,7 +92,7 @@ fn ProxyConnectionItem(conn: TcpConnection, connections: Signal<Vec<TcpConnectio
 }
 
 #[component]
-fn ProxyListenerItem(lstn: TcpListener, listeners: Signal<Vec<TcpListener>>) -> Element {
+fn ProxyListenerItem(lstn: ListnerInfo, listeners: Signal<Vec<ListnerInfo>>) -> Element {
     let lstn_2 = lstn.clone();
     rsx! {
         div {
@@ -109,7 +109,7 @@ fn ProxyListenerItem(lstn: TcpListener, listeners: Signal<Vec<TcpListener>>) -> 
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.unlisten_tcp(&lstn_2).await.unwrap();
+                            node.unlisten(&lstn_2).await.unwrap();
 
                             // refresh list of listeners
                             let lstns = node.listeners().await;

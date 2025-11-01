@@ -10,7 +10,8 @@ use crate::{Node, config::Config};
 pub struct Repo(PathBuf);
 
 impl Repo {
-    const KEY_FILE: &str = "key";
+    const CONNECT_KEY_FILE: &str = "connect_key";
+    const LISTEN_KEY_FILE: &str = "listen_key";
     const CONFIG_FILE: &str = "config.yml";
 
     pub fn default_location() -> PathBuf {
@@ -28,9 +29,18 @@ impl Repo {
         Ok(this)
     }
 
-    pub async fn spawn_node(&self) -> Result<Node> {
+    pub async fn spawn_listen_node(&self) -> Result<Node> {
+        tracing::debug!("spawning node with listening secret key");
         let cfg = self.config().await?;
-        let secret = self.secret_key().await?;
+        let secret = self.listen_key().await?;
+        let node = Node::new(secret, &cfg).await.unwrap();
+        Ok(node)
+    }
+
+    pub async fn spawn_connect_node(&self) -> Result<Node> {
+        tracing::debug!("spawning node with connect secret key");
+        let cfg = self.config().await?;
+        let secret = self.connect_key().await?;
         let node = Node::new(secret, &cfg).await.unwrap();
         Ok(node)
     }
@@ -48,12 +58,21 @@ impl Repo {
         Config::from_file(config_file_path).await
     }
 
-    pub async fn secret_key(&self) -> Result<SecretKey> {
-        let key_file_path = self.0.join(Self::KEY_FILE);
+    pub async fn listen_key(&self) -> Result<SecretKey> {
+        let key_file_path = self.0.join(Self::LISTEN_KEY_FILE);
+        self.secret_key(key_file_path).await
+    }
+
+    pub async fn connect_key(&self) -> Result<SecretKey> {
+        let key_file_path = self.0.join(Self::CONNECT_KEY_FILE);
+        self.secret_key(key_file_path).await
+    }
+
+    async fn secret_key(&self, key_file_path: PathBuf) -> Result<SecretKey> {
         if !key_file_path.exists() {
             warn!("secret key does not exist. creating new key");
             tokio::fs::create_dir_all(&self.0).await?;
-            return self.create_key().await;
+            return self.create_key(&key_file_path).await;
         };
 
         let key = tokio::fs::read(key_file_path).await?;
@@ -61,8 +80,7 @@ impl Repo {
         Ok(SecretKey::from_bytes(key))
     }
 
-    async fn create_key(&self) -> Result<SecretKey> {
-        let key_file_path = self.0.join(Self::KEY_FILE);
+    async fn create_key(&self, key_file_path: &PathBuf) -> Result<SecretKey> {
         let key = SecretKey::generate(&mut rand::rng());
         tokio::fs::write(key_file_path, key.to_bytes()).await?;
         Ok(key)

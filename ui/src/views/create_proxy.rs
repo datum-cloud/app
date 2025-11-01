@@ -44,7 +44,7 @@ pub fn CreateProxy() -> Element {
             Button {
                 onclick: move |_| async move {
                     let state = consume_context::<AppState>();
-                    let tkt = state.clone().node().listen_tcp(label(), port()).await.unwrap();
+                    let tkt = state.clone().node().listen(label()).await.unwrap();
                     ticket.set(tkt.to_string())
                 },
                 text: "Create"
