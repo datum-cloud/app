@@ -8,10 +8,10 @@ use tracing::debug;
 use uuid::Uuid;
 
 use iroh_proxy_utils::http_connect::{
-    HttpConnectEntranceHandle, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN,
+    AuthHandler, HttpConnectEntranceHandle, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN,
 };
 
-use crate::config::Config;
+use crate::{auth::Auth, config::Config};
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -22,12 +22,13 @@ pub struct Node {
 struct NodeInner {
     ep_id: PublicKey,
     endpoint: Endpoint,
+    auth: Auth,
     listeners: Mutex<Vec<Listener>>,
     connections: Mutex<Vec<Connection>>,
 }
 
 impl Node {
-    pub async fn new(secret_key: SecretKey, config: &Config) -> Result<Self> {
+    pub async fn new(secret_key: SecretKey, config: &Config, auth: Auth) -> Result<Self> {
         let endpoint =
             create_endpoint(secret_key, config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
 
@@ -37,6 +38,7 @@ impl Node {
 
         Ok(Self {
             inner: Arc::new(NodeInner {
+                auth,
                 ep_id: node_addr.id,
                 endpoint,
                 listeners: Mutex::new(Vec::new()),
@@ -72,7 +74,9 @@ impl Node {
     // TODO - this used to take a local port argument, pretty sure we need
     // to restore that
     pub async fn listen(&self, label: String) -> Result<EndpointTicket> {
-        let handle = HttpConnectListenerHandle::listen(self.inner.endpoint.clone()).await?;
+        let auth: Arc<Box<dyn AuthHandler>> = Arc::new(Box::new(self.inner.auth.clone()));
+        let handle =
+            HttpConnectListenerHandle::listen(self.inner.endpoint.clone(), Some(auth)).await?;
         let id = Uuid::new_v4();
         let listener = Listener { id, label, handle };
         let ticket = listener.ticket();

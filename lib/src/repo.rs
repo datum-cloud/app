@@ -4,7 +4,7 @@ use anyhow::Result;
 use iroh::SecretKey;
 use log::{info, warn};
 
-use crate::{Node, config::Config};
+use crate::{Node, auth::Auth, config::Config};
 
 // Repo builds up a series of file path conventions from a root directory path.
 pub struct Repo(PathBuf);
@@ -13,6 +13,7 @@ impl Repo {
     const CONNECT_KEY_FILE: &str = "connect_key";
     const LISTEN_KEY_FILE: &str = "listen_key";
     const CONFIG_FILE: &str = "config.yml";
+    const AUTH_FILE: &str = "auth.yml";
 
     pub fn default_location() -> PathBuf {
         dirs_next::data_local_dir().unwrap().join("datum_agent")
@@ -32,16 +33,18 @@ impl Repo {
     pub async fn spawn_listen_node(&self) -> Result<Node> {
         tracing::debug!("spawning node with listening secret key");
         let cfg = self.config().await?;
+        let auth = self.auth().await?;
         let secret = self.listen_key().await?;
-        let node = Node::new(secret, &cfg).await.unwrap();
+        let node = Node::new(secret, &cfg, auth).await.unwrap();
         Ok(node)
     }
 
     pub async fn spawn_connect_node(&self) -> Result<Node> {
         tracing::debug!("spawning node with connect secret key");
         let cfg = self.config().await?;
+        let auth = self.auth().await?;
         let secret = self.connect_key().await?;
-        let node = Node::new(secret, &cfg).await.unwrap();
+        let node = Node::new(secret, &cfg, auth).await.unwrap();
         Ok(node)
     }
 
@@ -56,6 +59,18 @@ impl Repo {
         };
 
         Config::from_file(config_file_path).await
+    }
+
+    pub async fn auth(&self) -> Result<Auth> {
+        let auth_file_path = self.0.join(Self::AUTH_FILE);
+        if !auth_file_path.exists() {
+            warn!("auth file does not exist. creating new auth");
+            let auth = Auth::default();
+            auth.write(auth_file_path).await?;
+            return Ok(auth);
+        };
+
+        Auth::from_file(auth_file_path).await
     }
 
     pub async fn listen_key(&self) -> Result<SecretKey> {

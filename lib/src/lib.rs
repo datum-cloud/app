@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 pub mod domains;
 mod node;

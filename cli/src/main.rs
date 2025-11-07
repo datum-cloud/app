@@ -1,6 +1,6 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use lib::Repo;
+use lib::{EndpointTicket, Repo};
 use std::net::{SocketAddrV4, SocketAddrV6};
 
 /// Datum Agent CLI
@@ -45,6 +45,9 @@ pub struct ConnectArgs {
     #[clap(long)]
     pub addr: String,
 
+    #[clap(long)]
+    pub ticket: EndpointTicket,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
@@ -88,9 +91,11 @@ async fn main() -> anyhow::Result<()> {
             println!()
         }
         Commands::Connect(args) => {
-            let ConnectArgs { addr, .. } = args;
+            let ConnectArgs { addr, ticket, .. } = args;
             let node = repo.spawn_connect_node().await?;
-            node.connect("connection".to_string(), addr).await.unwrap();
+            node.connect("connection".to_string(), addr, ticket)
+                .await
+                .unwrap();
             println!("{}", node.endpoint_id());
             tokio::signal::ctrl_c().await?;
             println!()
