@@ -46,7 +46,7 @@ pub struct ConnectArgs {
     pub addr: String,
 
     #[clap(long)]
-    pub ticket: EndpointTicket,
+    pub ticket: Option<EndpointTicket>,
 
     #[clap(flatten)]
     pub common: CommonArgs,

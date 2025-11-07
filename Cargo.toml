@@ -7,7 +7,6 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-# iroh-proxy-utils = { path = "../iroh-proxy-utils" }
 iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "main" }
 lib = { path = "lib" }
 

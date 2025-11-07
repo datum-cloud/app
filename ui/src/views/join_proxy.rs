@@ -55,7 +55,7 @@ pub fn JoinProxy() -> Element {
                             return;
                         }
                     };
-                    state.clone().node().connect(label(), local_address(), ticket).await.unwrap();
+                    state.clone().node().connect(label(), local_address(), Some(ticket)).await.unwrap();
                 },
                 "Join"
             }

@@ -19,6 +19,8 @@ cargo run -- --help
 
 ### Running the UI:
 
+to run the UI, make sure you have rust, cargo, and dioxus installed:
+
 ```
 cd ui
 dx serve

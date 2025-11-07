@@ -83,9 +83,11 @@ fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionI
                 }
             }
             Subhead { text: "{conn_2.addr}" }
-            p {
-                class: "text-sm break-all max-w-2/3 mt-1",
-                "{conn_2.ticket}"
+            if let Some(ticket) = &conn_2.ticket {
+                p {
+                    class: "text-sm break-all max-w-2/3 mt-1",
+                    "{ticket}"
+                }
             }
         }
     }
@@ -118,7 +120,7 @@ fn ProxyListenerItem(lstn: ListnerInfo, listeners: Signal<Vec<ListnerInfo>>) -> 
                     },
                 }
             }
-            Subhead { text: "{lstn_2.addr}" }
+            Subhead { text: "<address goes here>" }
             p {
                 class: "text-sm break-all max-w-2/3 mt-1",
                 "{lstn_2.ticket}"

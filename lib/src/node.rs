@@ -110,7 +110,7 @@ impl Node {
         &self,
         label: String,
         addrs: String,
-        ticket: EndpointTicket,
+        ticket: Option<EndpointTicket>,
     ) -> Result<()> {
         let addr_string = addrs.clone();
         let addrs = addrs
@@ -173,7 +173,7 @@ pub struct ConnectionInfo {
     pub id: Uuid,
     pub label: String,
     pub addr: String,
-    pub ticket: EndpointTicket,
+    pub ticket: Option<EndpointTicket>,
 }
 
 #[derive(Debug)]
@@ -184,12 +184,12 @@ struct Connection {
     // TODO - currently this ticket isn't being used. It should be pushed
     // into the HttpConnectEntranceHandle as a param that always directs
     // the tunnel at the same endpoint
-    target: EndpointTicket,
+    target: Option<EndpointTicket>,
     handle: HttpConnectEntranceHandle,
 }
 
 impl Connection {
-    fn ticket(&self) -> &EndpointTicket {
+    fn ticket(&self) -> &Option<EndpointTicket> {
         &self.target
     }
 
