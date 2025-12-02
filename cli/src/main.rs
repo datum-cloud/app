@@ -19,7 +19,7 @@ pub enum Commands {
     ///
     /// As far as the magic socket is concerned, this is listening. But it is
     /// connecting to a TCP socket for which you have to specify the host and port.
-    ListenTcp(ListenTcpArgs),
+    Listen(ListenArgs),
 
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
     /// to it.
@@ -28,28 +28,25 @@ pub enum Commands {
     ///
     /// As far as the magic socket is concerned, this is connecting. But it is
     /// listening on a TCP socket for which you have to specify the interface and port.
-    ConnectTcp(ConnectTcpArgs),
+    Connect(ConnectArgs),
 }
 
 #[derive(Parser, Debug)]
-pub struct ListenTcpArgs {
-    #[clap(long)]
-    pub host: String,
-
+pub struct ListenArgs {
     #[clap(flatten)]
     pub common: CommonArgs,
 }
 
 #[derive(Parser, Debug)]
-pub struct ConnectTcpArgs {
+pub struct ConnectArgs {
     /// The addresses to listen on for incoming tcp connections.
     ///
     /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
     pub addr: String,
 
-    /// The endpoint to connect to
-    pub ticket: EndpointTicket,
+    #[clap(long)]
+    pub ticket: Option<EndpointTicket>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -78,23 +75,30 @@ pub struct CommonArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let repo = Repo::open_or_create(Repo::default_location()).await?;
 
     let args = Args::parse();
     match args.command {
-        Commands::ConnectTcp(args) => {
-            let ConnectTcpArgs { addr, ticket, .. } = args;
-            let node = repo.spawn_node().await?;
-            node.connect_tcp("connection".to_string(), addr, ticket)
-                .await
-                .unwrap();
+        Commands::Listen(_args) => {
+            let node = repo.spawn_listen_node().await?;
+            node.listen("connection".to_string()).await.unwrap();
+            println!("{}", node.endpoint_id());
+            tokio::signal::ctrl_c().await?;
+            println!()
         }
-        Commands::ListenTcp(args) => {
-            let ListenTcpArgs { host, .. } = args;
-            let node = repo.spawn_node().await?;
-            node.listen_tcp("connection".to_string(), host)
+        Commands::Connect(args) => {
+            let ConnectArgs { addr, ticket, .. } = args;
+            let node = repo.spawn_connect_node().await?;
+            node.connect("connection".to_string(), addr, ticket)
                 .await
                 .unwrap();
+            println!("{}", node.endpoint_id());
+            tokio::signal::ctrl_c().await?;
+            println!()
         }
     }
     Ok(())

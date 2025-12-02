@@ -9,6 +9,7 @@ data-encoding.workspace = true
 dirs-next.workspace = true
 hex.workspace = true
 iroh-base.workspace = true
+iroh-proxy-utils.workspace = true
 iroh-tickets.workspace = true
 iroh.workspace = true
 log.workspace = true

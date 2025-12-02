@@ -7,6 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "main" }
 lib = { path = "lib" }
 
 anyhow = "1"
@@ -28,6 +29,7 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
 n0-snafu = "0.2.2"
 uuid = { version = "1.18.1", features = ["v4"] }
+
 
 [profile]
 
