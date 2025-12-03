@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use lib::{EndpointTicket, Repo};
 use std::net::{SocketAddrV4, SocketAddrV6};
 
-/// Datum Agent CLI
+/// Datum Connect Agent
 #[derive(Parser, Debug)]
 pub struct Args {
     #[clap(subcommand)]
@@ -13,21 +13,11 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Listen on a magicsocket and forward incoming connections to the specified
-    /// host and port. Every incoming bidi stream is forwarded to a new connection.
-    ///
-    /// Will print a node ticket on stderr that can be used to connect.
-    ///
-    /// As far as the magic socket is concerned, this is listening. But it is
-    /// connecting to a TCP socket for which you have to specify the host and port.
+    /// host and port.
     Listen(ListenArgs),
 
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
     /// to it.
-    ///
-    /// A node ticket is required to connect.
-    ///
-    /// As far as the magic socket is concerned, this is connecting. But it is
-    /// listening on a TCP socket for which you have to specify the interface and port.
     Connect(ConnectArgs),
 }
 
