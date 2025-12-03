@@ -1,5 +1,5 @@
 [package]
-name = "datum-proxy-cli"
+name = "datum-connect"
 version = "0.1.0"
 edition = "2024"
 
