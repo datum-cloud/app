@@ -82,7 +82,7 @@ struct NetworkPolicyPeer {
 
 impl NetworkPolicyPeer {
     fn allows(&self, _id: &EndpointId) -> bool {
-        return true;
+        true
     }
 }
 
@@ -103,7 +103,7 @@ struct IpBlock {
     except: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
     /// ports is a list of ports which should be made accessible on the instances selected for
     /// this rule. Each item in this list is combined using a logical OR. If this field is
@@ -137,15 +137,6 @@ impl AuthHandler for Auth {
     }
 }
 
-impl Default for Auth {
-    fn default() -> Self {
-        Self {
-            ports: None,
-            from: None,
-        }
-    }
-}
-
 impl Auth {
     pub async fn from_file(path: PathBuf) -> anyhow::Result<Self> {
         let config = tokio::fs::read_to_string(path)
@@ -161,7 +152,7 @@ impl Auth {
         Ok(())
     }
 
-    fn allows_req<'a>(&self, req: &'a Request) -> bool {
+    fn allows_req(&self, req: &Request) -> bool {
         match req {
             Request::Connect(connect_req) => {
                 // if !self.allows_endpoint(connect_req.endpoint_addr) {
@@ -177,7 +168,7 @@ impl Auth {
                 // if !self.allows_port(http_req.path) {
                 //     return Ok(false)
                 // }
-                return true;
+                true
             }
         }
     }
