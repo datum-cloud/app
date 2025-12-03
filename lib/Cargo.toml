@@ -13,7 +13,8 @@ iroh-proxy-utils.workspace = true
 iroh-tickets.workspace = true
 iroh.workspace = true
 log.workspace = true
-n0-snafu.workspace = true
+n0-error.workspace = true
+postcard.workspace = true
 quinn.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -24,6 +25,7 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 serde_json = "1.0.145"

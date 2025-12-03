@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 pub mod domains;
+mod encoding;
 mod node;
 mod repo;
 

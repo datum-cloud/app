@@ -14,10 +14,11 @@ anyhow = "1"
 dirs-next = "2"
 snafu = "0.8.6"
 hex = "0.4.3"
-iroh = { version = "0.94", default-features = false }
-iroh-base = { version = "0.94" }
-iroh-tickets = "0.1"
+iroh = { version = "0.95", default-features = false }
+iroh-base = { version = "0.95" }
+iroh-tickets = "0.2"
 log = "0.4"
+postcard = "1"
 quinn = { version = "0.14", package = "iroh-quinn" }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
@@ -27,8 +28,9 @@ tokio-util = "0.7.10"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
-n0-snafu = "0.2.2"
+n0-error = "0.1"
 uuid = { version = "1.18.1", features = ["v4"] }
+url = "2"
 
 
 [profile]
