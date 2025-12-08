@@ -11,7 +11,7 @@ use iroh_proxy_utils::http_connect::{
     AuthHandler, HttpConnectEntranceHandle, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN,
 };
 
-use crate::{auth::Auth, config::Config};
+use crate::{Repo, auth::Auth, config::Config};
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -20,17 +20,29 @@ pub struct Node {
 
 #[derive(Debug)]
 struct NodeInner {
+    repo: Repo,
     ep_id: PublicKey,
     endpoint: Endpoint,
+    n0des: iroh_n0des::Client,
     auth: Auth,
     listeners: Mutex<Vec<Listener>>,
     connections: Mutex<Vec<Connection>>,
 }
 
 impl Node {
-    pub async fn new(secret_key: SecretKey, config: &Config, auth: Auth) -> Result<Self> {
+    pub async fn new(secret_key: SecretKey, repo: Repo) -> Result<Self> {
+        let config = repo.config().await?;
+        let auth = repo.auth().await?;
         let endpoint =
-            create_endpoint(secret_key, config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
+            create_endpoint(secret_key, &config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
+
+        // TODO(b5) - remove unwrap
+        let n0des = iroh_n0des::Client::builder(&endpoint)
+            .api_secret_from_env()
+            .expect("failed to read api secret from env")
+            .build()
+            .await
+            .std_context("construction n0des client")?;
 
         // wait for the endpoint to figure out its address before making a ticket
         endpoint.online().await;
@@ -38,9 +50,11 @@ impl Node {
 
         Ok(Self {
             inner: Arc::new(NodeInner {
+                repo,
                 auth,
                 ep_id: node_addr.id,
                 endpoint,
+                n0des,
                 listeners: Mutex::new(Vec::new()),
                 connections: Mutex::new(Vec::new()),
             }),

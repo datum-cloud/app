@@ -10,6 +10,7 @@ edition = "2021"
 dioxus = { version = "0.7.1", features = ["router"] }
 
 anyhow.workspace = true
+dotenv.workspace = true
 snafu.workspace = true
 hex.workspace = true
 iroh.workspace = true

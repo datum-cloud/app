@@ -11,6 +11,7 @@ iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", br
 lib = { path = "lib" }
 
 anyhow = "1"
+dotenv = "0.15"
 dirs-next = "2"
 snafu = "0.8.6"
 hex = "0.4.3"
@@ -28,7 +29,7 @@ tokio-util = "0.7.10"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
-n0-error = "0.1"
+n0-error = { version = "0.1", features = ["anyhow"] }
 uuid = { version = "1.18.1", features = ["v4"] }
 url = "2"
 
