@@ -8,9 +8,9 @@ use iroh_proxy_utils::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
-enum Protocol {
+pub(crate) enum Protocol {
     Tcp,
     Udp,
     Sctp,

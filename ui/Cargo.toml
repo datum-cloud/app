@@ -22,7 +22,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 data-encoding.workspace = true
-n0-snafu.workspace = true
 uuid.workspace = true
 
 [features]

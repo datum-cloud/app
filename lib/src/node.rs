@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use iroh::{Endpoint, PublicKey, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
-use n0_snafu::{Result, ResultExt};
+use n0_error::{Result, StdResultExt};
 use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -104,8 +104,6 @@ impl Node {
         }
     }
 
-    // TODO - this used to take an endpoint ticket argument, pretty sure we need
-    // to restore that.
     pub async fn connect(
         &self,
         label: String,
@@ -115,7 +113,7 @@ impl Node {
         let addr_string = addrs.clone();
         let addrs = addrs
             .to_socket_addrs()
-            .context(format!("invalid host string {}", addrs))?;
+            .std_context(format!("invalid host string {}", addrs))?;
 
         let endpoint = self.inner.endpoint.clone();
         let handle = HttpConnectEntranceHandle::connect(endpoint, addrs).await?;
