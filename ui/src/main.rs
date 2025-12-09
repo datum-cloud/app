@@ -93,7 +93,6 @@ fn App() -> Element {
         };
     }
 
-    // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {
         Head {  }
         button {
@@ -102,8 +101,6 @@ fn App() -> Element {
             },
             "hide"
         }
-        // // The router component renders the route enum we defined above. It will handle synchronization of the URL and render
-        // // the layouts and components for the active route.
         Router::<Route> {}
     }
 }

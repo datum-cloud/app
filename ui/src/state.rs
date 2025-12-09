@@ -1,6 +1,8 @@
 use lib::domains::{example_domains, Domain};
 use lib::{Node, Repo};
 
+use crate::views::Signup;
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     domains: Vec<Domain>,

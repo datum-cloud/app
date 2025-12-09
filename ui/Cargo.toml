@@ -17,6 +17,7 @@ snafu.workspace = true
 hex.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
+iroh-metrics.workspace = true
 lib.workspace = true
 quinn.workspace = true
 rand.workspace = true

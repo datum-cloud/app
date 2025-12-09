@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use lib::{ConnectionInfo, ListnerInfo};
+use lib::{ConnectionInfo, ListnerInfo, Metrics};
 
 use crate::{
     components::{Button, CloseButton, Subhead},
@@ -11,16 +11,27 @@ use crate::{
 pub fn TempProxies() -> Element {
     let mut connections = use_signal(|| Vec::new());
     let mut listeners = use_signal(|| Vec::new());
-    use_future(move || async move {
+    let mut metrics = use_signal(|| Metrics::default());
+    let mut metrics_2 = metrics.clone();
+    use_future(move || {
         let state = consume_context::<AppState>();
-        let node = state.node();
-        // let conns = node.connections().await;
-        // connections.set(conns);
-        // let lstnrs = node.listeners().await;
-        // listeners.set(lstnrs);
+        async move {
+            // let conns = node.connections().await;
+            // connections.set(conns);
+            // let lstnrs = node.listeners().await;
+            // listeners.set(lstnrs);
+
+            let mut metrics_sub = state.node().metrics().await.unwrap();
+            while let Ok(update) = metrics_sub.recv().await {
+                metrics_2.set(update);
+            }
+        }
     });
 
+    let metrics_stats = format!("{} | {}", metrics().send, metrics().recv);
+
     rsx! {
+        h3 { "{metrics_stats}" }
         div {
             class: "my-5",
             div {

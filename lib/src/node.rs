@@ -2,10 +2,11 @@ use anyhow::anyhow;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
 use n0_error::{Result, StdResultExt};
+use n0_future::task::AbortOnDropHandle;
 use std::fmt::Debug;
 use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use iroh_proxy_utils::http_connect::{
@@ -24,31 +25,9 @@ pub struct Node {
 
 impl Node {
     pub async fn new(secret_key: SecretKey, repo: Repo) -> Result<Self> {
-        let config = repo.config().await?;
-        let auth = repo.auth().await?;
-        let endpoint =
-            create_endpoint(secret_key, &config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
-
-        let n0des = iroh_n0des::Client::builder(&endpoint)
-            .api_secret_from_env()
-            // TODO(b5) - remove expect
-            .expect("failed to read api secret from env")
-            .build()
-            .await
-            .std_context("construction n0des client")?;
-
         // TODO(b5) - add auth string
-        let ep_id = endpoint.id();
-        let datum = DatumCloudClient::new(None);
-        let inner = NodeInner {
-            repo,
-            auth,
-            endpoint,
-            datum,
-            n0des,
-            tcp_listener: None,
-            edge_connections: Mutex::new(Vec::new()),
-        };
+        let inner = NodeInner::new(secret_key, repo).await?;
+        let ep_id = inner.endpoint.id();
 
         Ok(Self {
             id: ep_id,
@@ -76,8 +55,13 @@ impl Node {
         addrs: String,
         ticket: Option<EndpointTicket>,
     ) -> Result<()> {
-        let mut inner = self.inner.lock().await;
+        let inner = self.inner.lock().await;
         inner.connect(label, addrs, ticket).await
+    }
+
+    pub async fn metrics(&self) -> Result<tokio::sync::broadcast::Receiver<Metrics>> {
+        let sub = self.inner.lock().await.metrics_events.subscribe();
+        Ok(sub)
     }
 }
 
@@ -90,12 +74,60 @@ struct NodeInner {
     datum: DatumCloudClient,
     /// the main TCP iroh endpoint listener that accepts connections
     tcp_listener: Option<HttpConnectListenerHandle>,
-
     /// direct connections to another iroh endpoint, skipping the datum network
     edge_connections: Mutex<Vec<Connection>>,
+    metrics_events: tokio::sync::broadcast::Sender<Metrics>,
+    metrics_task: AbortOnDropHandle<()>,
 }
 
 impl NodeInner {
+    async fn new(secret_key: SecretKey, repo: Repo) -> anyhow::Result<Self> {
+        let config = repo.config().await?;
+        let auth = repo.auth().await?;
+        let endpoint =
+            create_endpoint(secret_key, &config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
+
+        let n0des = iroh_n0des::Client::builder(&endpoint)
+            .api_secret_from_env()
+            // TODO(b5) - remove expect
+            .expect("failed to read api secret from env")
+            .build()
+            .await
+            .std_context("construction n0des client")?;
+
+        let datum = DatumCloudClient::new(None);
+
+        let (tx, _) = tokio::sync::broadcast::channel(32);
+        let metrics_events = tx.clone();
+        let metrics = endpoint.metrics().clone();
+        let metrics_task = n0_future::task::spawn(async move {
+            loop {
+                let recv = metrics.magicsock.recv_data_ipv4.get()
+                    + metrics.magicsock.recv_data_ipv6.get()
+                    + metrics.magicsock.recv_data_relay.get();
+                let send = metrics.magicsock.send_data.get();
+                if let Err(err) = tx.send(Metrics { send, recv }) {
+                    warn!("send metrics on channel error: {:?}", err);
+                }
+                n0_future::time::sleep(n0_future::time::Duration::from_secs(2)).await;
+            }
+        });
+
+        let inner = NodeInner {
+            repo,
+            auth,
+            endpoint,
+            datum,
+            n0des,
+            tcp_listener: None,
+            edge_connections: Mutex::new(Vec::new()),
+            metrics_events,
+            metrics_task: AbortOnDropHandle::new(metrics_task),
+        };
+
+        Ok(inner)
+    }
+
     // TODO - this used to take a local port argument, pretty sure we need
     // to restore that
     pub async fn listen(&mut self) -> Result<()> {
@@ -169,6 +201,12 @@ impl NodeInner {
             false => Err(anyhow!("TCP connection not found")),
         }
     }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Metrics {
+    pub send: u64,
+    pub recv: u64,
 }
 
 #[derive(Debug)]

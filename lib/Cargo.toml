@@ -14,6 +14,7 @@ iroh-tickets.workspace = true
 iroh.workspace = true
 log.workspace = true
 n0-error.workspace = true
+n0-future.workspace = true
 postcard.workspace = true
 quinn.workspace = true
 rand.workspace = true
