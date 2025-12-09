@@ -19,6 +19,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 iroh-metrics.workspace = true
 lib.workspace = true
+n0-future.workspace = true
 quinn.workspace = true
 rand.workspace = true
 tokio.workspace = true
