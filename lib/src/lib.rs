@@ -8,5 +8,6 @@ mod repo;
 mod state;
 
 pub use iroh_tickets::endpoint::EndpointTicket;
-pub use node::{ConnectionInfo, ListnerInfo, Node};
+pub use node::Node;
 pub use repo::Repo;
+pub use state::{ConnectionInfo, ListnerInfo};

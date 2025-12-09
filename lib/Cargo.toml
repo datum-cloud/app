@@ -17,6 +17,7 @@ n0-error.workspace = true
 postcard.workspace = true
 quinn.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_yml.workspace = true
 snafu.workspace = true

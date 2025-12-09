@@ -14,10 +14,10 @@ pub fn TempProxies() -> Element {
     use_future(move || async move {
         let state = consume_context::<AppState>();
         let node = state.node();
-        let conns = node.connections().await;
-        connections.set(conns);
-        let lstnrs = node.listeners().await;
-        listeners.set(lstnrs);
+        // let conns = node.connections().await;
+        // connections.set(conns);
+        // let lstnrs = node.listeners().await;
+        // listeners.set(lstnrs);
     });
 
     rsx! {
@@ -73,11 +73,11 @@ fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionI
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.disconnect(&conn_2).await.unwrap();
+                            // node.disconnect(&conn_2).await.unwrap();
 
                             // refresh list of connections
-                            let conns = node.connections().await;
-                            connections.set(conns);
+                            // let conns = node.connections().await;
+                            // connections.set(conns);
                         }
                     },
                 }
@@ -111,11 +111,11 @@ fn ProxyListenerItem(lstn: ListnerInfo, listeners: Signal<Vec<ListnerInfo>>) -> 
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.unlisten(&lstn_2).await.unwrap();
+                            // node.unlisten(&lstn_2).await.unwrap();
 
                             // refresh list of listeners
-                            let lstns = node.listeners().await;
-                            listeners.set(lstns);
+                            // let lstns = node.listeners().await;
+                            // listeners.set(lstns);
                         }
                     },
                 }

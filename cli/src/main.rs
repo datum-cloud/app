@@ -1,6 +1,6 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use lib::{EndpointTicket, Repo};
+use lib::{EndpointTicket, Node, Repo};
 use std::net::{SocketAddrV4, SocketAddrV6};
 
 /// Datum Connect Agent
@@ -76,19 +76,22 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
         Commands::Listen(_args) => {
-            let node = repo.spawn_listen_node().await?;
-            node.listen("connection".to_string()).await.unwrap();
-            println!("{}", node.endpoint_id());
+            let listen_key = repo.listen_key().await?;
+            let node = Node::new(listen_key, repo).await?;
+            node.start_listening().await.unwrap();
+            println!("{}", node.endpoint_id().await);
             tokio::signal::ctrl_c().await?;
             println!()
         }
         Commands::Connect(args) => {
             let ConnectArgs { addr, ticket, .. } = args;
-            let node = repo.spawn_connect_node().await?;
+            let connect_key = repo.connect_key().await?;
+            let node = Node::new(connect_key, repo).await?;
+
             node.connect("connection".to_string(), addr, ticket)
                 .await
                 .unwrap();
-            println!("{}", node.endpoint_id());
+            println!("{}", node.endpoint_id().await);
             tokio::signal::ctrl_c().await?;
             println!()
         }
