@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use iroh_metrics::encoding::Update;
 use lib::{ConnectionInfo, ListnerInfo, Metrics};
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
 pub fn TempProxies() -> Element {
     let mut connections = use_signal(|| Vec::new());
     let mut listeners = use_signal(|| Vec::new());
-    let mut metrics = use_signal::<Vec<ChartData>>(|| vec![]);
+    let mut metrics = use_signal(|| vec![ChartData::default()]);
     let mut metrics_2 = metrics.clone();
     use_future(move || {
         let state = consume_context::<AppState>();
@@ -22,12 +23,13 @@ pub fn TempProxies() -> Element {
             // listeners.set(lstnrs);
 
             let mut metrics_sub = state.node().metrics().await.unwrap();
+            let mut prior = Metrics::default();
             while let Ok(metrics) = metrics_sub.recv().await {
                 let mut update = metrics_2();
                 update.push(ChartData {
                     ts: n0_future::time::SystemTime::now(),
-                    send: metrics.send,
-                    recv: metrics.recv,
+                    send: metrics.send - prior.send,
+                    recv: metrics.recv - prior.recv,
                 });
 
                 if update.len() > 120 {
@@ -35,11 +37,10 @@ pub fn TempProxies() -> Element {
                 }
 
                 metrics_2.set(update);
+                prior = metrics;
             }
         }
     });
-
-    // let metrics_stats = format!("{} | {}", metrics().send, metrics().recv);
 
     rsx! {
         BwTsChart{ data: metrics_2(), }
