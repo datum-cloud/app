@@ -11,11 +11,13 @@ iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", br
 lib = { path = "lib" }
 
 anyhow = "1"
+axum = "0.7"
 chrono = "0.4"
 dotenv = "0.15"
 dirs-next = "2"
 snafu = "0.8.6"
 hex = "0.4.3"
+hyper = "1"
 iroh = { version = "0.95", default-features = false }
 iroh-base = { version = "0.95" }
 iroh-tickets = "0.2"
@@ -29,6 +31,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
+tower = "0.5"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
@@ -37,6 +40,9 @@ n0-future = "0.3"
 uuid = { version = "1.18.1", features = ["v4"] }
 url = "2"
 
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "main" }
 
 [profile]
 

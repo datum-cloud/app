@@ -1,12 +1,15 @@
 use anyhow::anyhow;
-use iroh::{Endpoint, EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh_n0des::Client;
 use iroh_tickets::endpoint::EndpointTicket;
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
+use n0_future::try_join_all;
 use std::fmt::Debug;
+use std::vec;
 use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace};
 use uuid::Uuid;
 
 use iroh_proxy_utils::http_connect::{
@@ -14,7 +17,7 @@ use iroh_proxy_utils::http_connect::{
 };
 
 use crate::datum_cloud::DatumCloudClient;
-use crate::state::{ConnectionInfo, HttpProxy, ListnerInfo, Project, State};
+use crate::state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket};
 use crate::{Repo, auth::Auth, config::Config};
 
 #[derive(Debug, Clone)]
@@ -39,24 +42,51 @@ impl Node {
         self.id.fmt_short().to_string()
     }
 
-    pub async fn start_listening(&self) -> Result<()> {
-        let mut inner = self.inner.lock().await;
-        inner.listen().await
+    pub async fn proxies(&self) -> Result<Vec<TcpProxy>> {
+        let inner = self.inner.lock().await;
+        let proxies = inner
+            .tcp_listeners
+            .iter()
+            .map(|proxy| proxy.info.clone())
+            .collect();
+        Ok(proxies)
     }
 
-    pub async fn stop_listening(&self) -> Result<()> {
+    pub async fn start_listening(&self, _label: String, port: String) -> Result<()> {
         let mut inner = self.inner.lock().await;
-        inner.unlisten().await
+        inner.listen(port).await
+    }
+
+    pub async fn stop_listening(&self, proxy: &TcpProxy) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+        inner.unlisten(proxy).await
+    }
+
+    pub async fn connect_codename(
+        &self,
+        codename: String,
+        listen_addr: String,
+    ) -> Result<ConnectionInfo> {
+        let mut inner = self.inner.lock().await;
+        if let Some(conn) = inner
+            .edge_connections
+            .iter()
+            .find(|c| c.codename == codename)
+        {
+            return Ok(conn.info());
+        }
+        println!("need to connect");
+        inner.connect_codename(codename, listen_addr).await
     }
 
     pub async fn connect(
         &self,
-        label: String,
+        codename: String,
         addrs: String,
         ticket: Option<EndpointTicket>,
-    ) -> Result<()> {
-        let inner = self.inner.lock().await;
-        inner.connect(label, addrs, ticket).await
+    ) -> Result<ConnectionInfo> {
+        let mut inner = self.inner.lock().await;
+        inner.connect(codename, addrs, ticket).await
     }
 
     pub async fn metrics(&self) -> Result<tokio::sync::broadcast::Receiver<Metrics>> {
@@ -73,11 +103,11 @@ struct NodeInner {
     auth: Auth,
     datum: DatumCloudClient,
     /// the main TCP iroh endpoint listener that accepts connections
-    tcp_listener: Option<HttpConnectListenerHandle>,
+    tcp_listeners: Vec<ProxyListener>,
     /// direct connections to another iroh endpoint, skipping the datum network
-    edge_connections: Mutex<Vec<Connection>>,
+    edge_connections: Vec<Connection>,
     metrics_events: tokio::sync::broadcast::Sender<Metrics>,
-    metrics_task: AbortOnDropHandle<()>,
+    _metrics_task: AbortOnDropHandle<()>,
 }
 
 impl NodeInner {
@@ -96,6 +126,7 @@ impl NodeInner {
             .std_context("construction n0des client")?;
 
         let datum = DatumCloudClient::new(None);
+        let tcp_listeners = load_proxies(&endpoint, &repo, &n0des).await?;
 
         let (tx, _) = tokio::sync::broadcast::channel(32);
         let metrics_events = tx.clone();
@@ -107,9 +138,9 @@ impl NodeInner {
                     + metrics.magicsock.recv_data_relay.get();
                 let send = metrics.magicsock.send_data.get();
                 if let Err(err) = tx.send(Metrics { send, recv }) {
-                    warn!("send metrics on channel error: {:?}", err);
+                    trace!("send metrics on channel error: {:?}", err);
                 }
-                n0_future::time::sleep(n0_future::time::Duration::from_millis(500)).await;
+                n0_future::time::sleep(n0_future::time::Duration::from_millis(100)).await;
             }
         });
 
@@ -119,51 +150,88 @@ impl NodeInner {
             endpoint,
             datum,
             n0des,
-            tcp_listener: None,
-            edge_connections: Mutex::new(Vec::new()),
+            tcp_listeners,
+            edge_connections: Vec::new(),
             metrics_events,
-            metrics_task: AbortOnDropHandle::new(metrics_task),
+            _metrics_task: AbortOnDropHandle::new(metrics_task),
         };
 
         Ok(inner)
     }
 
-    // TODO - this used to take a local port argument, pretty sure we need
-    // to restore that
-    pub async fn listen(&mut self) -> Result<()> {
+    pub async fn listen(&mut self, addr: String) -> Result<()> {
+        let mut state = self.repo.load_state().await?;
         self.endpoint.online().await;
-        let auth: Arc<Box<dyn AuthHandler>> = Arc::new(Box::new(self.auth.clone()));
-        let listener = HttpConnectListenerHandle::listen(self.endpoint.clone(), Some(auth)).await?;
-        self.tcp_listener = Some(listener);
+
+        info!("creating proxy for address {}", addr.clone());
+        let proxy = TcpProxy::new(addr);
+
+        // TODO - validate we don't already have a listener for that port
+
+        let listener =
+            open_and_publish_tcp_proxy_listeners(&self.endpoint, &self.auth, &proxy, &self.n0des)
+                .await?;
+
+        self.tcp_listeners.push(listener);
+        self.repo.write_state(&state).await?;
+
         Ok(())
     }
 
-    pub async fn unlisten(&mut self) -> Result<()> {
-        match &self.tcp_listener {
-            Some(listener) => {
-                listener.close();
-                self.tcp_listener = None;
-                Ok(())
-            }
-            None => Ok(()),
-        }
+    pub async fn unlisten(&mut self, info: &TcpProxy) -> Result<()> {
+        self.tcp_listeners.retain(|proxy| proxy.info.id != info.id);
+        let mut state = self.repo.load_state().await?;
+        state.tcp_proxies = self
+            .tcp_listeners
+            .iter()
+            .map(|proxy| proxy.info.clone())
+            .collect();
+        self.repo.write_state(&state).await?;
+        Ok(())
     }
 
     pub async fn connections(&self) -> Vec<ConnectionInfo> {
-        self.edge_connections
-            .lock()
-            .await
+        self.edge_connections.iter().map(|l| l.info()).collect()
+    }
+
+    pub async fn connect_codename(
+        &mut self,
+        codename: String,
+        addr: String,
+    ) -> Result<ConnectionInfo> {
+        let res = self
+            .edge_connections
             .iter()
-            .map(|l| l.info())
-            .collect()
+            .find(|conn| conn.codename == codename);
+        if let Some(res) = res {
+            return Ok(res.info());
+        }
+
+        println!("getting ticket");
+        info!("getting ticket");
+        let ticket = self
+            .n0des
+            .fetch_ticket::<TcpProxyTicket>(codename.clone())
+            .await
+            .std_context("fetching n0des ticket")?;
+        let Some(ticket) = ticket else {
+            let err = n0_error::AnyError::from_anyhow(anyhow!("codename not found"));
+            return Err(err);
+        };
+        info!("have ticket {:?}", ticket);
+
+        let ticket_addr = EndpointAddr::new(ticket.ticket.endpoint);
+        let ticket = EndpointTicket::new(ticket_addr);
+
+        self.connect(codename, addr, Some(ticket)).await
     }
 
     pub async fn connect(
-        &self,
-        label: String,
+        &mut self,
+        codename: String,
         addrs: String,
         ticket: Option<EndpointTicket>,
-    ) -> Result<()> {
+    ) -> Result<ConnectionInfo> {
         let addr_string = addrs.clone();
         let addrs = addrs
             .to_socket_addrs()
@@ -173,23 +241,22 @@ impl NodeInner {
         let handle = HttpConnectEntranceHandle::connect(endpoint, addrs).await?;
         let conn = Connection {
             id: Uuid::new_v4(),
-            label,
+            codename,
             addr: addr_string,
             target: ticket,
-            handle,
+            _handle: handle,
         };
-        let mut tcp_connections = self.edge_connections.lock().await;
-        tcp_connections.push(conn);
-        Ok(())
+        let info = conn.info();
+        self.edge_connections.push(conn);
+        Ok(info)
     }
 
-    pub async fn disconnect(&self, conn: &ConnectionInfo) -> anyhow::Result<()> {
-        let mut conns = self.edge_connections.lock().await;
+    pub async fn disconnect(&mut self, conn: &ConnectionInfo) -> anyhow::Result<()> {
         let mut found = false;
         debug!("disconnect tcp. id: {:?}", conn.id);
-        conns.retain(|h| {
+        self.edge_connections.retain(|h| {
             if h.id == conn.id {
-                h.handle.close();
+                h._handle.close();
                 found = true;
                 false
             } else {
@@ -203,6 +270,50 @@ impl NodeInner {
     }
 }
 
+#[derive(Debug)]
+pub struct ProxyListener {
+    pub info: TcpProxy,
+    handle: HttpConnectListenerHandle,
+}
+
+async fn load_proxies(
+    endpoint: &Endpoint,
+    repo: &Repo,
+    n0des: &iroh_n0des::Client,
+) -> Result<Vec<ProxyListener>> {
+    endpoint.online().await;
+    let auth = repo.auth().await?;
+    let state = repo.load_state().await?;
+    let listeners = try_join_all(state.tcp_proxies.iter().map(|proxy| async {
+        open_and_publish_tcp_proxy_listeners(endpoint, &auth, proxy, n0des).await
+    }))
+    .await?;
+    Ok(listeners)
+}
+
+async fn open_and_publish_tcp_proxy_listeners(
+    endpoint: &Endpoint,
+    auth: &Auth,
+    proxy: &TcpProxy,
+    n0des: &iroh_n0des::Client,
+) -> Result<ProxyListener> {
+    let auth: Arc<Box<dyn AuthHandler>> = Arc::new(Box::new(auth.clone()));
+    let handle = HttpConnectListenerHandle::listen(endpoint.clone(), Some(auth)).await?;
+
+    let ticket = proxy.ticket(endpoint.id());
+    n0des
+        .publish_ticket(proxy.codename.clone(), ticket)
+        .await
+        .std_context("publishing ticket to n0des")?;
+
+    debug!("published ticket to n0des. codename: {}", proxy.codename);
+
+    Ok(ProxyListener {
+        info: proxy.clone(),
+        handle,
+    })
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
     pub send: u64,
@@ -212,13 +323,13 @@ pub struct Metrics {
 #[derive(Debug)]
 pub struct Connection {
     id: Uuid,
-    label: String,
+    codename: String,
     addr: String,
     // TODO - currently this ticket isn't being used. It should be pushed
     // into the HttpConnectEntranceHandle as a param that always directs
     // the tunnel at the same endpoint
     target: Option<EndpointTicket>,
-    handle: HttpConnectEntranceHandle,
+    _handle: HttpConnectEntranceHandle,
 }
 
 impl Connection {
@@ -229,7 +340,7 @@ impl Connection {
     fn info(&self) -> ConnectionInfo {
         ConnectionInfo {
             id: self.id,
-            label: self.label.clone(),
+            codename: self.codename.clone(),
             addr: self.addr.clone(),
             ticket: self.ticket().clone(),
         }

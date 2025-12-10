@@ -6,14 +6,12 @@ mod hero;
 
 mod bandwidth_timeseries_chart;
 mod button;
-mod domains;
 mod head;
 mod splash;
 mod typography;
 
-pub use bandwidth_timeseries_chart::{BwTsChart, BwTsChartProps, ChartData};
+pub use bandwidth_timeseries_chart::{BwTsChart, ChartData};
 pub use button::{Button, CloseButton};
-pub use domains::Domains;
 pub use head::Head;
 pub use splash::Splash;
 pub use typography::Subhead;

@@ -2,9 +2,7 @@ use dioxus::prelude::*;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
-use crate::views::{
-    CreateDomain, CreateProxy, DomainsList, JoinProxy, Login, Navbar, Signup, TempProxies,
-};
+use crate::views::{CreateDomain, CreateProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
@@ -43,12 +41,6 @@ enum Route {
         CreateProxy {},
         #[route("/proxy/join")]
         JoinProxy {},
-        // The route attribute defines the URL pattern that a specific route matches. If that pattern matches the URL,
-        // the component for that route will be rendered. The component name that is rendered defaults to the variant name.
-        #[route("/domains")]
-        DomainsList {},
-        #[route("/domain/create")]
-        CreateDomain {},
 }
 
 fn main() {

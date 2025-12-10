@@ -10,7 +10,6 @@
 
 mod create_domain;
 mod create_proxy;
-mod domains_list;
 mod join_proxy;
 mod login;
 mod navbar;
@@ -19,7 +18,6 @@ mod signup;
 
 pub use create_domain::CreateDomain;
 pub use create_proxy::CreateProxy;
-pub use domains_list::DomainsList;
 pub use join_proxy::JoinProxy;
 pub use login::Login;
 pub use navbar::Navbar;

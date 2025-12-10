@@ -373,11 +373,45 @@ dependencies = [
 
 [[package]]
 name = "axum"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
+dependencies = [
+ "async-trait",
+ "axum-core 0.4.5",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "itoa",
+ "matchit 0.7.3",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "axum"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b098575ebe77cb6d14fc7f32749631a6e44edbef6b796f89b020e99ba20d425"
 dependencies = [
- "axum-core",
+ "axum-core 0.5.5",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -385,7 +419,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "itoa",
- "matchit",
+ "matchit 0.8.4",
  "memchr",
  "mime",
  "multer",
@@ -399,6 +433,27 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "rustversion",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1609,8 +1664,8 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-tungstenite",
- "axum",
- "axum-core",
+ "axum 0.8.7",
+ "axum-core 0.5.5",
  "base64",
  "bytes",
  "ciborium",
@@ -1664,7 +1719,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a9be2ef4d701520eefef284d218fb35b159dccd6bccc02b5bad42945e2599d"
 dependencies = [
  "anyhow",
- "axum-core",
+ "axum-core 0.5.5",
  "base64",
  "ciborium",
  "dioxus-core",
@@ -3519,8 +3574,7 @@ dependencies = [
 [[package]]
 name = "iroh"
 version = "0.95.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2374ba3cdaac152dc6ada92d971f7328e6408286faab3b7350842b2ebbed4789"
+source = "git+https://github.com/n0-computer/iroh?branch=main#40a5ce6618f5f00d64832222b323acda27244c0d"
 dependencies = [
  "aead",
  "backon",
@@ -3574,8 +3628,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "0.95.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25a8c5fb1cc65589f0d7ab44269a76f615a8c4458356952c9b0ef1c93ea45ff8"
+source = "git+https://github.com/n0-computer/iroh?branch=main#40a5ce6618f5f00d64832222b323acda27244c0d"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -3750,8 +3803,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "0.95.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43fbdf2aeffa7d6ede1a31f6570866c2199b1cee96a0b563994623795d1bac2c"
+source = "git+https://github.com/n0-computer/iroh?branch=main#40a5ce6618f5f00d64832222b323acda27244c0d"
 dependencies = [
  "blake3",
  "bytes",
@@ -3991,9 +4043,11 @@ name = "lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum 0.7.9",
  "data-encoding",
  "dirs-next",
  "hex",
+ "hyper",
  "iroh",
  "iroh-base",
  "iroh-n0des",
@@ -4012,6 +4066,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -4301,6 +4356,12 @@ name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
+
+[[package]]
+name = "matchit"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "matchit"
@@ -7252,6 +7313,7 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 use anyhow::Result;
 use iroh::SecretKey;
@@ -16,7 +16,7 @@ impl Repo {
     const CONFIG_FILE: &str = "config.yml";
     const OAUTH_TOKEN_FILE: &str = "oauth_token";
     const AUTH_FILE: &str = "auth.yml";
-    const STATE_FILE: &str = "state.json";
+    const STATE_FILE: &str = "state.yml";
 
     pub fn default_location() -> PathBuf {
         dirs_next::data_local_dir().unwrap().join("datum_connect")
