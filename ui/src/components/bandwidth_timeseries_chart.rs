@@ -1,9 +1,11 @@
+use chrono::{DateTime, Local, Utc};
 use dioxus::prelude::*;
-use n0_future::time::SystemTime;
+
+use crate::util::humanize_bytes;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartData {
-    pub ts: SystemTime,
+    pub ts: DateTime<Local>,
     pub send: u64,
     pub recv: u64,
 }
@@ -11,7 +13,7 @@ pub struct ChartData {
 impl std::default::Default for ChartData {
     fn default() -> Self {
         Self {
-            ts: SystemTime::now(),
+            ts: Local::now(),
             send: 0,
             recv: 0,
         }
@@ -21,27 +23,6 @@ impl std::default::Default for ChartData {
 #[derive(PartialEq, Clone, Props)]
 pub struct BwTsChartProps {
     pub data: Vec<ChartData>,
-}
-
-const CLASS: &str = "py-2 px-5 border-1 border-white rounded-md";
-
-// Convert bytes to human-readable format
-fn humanize_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    format!("{:.1} {}", size, UNITS[unit_idx])
 }
 
 // Generate SVG path for a line
@@ -90,13 +71,11 @@ pub fn BwTsChart(props: BwTsChartProps) -> Element {
     let chart_height = height - padding * 2.0;
 
     // Find max value for scaling
-    let max_value = data.iter().map(|d| d.send.max(d.recv)).max().unwrap_or(0);
-
-    let max_value_f64 = max_value as f64;
+    let max_value = data.iter().map(|d| d.send.max(d.recv)).max().unwrap_or(0) as f64;
 
     // Generate paths
-    let send_path = generate_path(data, |d| d.send, chart_width, chart_height, max_value_f64);
-    let recv_path = generate_path(data, |d| d.recv, chart_width, chart_height, max_value_f64);
+    let send_path = generate_path(data, |d| d.send, chart_width, chart_height, max_value);
+    let recv_path = generate_path(data, |d| d.recv, chart_width, chart_height, max_value);
 
     // Generate Y-axis labels (5 ticks)
     let y_labels: Vec<_> = (0..=4)
@@ -106,6 +85,22 @@ pub fn BwTsChart(props: BwTsChartProps) -> Element {
             (humanize_bytes(value), y)
         })
         .collect();
+
+    // Generate X-axis labels (show every ~20th data point, max 6 labels)
+    let x_labels: Vec<_> = if !data.is_empty() {
+        let step = (data.len() / 5).max(1);
+        data.iter()
+            .enumerate()
+            .step_by(step)
+            .map(|(i, point)| {
+                let x = padding + (i as f64 / (data.len() - 1).max(1) as f64) * chart_width;
+                let time_str = point.ts.format("%H:%M:%S").to_string();
+                (time_str, x)
+            })
+            .collect()
+    } else {
+        vec![]
+    };
 
     rsx! {
         div {
@@ -194,6 +189,18 @@ pub fn BwTsChart(props: BwTsChartProps) -> Element {
                                 fill: "#999",
                                 "{label}"
                             }
+                        }
+                    }
+
+                    // X-axis labels
+                    for (label, x) in x_labels {
+                        text {
+                            x: "{x}",
+                            y: "{height - padding + 20.0}",
+                            text_anchor: "middle",
+                            font_size: "10",
+                            fill: "#999",
+                            "{label}"
                         }
                     }
 

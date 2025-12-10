@@ -12,6 +12,7 @@ dioxus-desktop = { version = "0.7.2", optional = true }
 image = "0.25"
 
 anyhow.workspace = true
+chrono.workspace = true
 dotenv.workspace = true
 snafu.workspace = true
 hex.workspace = true

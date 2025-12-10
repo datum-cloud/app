@@ -109,7 +109,7 @@ impl NodeInner {
                 if let Err(err) = tx.send(Metrics { send, recv }) {
                     warn!("send metrics on channel error: {:?}", err);
                 }
-                n0_future::time::sleep(n0_future::time::Duration::from_secs(2)).await;
+                n0_future::time::sleep(n0_future::time::Duration::from_millis(500)).await;
             }
         });
 

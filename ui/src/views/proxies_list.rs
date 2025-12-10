@@ -1,3 +1,4 @@
+use chrono::Local;
 use dioxus::prelude::*;
 use iroh_metrics::encoding::Update;
 use lib::{ConnectionInfo, ListnerInfo, Metrics};
@@ -27,7 +28,7 @@ pub fn TempProxies() -> Element {
             while let Ok(metrics) = metrics_sub.recv().await {
                 let mut update = metrics_2();
                 update.push(ChartData {
-                    ts: n0_future::time::SystemTime::now(),
+                    ts: Local::now(),
                     send: metrics.send - prior.send,
                     recv: metrics.recv - prior.recv,
                 });

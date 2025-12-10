@@ -17,6 +17,7 @@ use dioxus_desktop::{
 
 mod components;
 mod state;
+mod util;
 mod views;
 
 /// The Route enum is used to define the structure of internal routes in our app. All route enums need to derive

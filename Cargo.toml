@@ -11,6 +11,7 @@ iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", br
 lib = { path = "lib" }
 
 anyhow = "1"
+chrono = "0.4"
 dotenv = "0.15"
 dirs-next = "2"
 snafu = "0.8.6"
