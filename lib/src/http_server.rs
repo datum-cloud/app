@@ -1,45 +1,61 @@
-use crate::node::Node;
-use anyhow::Result;
-use axum::{
-    Router,
-    extract::{Host, State},
-    response::IntoResponse,
-    routing::get,
-};
-use reqwest::Request;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tracing::info;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub node: Node,
+use anyhow::{Result, bail};
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, error, info, warn};
+
+use crate::node::Node;
+
+/// Parse HTTP request to extract Host header and determine subdomain
+async fn parse_http_host(stream: &mut TcpStream) -> Result<(String, Vec<u8>)> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 8192];
+
+    loop {
+        let n = stream.read(&mut temp).await?;
+        if n == 0 {
+            bail!("Connection closed before complete headers");
+        }
+
+        buffer.extend_from_slice(&temp[..n]);
+
+        // Look for end of headers
+        if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            let headers_end = pos + 4;
+            let headers = std::str::from_utf8(&buffer[..headers_end])?;
+
+            // Parse Host header
+            for line in headers.lines() {
+                if line.to_lowercase().starts_with("host:") {
+                    let host = line[5..].trim().to_string();
+                    return Ok((host, buffer));
+                }
+            }
+
+            bail!("No Host header found");
+        }
+
+        // Prevent unbounded buffering
+        if buffer.len() > 16384 {
+            bail!("Headers too large");
+        }
+    }
 }
 
-/// Extract the leftmost subdomain from a host string
-/// * "foo.bar.example.com" -> "foo"
-/// * "example.com" -> ""
-/// * "192.168.1.1" -> "" (IP addresses have no subdomain)
-/// * "sub.localhost" -> "sub" (special case for localhost)
 fn extract_subdomain(host: &str) -> String {
-    // Remove port if present
     let host = host.split(':').next().unwrap_or(host);
 
-    // skip raw IPs
     if host.parse::<std::net::IpAddr>().is_ok() {
         return String::new();
     }
 
-    // Split by dots and take the first part
     let parts: Vec<&str> = host.split('.').collect();
 
-    // Special case: localhost with subdomain (e.g., "sub.localhost")
     if parts.len() == 2 && parts[1] == "localhost" {
         return parts[0].to_string();
     }
 
-    // If there are more than 2 parts, the first one is the subdomain
-    // This assumes domain.tld format (e.g., example.com)
     if parts.len() > 2 {
         parts[0].to_string()
     } else {
@@ -47,45 +63,77 @@ fn extract_subdomain(host: &str) -> String {
     }
 }
 
-async fn health_handler() -> impl IntoResponse {
-    "OK"
-}
+async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
+    // Parse the initial request to get the Host header
+    let (host, _initial_data) = parse_http_host(&mut client).await?;
+    let codename = extract_subdomain(&host);
+    // go to my existing pool of tunnels, if it's there, open a new set of steams & proxy over
+    // if not, create a new tunnel, add it to the pool, and return the streams
+    let (info, (mut tunnel_write, mut tunnel_read)) = node.connect(codename).await?;
 
-async fn root_handler(Host(host): Host, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let subdomain = extract_subdomain(&host);
+    debug!(
+        info = ?info, "connection opened"
+    );
 
-    // Access the node from shared state
-    let node = &state.node;
-    let addr = "127.0.0.1:8888".to_string();
-    let info = node
-        .connect_codename(subdomain, addr.clone())
-        .await
-        .unwrap();
+    // Connect through the tunnel
+    // let target_addr = "127.0.0.1:8888".to_string();
+    // let mut tunnel = node
+    //     .connect(subdomain, target_addr.clone())
+    //     .await
+    //     .context("Failed to establish tunnel")?;
 
-    let url = format!("http://{}", addr);
+    // Send the buffered request data through the tunnel
+    // connection.write_all(&initial_data).await?;
 
-    let res = reqwest::get(url).await.unwrap();
-    let body = res.bytes().await.unwrap();
-    body.to_vec()
-}
+    // Now bidirectionally proxy everything
+    let (mut client_read, mut client_write) = client.split();
+    // let (mut tunnel_write, mut tunnel_read) = connection.streams().new_streams().await?;
+    // let (mut tunnel_read, mut tunnel_write) = tunnel.split();
 
-/// Create and configure the HTTP server
-pub async fn serve(node: Node, port: u16) -> Result<()> {
-    info!("HTTP server starting");
-    let state = Arc::new(AppState { node });
+    let client_to_tunnel = async { tokio::io::copy(&mut client_read, &mut tunnel_write).await };
+    let tunnel_to_client = async { tokio::io::copy(&mut tunnel_read, &mut client_write).await };
 
-    let app = Router::new()
-        .route("/", get(root_handler))
-        .route("/health", get(health_handler))
-        .with_state(state);
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("HTTP server listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // Run both directions concurrently
+    tokio::select! {
+        result = client_to_tunnel => {
+            if let Err(e) = result {
+                debug!("Client to tunnel copy ended: {}", e);
+            }
+        }
+        result = tunnel_to_client => {
+            if let Err(e) = result {
+                debug!("Tunnel to client copy ended: {}", e);
+            }
+        }
+    }
 
     Ok(())
+}
+
+pub async fn serve(node: Node, port: u16) -> Result<()> {
+    info!("HTTP proxy server starting");
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await?;
+    info!("HTTP proxy listening on {}", addr);
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer_addr)) => {
+                debug!("New connection from {}", peer_addr);
+                let node = node.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(stream, node).await {
+                        warn!("Connection handling error: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!("Failed to accept connection: {}", e);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

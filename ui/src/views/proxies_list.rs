@@ -150,7 +150,7 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
                     },
                 }
             }
-            Subhead { text: "{proxy.addr}" }
+            Subhead { text: "{proxy.host}:{proxy.port}" }
             // p {
             //     class: "text-sm break-all max-w-2/3 mt-1",
             //     "{proxy_2.ticket()}"

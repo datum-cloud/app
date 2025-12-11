@@ -1,7 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use iroh::EndpointId;
-use iroh_tickets::{Ticket, endpoint::EndpointTicket};
+use iroh_tickets::{ParseError, Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -117,8 +117,8 @@ pub struct Selector {
 pub struct ConnectionInfo {
     pub id: Uuid,
     pub codename: String,
-    pub addr: String,
-    pub ticket: Option<EndpointTicket>,
+    pub host: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,18 +132,19 @@ pub struct ListnerInfo {
 pub struct TcpProxy {
     pub id: Uuid,
     pub codename: String,
-    pub addr: String,
+    pub host: String,
+    pub port: u16,
 }
 
 impl TcpProxy {
-    pub fn new(port: String) -> Self {
+    pub fn new(host: String, port: u16) -> Self {
         let id = Uuid::new_v4();
         let codename = generate_codename(id);
-        let port = port;
         TcpProxy {
             id,
             codename,
-            addr: port,
+            host,
+            port,
         }
     }
 
@@ -151,7 +152,8 @@ impl TcpProxy {
         TcpProxyTicket {
             id: self.id,
             endpoint,
-            port: self.addr.clone(),
+            host: self.host.clone(),
+            port: self.port,
         }
     }
 }
@@ -160,7 +162,16 @@ impl TcpProxy {
 pub struct TcpProxyTicket {
     pub id: Uuid,
     pub endpoint: EndpointId,
-    pub port: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl FromStr for TcpProxyTicket {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        iroh_tickets::Ticket::deserialize(s)
+    }
 }
 
 impl Ticket for TcpProxyTicket {
@@ -176,7 +187,7 @@ impl Ticket for TcpProxyTicket {
     }
 }
 
-fn generate_codename(id: Uuid) -> String {
+pub(crate) fn generate_codename(id: Uuid) -> String {
     const ADJECTIVES: &[&str] = &[
         "amber", "bold", "calm", "dark", "eager", "fair", "gentle", "happy", "icy", "jolly",
         "kind", "light", "merry", "noble", "proud", "quiet", "rapid", "smart", "tall", "warm",
@@ -253,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_tcp_proxy_has_codename() {
-        let proxy = TcpProxy::new("127.0.0.1:8080");
+        let proxy = TcpProxy::new("127.0.0.1".to_string(), 8080);
         let codename = &proxy.codename;
 
         let parts: Vec<&str> = codename.split('-').collect();

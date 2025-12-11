@@ -1,23 +1,26 @@
 use anyhow::anyhow;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
-use iroh_n0des::Client;
+use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
-use n0_error::{Result, StdResultExt};
+use n0_error::{Result, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
 use n0_future::try_join_all;
+use quinn::{RecvStream, SendStream};
 use std::fmt::Debug;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::str::FromStr;
+use std::sync::Arc;
 use std::vec;
-use std::{net::ToSocketAddrs, sync::Arc};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, trace};
 use uuid::Uuid;
 
 use iroh_proxy_utils::http_connect::{
-    AuthHandler, HttpConnectEntranceHandle, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN,
+    AuthHandler, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN, TunnelClientStreams,
 };
 
 use crate::datum_cloud::DatumCloudClient;
-use crate::state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket};
+use crate::state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket, generate_codename};
 use crate::{Repo, auth::Auth, config::Config};
 
 #[derive(Debug, Clone)]
@@ -62,31 +65,80 @@ impl Node {
         inner.unlisten(proxy).await
     }
 
-    pub async fn connect_codename(
-        &self,
-        codename: String,
-        listen_addr: String,
-    ) -> Result<ConnectionInfo> {
-        let mut inner = self.inner.lock().await;
-        if let Some(conn) = inner
-            .edge_connections
-            .iter()
-            .find(|c| c.codename == codename)
-        {
-            return Ok(conn.info());
-        }
-        println!("need to connect");
-        inner.connect_codename(codename, listen_addr).await
-    }
-
     pub async fn connect(
         &self,
         codename: String,
-        addrs: String,
-        ticket: Option<EndpointTicket>,
-    ) -> Result<ConnectionInfo> {
+    ) -> Result<(ConnectionInfo, (SendStream, RecvStream))> {
         let mut inner = self.inner.lock().await;
-        inner.connect(codename, addrs, ticket).await
+        // are we already connected?
+        if let Some(conn) = inner
+            .edge_connections
+            .iter()
+            .find(|conn| &conn.codename == &codename)
+        {
+            let info = conn.info();
+            let streams = conn.streams().new_streams().await?;
+            return Ok((info, streams));
+        }
+
+        // resolve codename to a ticket via n0des & build a tunnel
+        let ticket = inner
+            .n0des
+            .fetch_ticket::<TcpProxyTicket>(codename.clone())
+            .await
+            .std_context("fetching n0des ticket")?
+            .map(|ticket| ticket.ticket);
+
+        let Some(ticket) = ticket else {
+            return Err(n0_error::anyerr!("codename not found"));
+        };
+
+        let conn = inner.connect(codename, ticket).await?;
+        let info = conn.info();
+        let streams = conn.streams().new_streams().await?;
+        Ok((info, streams))
+    }
+
+    pub async fn connect_ticket(
+        &self,
+        ticket: TcpProxyTicket,
+    ) -> Result<(ConnectionInfo, (SendStream, RecvStream))> {
+        let codename = generate_codename(ticket.id);
+        let mut inner = self.inner.lock().await;
+        let conn = inner.connect(codename, ticket).await?;
+        let info = conn.info();
+        let streams = conn.streams().new_streams().await?;
+        Ok((info, streams))
+    }
+
+    pub async fn wrap_connection_tcp(
+        &self,
+        codename: Option<String>,
+        ticket: Option<TcpProxyTicket>,
+        listen: &str,
+    ) -> Result<JoinHandle<()>> {
+        let addr = SocketAddr::from_str(listen).std_context("invalid socket address")?;
+        let mut inner = self.inner.lock().await;
+        let (codename, ticket) = match (codename, ticket) {
+            (Some(codename), None) => {
+                let ticket = inner
+                    .n0des
+                    .fetch_ticket::<TcpProxyTicket>(codename.clone())
+                    .await
+                    .std_context("fetching n0des ticket")?
+                    .map(|ticket| ticket.ticket)
+                    .ok_or(anyerr!("ticket not found"))?;
+                (codename, ticket)
+            }
+            (None, Some(ticket)) => {
+                let codename = generate_codename(ticket.id);
+                (codename, ticket)
+            }
+            (_, _) => return Err(anyerr!("invalid arguments")),
+        };
+
+        let conn = inner.connect(codename, ticket).await?;
+        conn.streams().wrap_tcp(vec![addr]).await
     }
 
     pub async fn metrics(&self) -> Result<tokio::sync::broadcast::Receiver<Metrics>> {
@@ -164,15 +216,17 @@ impl NodeInner {
         self.endpoint.online().await;
 
         info!("creating proxy for address {}", addr.clone());
-        let proxy = TcpProxy::new(addr);
+        let (host, port) = parse_host_port(&addr)?;
+        let proxy = TcpProxy::new(host, port);
 
-        // TODO - validate we don't already have a listener for that port
+        // TODO - validate we don't already have a listener for this host/port combo
 
         let listener =
             open_and_publish_tcp_proxy_listeners(&self.endpoint, &self.auth, &proxy, &self.n0des)
                 .await?;
 
         self.tcp_listeners.push(listener);
+        state.tcp_proxies.push(proxy);
         self.repo.write_state(&state).await?;
 
         Ok(())
@@ -194,78 +248,70 @@ impl NodeInner {
         self.edge_connections.iter().map(|l| l.info()).collect()
     }
 
-    pub async fn connect_codename(
-        &mut self,
-        codename: String,
-        addr: String,
-    ) -> Result<ConnectionInfo> {
-        let res = self
-            .edge_connections
-            .iter()
-            .find(|conn| conn.codename == codename);
-        if let Some(res) = res {
-            return Ok(res.info());
-        }
+    // async fn connect_codename(&mut self, codename: String) -> Result<&Connection> {
+    //     let res = self
+    //         .edge_connections
+    //         .iter()
+    //         .find(|conn| conn.codename == codename);
 
-        println!("getting ticket");
-        info!("getting ticket");
-        let ticket = self
-            .n0des
-            .fetch_ticket::<TcpProxyTicket>(codename.clone())
-            .await
-            .std_context("fetching n0des ticket")?;
-        let Some(ticket) = ticket else {
-            let err = n0_error::AnyError::from_anyhow(anyhow!("codename not found"));
-            return Err(err);
-        };
-        info!("have ticket {:?}", ticket);
+    //     if let Some(conn) = res {
+    //         return Ok(conn);
+    //     }
 
-        let ticket_addr = EndpointAddr::new(ticket.ticket.endpoint);
-        let ticket = EndpointTicket::new(ticket_addr);
+    //     println!("getting ticket");
+    //     info!("getting ticket");
+    //     let ticket = self
+    //         .n0des
+    //         .fetch_ticket::<TcpProxyTicket>(codename.clone())
+    //         .await
+    //         .std_context("fetching n0des ticket")?;
 
-        self.connect(codename, addr, Some(ticket)).await
-    }
+    //     let Some(ticket) = ticket else {
+    //         let err = n0_error::AnyError::from_anyhow(anyhow!("codename not found"));
+    //         return Err(err);
+    //     };
+    //     info!("have ticket {:?}", ticket);
+
+    //     self.connect(codename, ticket.ticket).await
+    // }
 
     pub async fn connect(
         &mut self,
         codename: String,
-        addrs: String,
-        ticket: Option<EndpointTicket>,
-    ) -> Result<ConnectionInfo> {
-        let addr_string = addrs.clone();
-        let addrs = addrs
-            .to_socket_addrs()
-            .std_context(format!("invalid host string {}", addrs))?;
-
-        let endpoint = self.endpoint.clone();
-        let handle = HttpConnectEntranceHandle::connect(endpoint, addrs).await?;
+        ticket: TcpProxyTicket,
+    ) -> Result<&Connection> {
+        let streams = TunnelClientStreams::new(
+            &self.endpoint,
+            ticket.endpoint,
+            ticket.host.clone(),
+            ticket.port,
+        )
+        .await?;
+        // let handle = HttpConnectClientHandle::connect(endpoint, addrs).await?;
         let conn = Connection {
-            id: Uuid::new_v4(),
+            id: ticket.id,
             codename,
-            addr: addr_string,
-            target: ticket,
-            _handle: handle,
+            host: ticket.host.clone(),
+            port: ticket.port,
+            streams,
         };
-        let info = conn.info();
         self.edge_connections.push(conn);
-        Ok(info)
+        let conn = self.edge_connections.last().expect("just added");
+        Ok(conn)
     }
 
     pub async fn disconnect(&mut self, conn: &ConnectionInfo) -> anyhow::Result<()> {
         let mut found = false;
         debug!("disconnect tcp. id: {:?}", conn.id);
-        self.edge_connections.retain(|h| {
-            if h.id == conn.id {
-                h._handle.close();
-                found = true;
-                false
-            } else {
-                true
-            }
-        });
+        let index = self.edge_connections.iter().position(|c| c.id == conn.id);
+        if let Some(index) = index {
+            let conn = self.edge_connections.remove(index);
+            conn.streams.close();
+            found = true;
+        }
         match found {
             true => Ok(()),
-            false => Err(anyhow!("TCP connection not found")),
+            false => Err(anyhow!("Tunnel connection not found")),
         }
     }
 }
@@ -322,28 +368,30 @@ pub struct Metrics {
 
 #[derive(Debug)]
 pub struct Connection {
+    /// the id of the tunnel listener
     id: Uuid,
+    /// the codename of the tunne, a three-word-combo derived from the id
     codename: String,
-    addr: String,
-    // TODO - currently this ticket isn't being used. It should be pushed
-    // into the HttpConnectEntranceHandle as a param that always directs
-    // the tunnel at the same endpoint
-    target: Option<EndpointTicket>,
-    _handle: HttpConnectEntranceHandle,
+    /// the host on the exit of the tunnel
+    host: String,
+    /// port on on the exit of the tunnel
+    port: u16,
+    /// The actual streams of the connection
+    streams: TunnelClientStreams,
 }
 
 impl Connection {
-    fn ticket(&self) -> &Option<EndpointTicket> {
-        &self.target
-    }
-
     fn info(&self) -> ConnectionInfo {
         ConnectionInfo {
             id: self.id,
             codename: self.codename.clone(),
-            addr: self.addr.clone(),
-            ticket: self.ticket().clone(),
+            host: self.host.clone(),
+            port: self.port,
         }
+    }
+
+    pub(crate) fn streams(&self) -> &TunnelClientStreams {
+        &self.streams
     }
 }
 
@@ -384,4 +432,16 @@ async fn create_endpoint(
     }
     let endpoint = builder.bind().await?;
     Ok(endpoint)
+}
+
+fn parse_host_port(s: &str) -> Result<(String, u16)> {
+    // ToSocketAddrs handles all the parsing for us
+    let mut addrs = s.to_socket_addrs()?;
+
+    // Get the first resolved address
+    let addr = addrs.next().ok_or(anyerr!("Failed to resolve address"))?;
+
+    // Extract host and port
+    // Note: this gives us the resolved IP, not the original hostname
+    Ok((addr.ip().to_string(), addr.port()))
 }

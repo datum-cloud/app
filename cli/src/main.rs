@@ -1,9 +1,10 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use lib::{EndpointTicket, Node, Repo};
+use lib::{EndpointTicket, Node, Repo, TcpProxyTicket};
 use std::{
     net::{SocketAddrV4, SocketAddrV6},
     path::PathBuf,
+    str::FromStr,
 };
 
 /// Datum Connect Agent
@@ -41,8 +42,13 @@ pub struct ConnectArgs {
     #[clap(long)]
     pub addr: String,
 
+    /// three-word-name for a tunnel to connect to.
     #[clap(long)]
-    pub ticket: Option<EndpointTicket>,
+    pub codename: Option<String>,
+
+    /// provide a ticket to drive connection directly.
+    #[clap(long)]
+    pub ticket: Option<String>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -108,11 +114,18 @@ async fn main() -> anyhow::Result<()> {
             println!()
         }
         Commands::Connect(args) => {
-            let ConnectArgs { addr, ticket, .. } = args;
+            let ConnectArgs {
+                addr,
+                codename,
+                ticket,
+                ..
+            } = args;
             let connect_key = repo.connect_key().await?;
             let node = Node::new(connect_key, repo).await?;
+            let ticket = ticket.map(|s| TcpProxyTicket::from_str(&s).unwrap());
 
-            node.connect("connection".to_string(), addr, ticket)
+            let conn = node
+                .wrap_connection_tcp(codename, ticket, &addr)
                 .await
                 .unwrap();
             println!("{}", node.endpoint_id());
