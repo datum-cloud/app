@@ -1,20 +1,22 @@
-// The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
-// need dioxus
 use dioxus::prelude::*;
 
-use state::AppState;
-use views::{
-    CreateDomain, CreateProxy, DomainsList, JoinProxy, Login, Navbar, Signup, TempProxies,
+use crate::components::{Head, Splash};
+use crate::state::AppState;
+use crate::views::{CreateDomain, CreateProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
+
+#[cfg(feature = "desktop")]
+use dioxus_desktop::{
+    trayicon::{
+        menu::{Menu, MenuItem, PredefinedMenuItem},
+        Icon, TrayIcon, TrayIconBuilder,
+    },
+    use_tray_menu_event_handler, use_window,
 };
 
-use crate::components::{Head, Splash};
-
-/// Define a components module that contains all shared components for our app.
 mod components;
-/// Define a views module that contains the UI for all Layouts and Routes for our app.
-mod views;
-// App-wide state
 mod state;
+mod util;
+mod views;
 
 /// The Route enum is used to define the structure of internal routes in our app. All route enums need to derive
 /// the [`Routable`] trait, which provides the necessary methods for the router to work.
@@ -39,31 +41,42 @@ enum Route {
         CreateProxy {},
         #[route("/proxy/join")]
         JoinProxy {},
-        // The route attribute defines the URL pattern that a specific route matches. If that pattern matches the URL,
-        // the component for that route will be rendered. The component name that is rendered defaults to the variant name.
-        #[route("/domains")]
-        DomainsList {},
-        #[route("/domain/create")]
-        CreateDomain {},
 }
 
 fn main() {
-    // The `launch` function is the main entry point for a dioxus app. It takes a component and renders it with the platform feature
-    // you have enabled
+    dotenv::dotenv().ok();
+
+    #[cfg(feature = "desktop")]
+    let _tray_icon = init_menu_bar().unwrap();
+
     dioxus::launch(App);
 }
 
-/// App is the main component of our app. Components are the building blocks of dioxus apps. Each component is a function
-/// that takes some props and returns an Element. In this case, App takes no props because it is the root of our app.
-///
-/// Components should be annotated with `#[component]` to support props, better error messages, and autocomplete
 #[component]
 fn App() -> Element {
+    let window = use_window();
+
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
         provide_context(state);
         app_state_ready.set(true);
+    });
+
+    #[cfg(feature = "desktop")]
+    use_tray_menu_event_handler(move |event| {
+        // The event ID corresponds to the menu item text
+        match event.id.0.as_str() {
+            "Show Window" => {
+                use_window().set_visible(true);
+            }
+            "Quit" => {
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("Unknown menu event: {}", event.id.0);
+            }
+        }
     });
 
     if !app_state_ready() {
@@ -73,12 +86,53 @@ fn App() -> Element {
         };
     }
 
-    // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {
         Head {  }
-
-        // // The router component renders the route enum we defined above. It will handle synchronization of the URL and render
-        // // the layouts and components for the active route.
+        button {
+            onclick: move |_| {
+                window.set_visible(false);
+            },
+            "hide"
+        }
         Router::<Route> {}
     }
+}
+
+#[cfg(feature = "desktop")]
+fn init_menu_bar() -> anyhow::Result<TrayIcon> {
+    // Initialize the tray menu
+    let tray_menu = Menu::new();
+
+    // Create menu items with IDs for event handling
+    let show_item = MenuItem::new("Show Window", true, None);
+    let separator = PredefinedMenuItem::separator();
+    let quit_item = MenuItem::new("Quit", true, None);
+
+    // Build the menu structure
+    tray_menu
+        .append_items(&[&show_item, &separator, &quit_item])
+        .expect("Failed to build tray menu");
+
+    let icon = load_icon_from_file("assets/images/logo-datum-light.png");
+
+    // Build the tray icon
+    TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("Dioxus Tray App")
+        .with_icon(icon)
+        .build()
+        .context("building tray icon")
+}
+
+/// Load an icon from a PNG file
+#[allow(dead_code)]
+fn load_icon_from_file(path: &str) -> Icon {
+    let image = image::open(path)
+        .expect("Failed to open icon file")
+        .to_rgba8();
+
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+
+    Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
 }

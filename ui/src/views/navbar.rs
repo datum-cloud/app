@@ -22,11 +22,6 @@ pub fn Navbar() -> Element {
                     to: Route::TempProxies {  },
                     "Proxies"
                 }
-                Link {
-                    class: "hover:text-gray-700 text-lg cursor-pointer",
-                    to: Route::DomainsList {  },
-                    "Domains"
-                }
             },
             div {
                 class: "flex-1 h-full",

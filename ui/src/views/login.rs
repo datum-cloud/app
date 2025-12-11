@@ -2,10 +2,6 @@ use dioxus::prelude::*;
 
 use crate::Route;
 
-/// The Blog page component that will be rendered when the current route is `[Route::Blog]`
-///
-/// The component takes a `id` prop of type `i32` from the route enum. Whenever the id changes, the component function will be
-/// re-run and the rendered HTML will be updated.
 #[component]
 pub fn Login() -> Element {
     rsx! {
@@ -13,8 +9,8 @@ pub fn Login() -> Element {
             id: "create-domain",
             h1 { "TODO: login" }
             Link {
-                to: Route::CreateDomain {},
-                "Create Domain"
+                to: Route::TempProxies {  },
+                "Proxies"
             }
         }
     }

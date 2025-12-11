@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+dotenv.workspace = true
 lib.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true

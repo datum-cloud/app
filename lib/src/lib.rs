@@ -1,10 +1,13 @@
 mod auth;
 mod config;
-pub mod domains;
+mod datum_cloud;
 mod encoding;
+pub mod http_server;
 mod node;
 mod repo;
+mod state;
 
 pub use iroh_tickets::endpoint::EndpointTicket;
-pub use node::{ConnectionInfo, ListnerInfo, Node};
+pub use node::{Metrics, Node};
 pub use repo::Repo;
+pub use state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket};

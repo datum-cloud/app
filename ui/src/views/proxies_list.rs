@@ -1,42 +1,72 @@
+use chrono::Local;
 use dioxus::prelude::*;
-use lib::{ConnectionInfo, ListnerInfo};
+use iroh_metrics::encoding::Update;
+use lib::{ConnectionInfo, ListnerInfo, Metrics, TcpProxy};
 
 use crate::{
-    components::{Button, CloseButton, Subhead},
+    components::{Button, BwTsChart, ChartData, CloseButton, Subhead},
     state::AppState,
     Route,
 };
 
 #[component]
 pub fn TempProxies() -> Element {
-    let mut connections = use_signal(|| Vec::new());
+    // let mut connections = use_signal(|| Vec::new());
     let mut listeners = use_signal(|| Vec::new());
+    let metrics = use_signal(|| vec![ChartData::default()]);
+    let mut metrics_2 = metrics.clone();
     use_future(move || async move {
         let state = consume_context::<AppState>();
-        let node = state.node();
-        let conns = node.connections().await;
-        connections.set(conns);
-        let lstnrs = node.listeners().await;
+        let lstnrs = state.node().proxies().await.unwrap();
         listeners.set(lstnrs);
     });
 
-    rsx! {
-        div {
-            class: "my-5",
-            div {
-                class: "flex",
-                Subhead { text: "Connections" }
-                div { class: "flex-grow" }
-                Button {
-                    to: Some(Route::JoinProxy {  }),
-                    text: "Join Proxy"
-                }
-            }
-            for conn in connections() {
-                ProxyConnectionItem { conn, connections }
-            }
+    use_future(move || {
+        let state = consume_context::<AppState>();
+        // let node = state.node();
+        async move {
+            // let conns = node.connections().await;
+            // connections.set(conns);
 
+            let mut metrics_sub = state.node().metrics().await.unwrap();
+            let mut prior = Metrics::default();
+            while let Ok(metrics) = metrics_sub.recv().await {
+                let mut update = metrics_2();
+                update.push(ChartData {
+                    ts: Local::now(),
+                    send: metrics.send - prior.send,
+                    recv: metrics.recv - prior.recv,
+                });
+
+                if update.len() > 120 {
+                    update.pop();
+                }
+
+                metrics_2.set(update);
+                prior = metrics;
+            }
         }
+    });
+
+    rsx! {
+        BwTsChart{ data: metrics_2(), }
+        // div {
+        //     class: "my-5",
+        //     div {
+        //         class: "flex",
+        //         Subhead { text: "Proxies" }
+        //         div { class: "flex-grow" }
+        //         Button {
+        //             to: Some(Route::JoinProxy {  }),
+        //             text: "Join Proxy"
+        //         }
+        //     }
+        //     for conn in connections() {
+        //         ProxyConnectionItem { conn, connections }
+        //     }
+
+        // }
+
         div {
             class: "my-5",
             div {
@@ -48,83 +78,83 @@ pub fn TempProxies() -> Element {
                     text: "Create Proxy"
                 }
             }
-            for lstn in listeners() {
-                ProxyListenerItem { lstn, listeners }
+            for proxy in listeners() {
+                ProxyListenerItem { proxy, listeners }
             }
         }
     }
 }
 
+// #[component]
+// fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionInfo>>) -> Element {
+//     let conn_2 = conn.clone();
+//     rsx! {
+//         div {
+//             div {
+//                 class: "flex mt-8",
+//                 h3 {
+//                     class: "text-xl flex-grow",
+//                     "{conn.codename}"
+//                 }
+//                 CloseButton{
+//                     onclick: move |_| {
+//                         let conn_2 = proxy_2.clone();
+//                         async move {
+//                             let state = consume_context::<AppState>();
+//                             let node = state.node();
+//                             // TODO(b5) - remove unwrap
+//                             // node.disconnect(&conn_2).await.unwrap();
+
+//                             // refresh list of connections
+//                             // let conns = node.connections().await;
+//                             // connections.set(conns);
+//                         }
+//                     },
+//                 }
+//             }
+//             Subhead { text: "{conn_2.addr}" }
+//             // if let Some(ticket) = &proxy_2.ticket() {
+//             //     p {
+//             //         class: "text-sm break-all max-w-2/3 mt-1",
+//             //         "{ticket}"
+//             //     }
+//             // }
+//         }
+//     }
+// }
+
 #[component]
-fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionInfo>>) -> Element {
-    let conn_2 = conn.clone();
+fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Element {
+    let proxy_2 = proxy.clone();
     rsx! {
         div {
             div {
                 class: "flex mt-8",
                 h3 {
                     class: "text-xl flex-grow",
-                    "{conn.label}"
+                    "{proxy.codename}"
                 }
                 CloseButton{
                     onclick: move |_| {
-                        let conn_2 = conn.clone();
+                        let proxy_3 = proxy_2.clone();
                         async move {
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.disconnect(&conn_2).await.unwrap();
-
-                            // refresh list of connections
-                            let conns = node.connections().await;
-                            connections.set(conns);
-                        }
-                    },
-                }
-            }
-            Subhead { text: "{conn_2.addr}" }
-            if let Some(ticket) = &conn_2.ticket {
-                p {
-                    class: "text-sm break-all max-w-2/3 mt-1",
-                    "{ticket}"
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn ProxyListenerItem(lstn: ListnerInfo, listeners: Signal<Vec<ListnerInfo>>) -> Element {
-    let lstn_2 = lstn.clone();
-    rsx! {
-        div {
-            div {
-                class: "flex mt-8",
-                h3 {
-                    class: "text-xl flex-grow",
-                    "{lstn.label}"
-                }
-                CloseButton{
-                    onclick: move |_| {
-                        let lstn_2 = lstn.clone();
-                        async move {
-                            let state = consume_context::<AppState>();
-                            let node = state.node();
-                            // TODO(b5) - remove unwrap
-                            node.unlisten(&lstn_2).await.unwrap();
+                            node.stop_listening(&proxy_3).await.unwrap();
 
                             // refresh list of listeners
-                            let lstns = node.listeners().await;
+                            let lstns = node.proxies().await.unwrap();
                             listeners.set(lstns);
                         }
                     },
                 }
             }
-            Subhead { text: "<address goes here>" }
-            p {
-                class: "text-sm break-all max-w-2/3 mt-1",
-                "{lstn_2.ticket}"
-            }
+            Subhead { text: "{proxy.host}:{proxy.port}" }
+            // p {
+            //     class: "text-sm break-all max-w-2/3 mt-1",
+            //     "{proxy_2.ticket()}"
+            // }
         }
     }
 }

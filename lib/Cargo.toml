@@ -5,27 +5,38 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 data-encoding.workspace = true
 dirs-next.workspace = true
 hex.workspace = true
+hyper.workspace = true
 iroh-base.workspace = true
 iroh-proxy-utils.workspace = true
 iroh-tickets.workspace = true
 iroh.workspace = true
 log.workspace = true
 n0-error.workspace = true
+n0-future.workspace = true
 postcard.workspace = true
 quinn.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_yml.workspace = true
 snafu.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 url.workspace = true
 
+iroh-n0des = { version = "0.8", features = ["tickets"] }
+
 [dev-dependencies]
 serde_json = "1.0.145"
+
+[features]
+default = ["server"]
+server = []

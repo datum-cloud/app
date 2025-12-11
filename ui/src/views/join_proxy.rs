@@ -48,14 +48,14 @@ pub fn JoinProxy() -> Element {
                 class: "cursor-pointer",
                 onclick: move |_| async move {
                     let state = consume_context::<AppState>();
-                    let ticket = match EndpointTicket::from_str(&ticket_str()) {
-                        Ok(ticket) => ticket,
-                        Err(err) => {
-                            validation_error.set(format!("Invalid ticket: {}", err));
-                            return;
-                        }
-                    };
-                    state.clone().node().connect(label(), local_address(), Some(ticket)).await.unwrap();
+                    // let ticket = match EndpointTicket::from_str(&ticket_str()) {
+                    //     Ok(ticket) => ticket,
+                    //     Err(err) => {
+                    //         validation_error.set(format!("Invalid ticket: {}", err));
+                    //         return;
+                    //     }
+                    // };
+                    state.clone().node().connect(label()).await.unwrap();
                 },
                 "Join"
             }
