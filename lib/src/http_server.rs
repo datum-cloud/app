@@ -65,15 +65,14 @@ fn extract_subdomain(host: &str) -> String {
 
 async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
     // Parse the initial request to get the Host header
-    let (host, _initial_data) = parse_http_host(&mut client).await?;
+    let (host, initial_data) = parse_http_host(&mut client).await?;
     let codename = extract_subdomain(&host);
     // go to my existing pool of tunnels, if it's there, open a new set of steams & proxy over
     // if not, create a new tunnel, add it to the pool, and return the streams
     let (info, (mut tunnel_write, mut tunnel_read)) = node.connect(codename).await?;
 
-    debug!(
-        info = ?info, "connection opened"
-    );
+    info!(info = ?info, "connection opened");
+    info!("intial data {}", String::from_utf8_lossy(&initial_data));
 
     // Connect through the tunnel
     // let target_addr = "127.0.0.1:8888".to_string();
@@ -84,14 +83,16 @@ async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
 
     // Send the buffered request data through the tunnel
     // connection.write_all(&initial_data).await?;
+    tunnel_write.write_all(&initial_data).await?;
 
-    // Now bidirectionally proxy everything
     let (mut client_read, mut client_write) = client.split();
     // let (mut tunnel_write, mut tunnel_read) = connection.streams().new_streams().await?;
     // let (mut tunnel_read, mut tunnel_write) = tunnel.split();
 
     let client_to_tunnel = async { tokio::io::copy(&mut client_read, &mut tunnel_write).await };
     let tunnel_to_client = async { tokio::io::copy(&mut tunnel_read, &mut client_write).await };
+
+    info!("forwarding");
 
     // Run both directions concurrently
     tokio::select! {
@@ -111,7 +112,10 @@ async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
 }
 
 pub async fn serve(node: Node, port: u16) -> Result<()> {
-    info!("HTTP proxy server starting");
+    info!(
+        endpoint_id = node.endpoint_id(),
+        "HTTP proxy server starting"
+    );
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
