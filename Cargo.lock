@@ -3733,7 +3733,7 @@ dependencies = [
 [[package]]
 name = "iroh-proxy-utils"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=main#3a01ee6e88cfc09e169b9eb976a0c083add514f9"
+source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=main#39710c06d813de53f231a7c4f0471472fb30ec8d"
 dependencies = [
  "anyhow",
  "httparse",
