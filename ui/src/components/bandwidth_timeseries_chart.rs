@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use dioxus::prelude::*;
 
 use crate::util::humanize_bytes;

@@ -1,6 +1,6 @@
 use anyhow::anyhow;
+use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointId, SecretKey};
-use iroh_tickets::endpoint::EndpointTicket;
 use n0_error::{Result, StdResultExt, anyerr};
 use n0_future::task::AbortOnDropHandle;
 use n0_future::try_join_all;
@@ -12,16 +12,14 @@ use std::sync::Arc;
 use std::vec;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
-use iroh_proxy_utils::http_connect::{
-    AuthHandler, HttpConnectListenerHandle, IROH_HTTP_CONNECT_ALPN, TunnelClientStreams,
-};
+use iroh_proxy_utils::http_connect::{IROH_HTTP_CONNECT_ALPN, TunnelClientStreams, TunnelListener};
 
 use crate::datum_cloud::DatumCloudClient;
-use crate::state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket, generate_codename};
-use crate::{Repo, auth::Auth, config::Config};
+use crate::state::{ConnectionInfo, TcpProxy, TcpProxyTicket, generate_codename};
+use crate::{Repo, config::Config};
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -33,12 +31,23 @@ impl Node {
     pub async fn new(secret_key: SecretKey, repo: Repo) -> Result<Self> {
         // TODO(b5) - add auth string
         let inner = NodeInner::new(secret_key, repo).await?;
-        let ep_id = inner.endpoint.id();
+        let endpoint = inner.router.endpoint().clone();
+        let ep_id = endpoint.id();
+        let inner = Arc::new(Mutex::new(inner));
 
-        Ok(Self {
-            id: ep_id,
-            inner: Arc::new(Mutex::new(inner)),
-        })
+        let inner2 = inner.clone();
+        n0_future::task::spawn(async move {
+            // wait for online-ness in a task to avoid blocking app startup.
+            // TODO(b5): we should really show some sort of "offline" indicator
+            // if this doesn't resolve within a short-ish timeframe
+            endpoint.online().await;
+            let inner = inner2.lock().await;
+            if let Err(err) = inner.announce_proxies().await {
+                error!("announcing proxies: {}", err);
+            }
+        });
+
+        Ok(Self { id: ep_id, inner })
     }
 
     pub fn endpoint_id(&self) -> String {
@@ -47,12 +56,8 @@ impl Node {
 
     pub async fn proxies(&self) -> Result<Vec<TcpProxy>> {
         let inner = self.inner.lock().await;
-        let proxies = inner
-            .tcp_listeners
-            .iter()
-            .map(|proxy| proxy.info.clone())
-            .collect();
-        Ok(proxies)
+        let state = inner.repo.load_state().await?;
+        Ok(state.tcp_proxies)
     }
 
     pub async fn start_listening(&self, _label: String, port: String) -> Result<()> {
@@ -150,12 +155,11 @@ impl Node {
 #[derive(Debug)]
 struct NodeInner {
     repo: Repo,
-    endpoint: Endpoint,
+    router: Router,
     n0des: iroh_n0des::Client,
-    auth: Auth,
+    // TODO(b5) - use datum client
+    #[allow(dead_code)]
     datum: DatumCloudClient,
-    /// the main TCP iroh endpoint listener that accepts connections
-    tcp_listeners: Vec<ProxyListener>,
     /// direct connections to another iroh endpoint, skipping the datum network
     edge_connections: Vec<Connection>,
     metrics_events: tokio::sync::broadcast::Sender<Metrics>,
@@ -165,9 +169,11 @@ struct NodeInner {
 impl NodeInner {
     async fn new(secret_key: SecretKey, repo: Repo) -> anyhow::Result<Self> {
         let config = repo.config().await?;
-        let auth = repo.auth().await?;
         let endpoint =
-            create_endpoint(secret_key, &config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
+            build_endpoint(secret_key, &config, vec![IROH_HTTP_CONNECT_ALPN.to_vec()]).await?;
+
+        let auth = repo.auth().await?;
+        let tunnel_listener = TunnelListener::new(auth)?;
 
         let n0des = iroh_n0des::Client::builder(&endpoint)
             .api_secret_from_env()
@@ -177,12 +183,9 @@ impl NodeInner {
             .await
             .std_context("construction n0des client")?;
 
-        let datum = DatumCloudClient::new(None);
-        let tcp_listeners = load_proxies(&endpoint, &repo, &n0des).await?;
-
         let (tx, _) = tokio::sync::broadcast::channel(32);
-        let metrics_events = tx.clone();
         let metrics = endpoint.metrics().clone();
+        let metrics_events = tx.clone();
         let metrics_task = n0_future::task::spawn(async move {
             loop {
                 let recv = metrics.magicsock.recv_data_ipv4.get()
@@ -196,13 +199,16 @@ impl NodeInner {
             }
         });
 
+        let router = Router::builder(endpoint)
+            .accept(IROH_HTTP_CONNECT_ALPN, tunnel_listener)
+            .spawn();
+
+        let datum = DatumCloudClient::new(None);
         let inner = NodeInner {
             repo,
-            auth,
-            endpoint,
+            router,
             datum,
             n0des,
-            tcp_listeners,
             edge_connections: Vec::new(),
             metrics_events,
             _metrics_task: AbortOnDropHandle::new(metrics_task),
@@ -211,9 +217,25 @@ impl NodeInner {
         Ok(inner)
     }
 
+    async fn announce_proxies(&self) -> Result<()> {
+        let endpoint = self.router.endpoint();
+        endpoint.online().await;
+        let endpoint_id = endpoint.id();
+        let state = self.repo.load_state().await?;
+        try_join_all(
+            state
+                .tcp_proxies
+                .iter()
+                .map(|proxy| async { announce_proxy(&self.n0des, endpoint_id, proxy).await }),
+        )
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn listen(&mut self, addr: String) -> Result<()> {
         let mut state = self.repo.load_state().await?;
-        self.endpoint.online().await;
+        self.router.endpoint().online().await;
 
         info!("creating proxy for address {}", addr.clone());
         let (host, port) = parse_host_port(&addr)?;
@@ -221,11 +243,8 @@ impl NodeInner {
 
         // TODO - validate we don't already have a listener for this host/port combo
 
-        let listener =
-            open_and_publish_tcp_proxy_listeners(&self.endpoint, &self.auth, &proxy, &self.n0des)
-                .await?;
+        announce_proxy(&self.n0des, self.router.endpoint().id(), &proxy).await?;
 
-        self.tcp_listeners.push(listener);
         state.tcp_proxies.push(proxy);
         self.repo.write_state(&state).await?;
 
@@ -233,13 +252,8 @@ impl NodeInner {
     }
 
     pub async fn unlisten(&mut self, info: &TcpProxy) -> Result<()> {
-        self.tcp_listeners.retain(|proxy| proxy.info.id != info.id);
         let mut state = self.repo.load_state().await?;
-        state.tcp_proxies = self
-            .tcp_listeners
-            .iter()
-            .map(|proxy| proxy.info.clone())
-            .collect();
+        state.tcp_proxies.retain(|proxy| proxy.id != info.id);
         self.repo.write_state(&state).await?;
         Ok(())
     }
@@ -248,46 +262,18 @@ impl NodeInner {
         self.edge_connections.iter().map(|l| l.info()).collect()
     }
 
-    // async fn connect_codename(&mut self, codename: String) -> Result<&Connection> {
-    //     let res = self
-    //         .edge_connections
-    //         .iter()
-    //         .find(|conn| conn.codename == codename);
-
-    //     if let Some(conn) = res {
-    //         return Ok(conn);
-    //     }
-
-    //     println!("getting ticket");
-    //     info!("getting ticket");
-    //     let ticket = self
-    //         .n0des
-    //         .fetch_ticket::<TcpProxyTicket>(codename.clone())
-    //         .await
-    //         .std_context("fetching n0des ticket")?;
-
-    //     let Some(ticket) = ticket else {
-    //         let err = n0_error::AnyError::from_anyhow(anyhow!("codename not found"));
-    //         return Err(err);
-    //     };
-    //     info!("have ticket {:?}", ticket);
-
-    //     self.connect(codename, ticket.ticket).await
-    // }
-
     pub async fn connect(
         &mut self,
         codename: String,
         ticket: TcpProxyTicket,
     ) -> Result<&Connection> {
         let streams = TunnelClientStreams::new(
-            &self.endpoint,
+            &self.router.endpoint(),
             ticket.endpoint,
             ticket.host.clone(),
             ticket.port,
         )
         .await?;
-        // let handle = HttpConnectClientHandle::connect(endpoint, addrs).await?;
         let conn = Connection {
             id: ticket.id,
             codename,
@@ -316,48 +302,16 @@ impl NodeInner {
     }
 }
 
-#[derive(Debug)]
-pub struct ProxyListener {
-    pub info: TcpProxy,
-    handle: HttpConnectListenerHandle,
-}
-
-async fn load_proxies(
-    endpoint: &Endpoint,
-    repo: &Repo,
+async fn announce_proxy(
     n0des: &iroh_n0des::Client,
-) -> Result<Vec<ProxyListener>> {
-    endpoint.online().await;
-    let auth = repo.auth().await?;
-    let state = repo.load_state().await?;
-    let listeners = try_join_all(state.tcp_proxies.iter().map(|proxy| async {
-        open_and_publish_tcp_proxy_listeners(endpoint, &auth, proxy, n0des).await
-    }))
-    .await?;
-    Ok(listeners)
-}
-
-async fn open_and_publish_tcp_proxy_listeners(
-    endpoint: &Endpoint,
-    auth: &Auth,
+    local_endpoint: EndpointId,
     proxy: &TcpProxy,
-    n0des: &iroh_n0des::Client,
-) -> Result<ProxyListener> {
-    let auth: Arc<Box<dyn AuthHandler>> = Arc::new(Box::new(auth.clone()));
-    let handle = HttpConnectListenerHandle::listen(endpoint.clone(), Some(auth)).await?;
-
-    let ticket = proxy.ticket(endpoint.id());
+) -> Result<()> {
+    let ticket = proxy.ticket(local_endpoint);
     n0des
         .publish_ticket(proxy.codename.clone(), ticket)
         .await
-        .std_context("publishing ticket to n0des")?;
-
-    debug!("published ticket to n0des. codename: {}", proxy.codename);
-
-    Ok(ProxyListener {
-        info: proxy.clone(),
-        handle,
-    })
+        .std_context("publishing ticket to n0des")
 }
 
 #[derive(Debug, Default, Clone)]
@@ -395,30 +349,9 @@ impl Connection {
     }
 }
 
-#[derive(Debug)]
-struct Listener {
-    id: Uuid,
-    label: String,
-    handle: HttpConnectListenerHandle,
-}
-
-impl Listener {
-    fn ticket(&self) -> EndpointTicket {
-        let addr = self.handle.receiving().addr().clone();
-        EndpointTicket::new(addr)
-    }
-
-    fn info(&self) -> ListnerInfo {
-        ListnerInfo {
-            id: self.id,
-            label: self.label.clone(),
-            ticket: self.ticket(),
-        }
-    }
-}
-
-/// Create a new iroh endpoint.
-async fn create_endpoint(
+/// Build a new iroh endpoint, applying all relevant details from Configuration
+/// to the base endpoint setup
+async fn build_endpoint(
     secret_key: SecretKey,
     common: &Config,
     alpns: Vec<Vec<u8>>,

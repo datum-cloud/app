@@ -1,7 +1,8 @@
+use std::collections::VecDeque;
+
 use chrono::Local;
 use dioxus::prelude::*;
-use iroh_metrics::encoding::Update;
-use lib::{ConnectionInfo, ListnerInfo, Metrics, TcpProxy};
+use lib::{Metrics, TcpProxy};
 
 use crate::{
     components::{Button, BwTsChart, ChartData, CloseButton, Subhead},
@@ -13,7 +14,11 @@ use crate::{
 pub fn TempProxies() -> Element {
     // let mut connections = use_signal(|| Vec::new());
     let mut listeners = use_signal(|| Vec::new());
-    let metrics = use_signal(|| vec![ChartData::default()]);
+    let metrics = use_signal(|| {
+        let mut metrics = VecDeque::new();
+        metrics.push_back(ChartData::default());
+        metrics
+    });
     let mut metrics_2 = metrics.clone();
     use_future(move || async move {
         let state = consume_context::<AppState>();
@@ -23,23 +28,19 @@ pub fn TempProxies() -> Element {
 
     use_future(move || {
         let state = consume_context::<AppState>();
-        // let node = state.node();
         async move {
-            // let conns = node.connections().await;
-            // connections.set(conns);
-
             let mut metrics_sub = state.node().metrics().await.unwrap();
             let mut prior = Metrics::default();
             while let Ok(metrics) = metrics_sub.recv().await {
                 let mut update = metrics_2();
-                update.push(ChartData {
+                update.push_back(ChartData {
                     ts: Local::now(),
                     send: metrics.send - prior.send,
                     recv: metrics.recv - prior.recv,
                 });
 
                 if update.len() > 120 {
-                    update.pop();
+                    update.pop_front();
                 }
 
                 metrics_2.set(update);
@@ -49,7 +50,7 @@ pub fn TempProxies() -> Element {
     });
 
     rsx! {
-        BwTsChart{ data: metrics_2(), }
+        BwTsChart{ data: metrics_2().into(), }
         // div {
         //     class: "my-5",
         //     div {
@@ -64,7 +65,6 @@ pub fn TempProxies() -> Element {
         //     for conn in connections() {
         //         ProxyConnectionItem { conn, connections }
         //     }
-
         // }
 
         div {

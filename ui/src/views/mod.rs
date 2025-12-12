@@ -8,7 +8,6 @@
 //! The [`Navbar`] component will be rendered on all pages of our app since every page is under the layout. The layout defines
 //! a common wrapper around all child routes.
 
-mod create_domain;
 mod create_proxy;
 mod join_proxy;
 mod login;
@@ -16,7 +15,6 @@ mod navbar;
 mod proxies_list;
 mod signup;
 
-pub use create_domain::CreateDomain;
 pub use create_proxy::CreateProxy;
 pub use join_proxy::JoinProxy;
 pub use login::Login;

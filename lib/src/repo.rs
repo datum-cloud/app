@@ -14,7 +14,7 @@ impl Repo {
     const CONNECT_KEY_FILE: &str = "connect_key";
     const LISTEN_KEY_FILE: &str = "listen_key";
     const CONFIG_FILE: &str = "config.yml";
-    const OAUTH_TOKEN_FILE: &str = "oauth_token";
+    // const OAUTH_TOKEN_FILE: &str = "oauth_token";
     const AUTH_FILE: &str = "auth.yml";
     const STATE_FILE: &str = "state.yml";
 
