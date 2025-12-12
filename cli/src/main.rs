@@ -1,6 +1,6 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use lib::{EndpointTicket, Node, Repo, TcpProxyTicket};
+use lib::{Node, Repo, TcpProxyTicket};
 use std::{
     net::{SocketAddrV4, SocketAddrV6},
     path::PathBuf,
@@ -124,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             let node = Node::new(connect_key, repo).await?;
             let ticket = ticket.map(|s| TcpProxyTicket::from_str(&s).unwrap());
 
-            let conn = node
+            let _conn = node
                 .wrap_connection_tcp(codename, ticket, &addr)
                 .await
                 .unwrap();
