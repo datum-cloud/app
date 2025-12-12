@@ -134,7 +134,7 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
     rsx! {
         div {
             div {
-                class: "flex mt-8",
+                class: "flex mt-8 gap-10",
                 h3 {
                     class: "text-xl flex-grow",
                     "{proxy.codename}"
@@ -155,20 +155,32 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
                     },
                 }
             }
-            Subhead { text: "{proxy.host}:{proxy.port}" }
+            div {
+                class: "flex gap-10",
+                Subhead { text: "{proxy.host}:{proxy.port}" }
+                Link {
+                    class: "text-sm block mt-2 pl-20 flex-grow cursor-pointer text-gray-600/80",
+                    to: Route::EditProxy { id: proxy.id.to_string() },
+                    "Edit"
+                }
+            }
 
-            // Clickable link to open in browser
-            button {
-                class: "text-blue-400 hover:text-blue-300 underline text-sm mt-2 cursor-pointer hover:text-underline",
-                onclick: move |_| {
-                    let url = proxy_url.clone();
-                    spawn(async move {
-                        if let Err(e) = open::that(&url) {
-                            tracing::error!("Failed to open URL in browser: {}", e);
-                        }
-                    });
-                },
-                "{proxy_url}"
+            div {
+                class: "flex gap-2 mt-2",
+
+                // Clickable link to open in browser
+                button {
+                    class: "text-blue-400 hover:text-blue-300 underline text-sm cursor-pointer",
+                    onclick: move |_| {
+                        let url = proxy_url.clone();
+                        spawn(async move {
+                            if let Err(e) = open::that(&url) {
+                                tracing::error!("Failed to open URL in browser: {}", e);
+                            }
+                        });
+                    },
+                    "{proxy_url}"
+                }
             }
 
             // p {

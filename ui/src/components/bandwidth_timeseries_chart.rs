@@ -122,7 +122,7 @@ pub fn BwTsChart(props: BwTsChartProps) -> Element {
                         class: "flex items-center gap-2",
                         div {
                             class: "w-4 h-0.5",
-                            style: "background-color: #3b82f6;",
+                            style: "text-color: #3b82f6;",
                         }
                         span {
                             class: "text-sm",

@@ -9,6 +9,7 @@
 //! a common wrapper around all child routes.
 
 mod create_proxy;
+mod edit_proxy;
 mod join_proxy;
 mod login;
 mod navbar;
@@ -16,6 +17,7 @@ mod proxies_list;
 mod signup;
 
 pub use create_proxy::CreateProxy;
+pub use edit_proxy::EditProxy;
 pub use join_proxy::JoinProxy;
 pub use login::Login;
 pub use navbar::Navbar;
