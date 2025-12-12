@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
             let listen_key = repo.listen_key().await?;
             let node = Node::new(listen_key, repo).await?;
             println!("serving on port {port}");
-            lib::http_server::serve(node, port).await?;
+            lib::gateway::serve(node, port).await?;
             tokio::signal::ctrl_c().await?;
         }
     }

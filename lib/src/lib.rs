@@ -2,7 +2,7 @@ mod auth;
 mod config;
 mod datum_cloud;
 mod encoding;
-pub mod http_server;
+pub mod gateway;
 mod node;
 mod repo;
 mod state;
