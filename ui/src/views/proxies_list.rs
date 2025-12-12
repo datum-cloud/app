@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use chrono::Local;
 use dioxus::prelude::*;
-use lib::{Metrics, TcpProxy};
+use lib::{Metrics, TcpProxy, DATUM_CONNECT_GATEWAY_DOMAIN_NAME};
 
 use crate::{
     components::{Button, BwTsChart, ChartData, CloseButton, Subhead},
@@ -126,6 +126,11 @@ pub fn TempProxies() -> Element {
 #[component]
 fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Element {
     let proxy_2 = proxy.clone();
+    let proxy_url = format!(
+        "http://{}.{}",
+        proxy.codename, DATUM_CONNECT_GATEWAY_DOMAIN_NAME
+    );
+
     rsx! {
         div {
             div {
@@ -151,6 +156,21 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
                 }
             }
             Subhead { text: "{proxy.host}:{proxy.port}" }
+
+            // Clickable link to open in browser
+            button {
+                class: "text-blue-400 hover:text-blue-300 underline text-sm mt-2 cursor-pointer hover:text-underline",
+                onclick: move |_| {
+                    let url = proxy_url.clone();
+                    spawn(async move {
+                        if let Err(e) = open::that(&url) {
+                            tracing::error!("Failed to open URL in browser: {}", e);
+                        }
+                    });
+                },
+                "{proxy_url}"
+            }
+
             // p {
             //     class: "text-sm break-all max-w-2/3 mt-1",
             //     "{proxy_2.ticket()}"

@@ -24,6 +24,7 @@ iroh-base = { version = "0.95" }
 iroh-tickets = "0.2"
 iroh-metrics = "0.38"
 log = "0.4"
+open = "5"
 postcard = "1"
 quinn = { version = "0.14", package = "iroh-quinn" }
 rand = "0.9"
