@@ -42,7 +42,7 @@ pub struct Organization {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Project {}
 
-const DATUM_CONNECTOR_CLASS: &'static str = "datum-connect";
+// const DATUM_CONNECTOR_CLASS: &'static str = "datum-connect";
 
 /// Datum Connectors introduce a method to model outbound connectivity as
 /// first class resources in the control plane. A Connector resource lives in a

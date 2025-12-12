@@ -1,7 +1,6 @@
-use std::str::FromStr;
-
 use dioxus::prelude::*;
-use lib::EndpointTicket;
+// use lib::TcpProxyTicket;
+// use std::str::FromStr;
 
 use crate::{components::Subhead, state::AppState};
 
@@ -14,17 +13,17 @@ pub fn JoinProxy() -> Element {
     let mut local_address = use_signal(|| "127.0.0.1:9000".to_string());
     let mut label = use_signal(|| "".to_string());
     let mut ticket_str = use_signal(|| "".to_string());
-    let mut validation_error = use_signal(|| "".to_string());
+    // let mut validation_error = use_signal(|| "".to_string());
 
     rsx! {
         div {
             id: "create-domain",
             class: "flex flex-col",
             h1 { "join proxy" },
-            p {
-                class: "text-red-500",
-                "{validation_error}"
-            }
+            // p {
+            //     class: "text-red-500",
+            //     "{validation_error}"
+            // }
             Subhead { text: "Local Address" }
             input {
                 class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
@@ -48,7 +47,7 @@ pub fn JoinProxy() -> Element {
                 class: "cursor-pointer",
                 onclick: move |_| async move {
                     let state = consume_context::<AppState>();
-                    // let ticket = match EndpointTicket::from_str(&ticket_str()) {
+                    // let ticket = match TcpProxyTicket::from_str(&ticket_str()) {
                     //     Ok(ticket) => ticket,
                     //     Err(err) => {
                     //         validation_error.set(format!("Invalid ticket: {}", err));

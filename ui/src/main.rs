@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
-use crate::views::{CreateDomain, CreateProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
+use crate::views::{CreateProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
