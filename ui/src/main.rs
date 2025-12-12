@@ -2,13 +2,14 @@ use dioxus::prelude::*;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
+use crate::util::load_tray_icon_from_file;
 use crate::views::{CreateProxy, EditProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
     trayicon::{
         menu::{Menu, MenuItem, PredefinedMenuItem},
-        Icon, TrayIcon, TrayIconBuilder,
+        TrayIcon, TrayIconBuilder,
     },
     use_tray_menu_event_handler, use_window,
 };
@@ -107,7 +108,7 @@ fn init_menu_bar() -> anyhow::Result<TrayIcon> {
         .append_items(&[&show_item, &separator, &quit_item])
         .expect("Failed to build tray menu");
 
-    let icon = load_icon_from_file("assets/images/logo-datum-light.png");
+    let icon = load_tray_icon_from_file("assets/images/logo-datum-light.png");
 
     // Build the tray icon
     TrayIconBuilder::new()
@@ -116,17 +117,4 @@ fn init_menu_bar() -> anyhow::Result<TrayIcon> {
         .with_icon(icon)
         .build()
         .context("building tray icon")
-}
-
-/// Load an icon from a PNG file
-#[allow(dead_code)]
-fn load_icon_from_file(path: &str) -> Icon {
-    let image = image::open(path)
-        .expect("Failed to open icon file")
-        .to_rgba8();
-
-    let (width, height) = image.dimensions();
-    let rgba = image.into_raw();
-
-    Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
 }

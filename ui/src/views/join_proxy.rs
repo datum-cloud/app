@@ -2,7 +2,11 @@ use dioxus::prelude::*;
 // use lib::TcpProxyTicket;
 // use std::str::FromStr;
 
-use crate::{components::Subhead, state::AppState};
+use crate::{
+    components::{Button, Subhead},
+    state::AppState,
+    Route,
+};
 
 /// The Blog page component that will be rendered when the current route is `[Route::Blog]`
 ///
@@ -11,8 +15,8 @@ use crate::{components::Subhead, state::AppState};
 #[component]
 pub fn JoinProxy() -> Element {
     let mut local_address = use_signal(|| "127.0.0.1:9000".to_string());
-    let mut label = use_signal(|| "".to_string());
-    let mut ticket_str = use_signal(|| "".to_string());
+    let mut codename = use_signal(|| "".to_string());
+    // let mut ticket_str = use_signal(|| "".to_string());
     // let mut validation_error = use_signal(|| "".to_string());
 
     rsx! {
@@ -30,35 +34,45 @@ pub fn JoinProxy() -> Element {
                 value: "{local_address}",
                 onchange: move |e| local_address.set(e.value()),
             }
-            Subhead { text: "Label" }
+            Subhead { text: "Codename" }
             input {
                 class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
                 placeholder: "Label",
-                value: "{label}",
-                onchange: move |e| label.set(e.value()),
+                value: "{codename}",
+                onchange: move |e| codename.set(e.value()),
             }
-            Subhead { text: "Ticket" }
-            textarea {
-                class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
-                value: "{ticket_str}",
-                onchange: move |e| ticket_str.set(e.value()),
-            },
-            button {
-                class: "cursor-pointer",
-                onclick: move |_| async move {
-                    let state = consume_context::<AppState>();
-                    // let ticket = match TcpProxyTicket::from_str(&ticket_str()) {
-                    //     Ok(ticket) => ticket,
-                    //     Err(err) => {
-                    //         validation_error.set(format!("Invalid ticket: {}", err));
-                    //         return;
-                    //     }
-                    // };
-                    state.clone().node().connect(label()).await.unwrap();
-                },
-                "Join"
+            // Subhead { text: "Ticket" }
+            // textarea {
+            //     class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
+            //     value: "{ticket_str}",
+            //     onchange: move |e| ticket_str.set(e.value()),
+            // },
+            div {
+                class: "flex gap-10",
+                Button {
+                    onclick: move |_| async move {
+                        let state = consume_context::<AppState>();
+                        // let ticket = match TcpProxyTicket::from_str(&ticket_str()) {
+                        //     Ok(ticket) => ticket,
+                        //     Err(err) => {
+                        //         validation_error.set(format!("Invalid ticket: {}", err));
+                        //         return;
+                        //     }
+                        // };
+                        state.clone().node().connect(codename()).await.unwrap();
+                        let nav = use_navigator();
+                        nav.push(Route::TempProxies {  });
+                    },
+                    text: "Join"
+                }
+                Button {
+                    onclick: move |_| async move {
+                        let nav = use_navigator();
+                        nav.push(Route::TempProxies {  });
+                    },
+                    text: "Cancel"
+                }
             }
-
         }
     }
 }

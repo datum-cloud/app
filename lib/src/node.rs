@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use n0_error::{Result, StdResultExt, anyerr};
@@ -151,6 +150,17 @@ impl Node {
         conn.streams().wrap_tcp(vec![addr]).await
     }
 
+    pub async fn connections(&self) -> Result<Vec<ConnectionInfo>> {
+        let inner = self.inner.lock().await;
+        let conns = inner.connections().await;
+        Ok(conns)
+    }
+
+    pub async fn disconnect(&self, conn_info: &ConnectionInfo) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+        inner.disconnect(conn_info).await
+    }
+
     pub async fn metrics(&self) -> Result<tokio::sync::broadcast::Receiver<Metrics>> {
         let sub = self.inner.lock().await.metrics_events.subscribe();
         Ok(sub)
@@ -267,7 +277,11 @@ impl NodeInner {
         let mut state = self.repo.load_state().await?;
 
         // Find and update the proxy with matching ID
-        if let Some(proxy) = state.tcp_proxies.iter_mut().find(|p| p.id == updated_proxy.id) {
+        if let Some(proxy) = state
+            .tcp_proxies
+            .iter_mut()
+            .find(|p| p.id == updated_proxy.id)
+        {
             proxy.host = updated_proxy.host.clone();
             proxy.port = updated_proxy.port;
             // Note: codename and id should not change
@@ -305,7 +319,7 @@ impl NodeInner {
         Ok(conn)
     }
 
-    pub async fn disconnect(&mut self, conn: &ConnectionInfo) -> anyhow::Result<()> {
+    pub async fn disconnect(&mut self, conn: &ConnectionInfo) -> Result<()> {
         let mut found = false;
         debug!("disconnect tcp. id: {:?}", conn.id);
         let index = self.edge_connections.iter().position(|c| c.id == conn.id);
@@ -316,7 +330,7 @@ impl NodeInner {
         }
         match found {
             true => Ok(()),
-            false => Err(anyhow!("Tunnel connection not found")),
+            false => Err(anyerr!("Tunnel connection not found")),
         }
     }
 }
