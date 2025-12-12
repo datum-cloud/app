@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
-use crate::views::{CreateProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
+use crate::views::{CreateProxy, EditProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
@@ -39,6 +39,8 @@ enum Route {
         // In this case, id will match any integer like `/blog/123` or `/blog/-456`.
         #[route("/proxy/create")]
         CreateProxy {},
+        #[route("/proxy/edit/:id")]
+        EditProxy { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
 }
@@ -54,8 +56,6 @@ fn main() {
 
 #[component]
 fn App() -> Element {
-    let window = use_window();
-
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
@@ -88,12 +88,6 @@ fn App() -> Element {
 
     rsx! {
         Head {  }
-        button {
-            onclick: move |_| {
-                window.set_visible(false);
-            },
-            "hide"
-        }
         Router::<Route> {}
     }
 }

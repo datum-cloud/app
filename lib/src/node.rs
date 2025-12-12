@@ -70,6 +70,11 @@ impl Node {
         inner.unlisten(proxy).await
     }
 
+    pub async fn update_proxy(&self, proxy: &TcpProxy) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+        inner.update_proxy(proxy).await
+    }
+
     pub async fn connect(
         &self,
         codename: String,
@@ -254,6 +259,20 @@ impl NodeInner {
     pub async fn unlisten(&mut self, info: &TcpProxy) -> Result<()> {
         let mut state = self.repo.load_state().await?;
         state.tcp_proxies.retain(|proxy| proxy.id != info.id);
+        self.repo.write_state(&state).await?;
+        Ok(())
+    }
+
+    pub async fn update_proxy(&mut self, updated_proxy: &TcpProxy) -> Result<()> {
+        let mut state = self.repo.load_state().await?;
+
+        // Find and update the proxy with matching ID
+        if let Some(proxy) = state.tcp_proxies.iter_mut().find(|p| p.id == updated_proxy.id) {
+            proxy.host = updated_proxy.host.clone();
+            proxy.port = updated_proxy.port;
+            // Note: codename and id should not change
+        }
+
         self.repo.write_state(&state).await?;
         Ok(())
     }

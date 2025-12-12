@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Result, bail};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
@@ -70,17 +70,22 @@ async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
 
     // go to my existing pool of tunnels, if it's there, open a new set of steams & proxy over
     // if not, create a new tunnel, add it to the pool, and return the streams
-    let (info, (mut tunnel_write, mut tunnel_read)) = node.connect(codename).await?;
+    let (info, (mut tunnel_write, mut tunnel_read)) = match node.connect(codename.clone()).await {
+        Ok(result) => result,
+        Err(e) => {
+            warn!("Failed to connect to proxy '{}': {}", codename, e);
+            send_404_response(&mut client).await?;
+            return Ok(());
+        }
+    };
     info!(info = ?info, "connection opened");
+
     // Send the buffered request data through the tunnel
     tunnel_write.write_all(&initial_data).await?;
 
     let (mut client_read, mut client_write) = client.split();
-
     let client_to_tunnel = async { tokio::io::copy(&mut client_read, &mut tunnel_write).await };
     let tunnel_to_client = async { tokio::io::copy(&mut tunnel_read, &mut client_write).await };
-
-    info!("forwarding");
 
     // Run both directions concurrently
     tokio::select! {
@@ -99,15 +104,32 @@ async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
     Ok(())
 }
 
-pub async fn serve(node: Node, port: u16) -> Result<()> {
-    info!(
-        endpoint_id = node.endpoint_id(),
-        "HTTP proxy server starting"
+/// Send an HTTP 404 Not Found response to the client, assumes TCP stream has
+/// made an HTTP request.
+async fn send_404_response(stream: &mut TcpStream) -> Result<()> {
+    let html_body = include_str!("../static/gateway_not_found.html");
+
+    let response = format!(
+        "HTTP/1.1 404 Not Found\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        html_body.len(),
+        html_body
     );
 
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await?;
+
+    Ok(())
+}
+
+pub async fn serve(node: Node, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
-    info!("HTTP proxy listening on {}", addr);
+    info!(addr = ?addr, endpoint_id = node.endpoint_id(),"TCP proxy gateway started");
 
     loop {
         match listener.accept().await {
