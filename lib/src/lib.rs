@@ -1,6 +1,6 @@
 mod auth;
 mod config;
-mod datum_cloud;
+pub mod datum_cloud;
 mod encoding;
 pub mod gateway;
 mod node;

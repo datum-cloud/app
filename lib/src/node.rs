@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use iroh_proxy_utils::http_connect::{IROH_HTTP_CONNECT_ALPN, TunnelClientStreams, TunnelListener};
 
-use crate::datum_cloud::DatumCloudClient;
+// use crate::datum_cloud::DatumCloudClient;
 use crate::state::{ConnectionInfo, TcpProxy, TcpProxyTicket, generate_codename};
 use crate::{Repo, config::Config};
 
@@ -163,8 +163,7 @@ struct NodeInner {
     router: Router,
     n0des: iroh_n0des::Client,
     // TODO(b5) - use datum client
-    #[allow(dead_code)]
-    datum: DatumCloudClient,
+    // datum: DatumCloudClient,
     /// direct connections to another iroh endpoint, skipping the datum network
     edge_connections: Vec<Connection>,
     metrics_events: tokio::sync::broadcast::Sender<Metrics>,
@@ -208,11 +207,11 @@ impl NodeInner {
             .accept(IROH_HTTP_CONNECT_ALPN, tunnel_listener)
             .spawn();
 
-        let datum = DatumCloudClient::new(None);
+        // let datum = DatumCloudClient::new(None);
         let inner = NodeInner {
             repo,
             router,
-            datum,
+            // datum,
             n0des,
             edge_connections: Vec::new(),
             metrics_events,
@@ -267,7 +266,11 @@ impl NodeInner {
         let mut state = self.repo.load_state().await?;
 
         // Find and update the proxy with matching ID
-        if let Some(proxy) = state.tcp_proxies.iter_mut().find(|p| p.id == updated_proxy.id) {
+        if let Some(proxy) = state
+            .tcp_proxies
+            .iter_mut()
+            .find(|p| p.id == updated_proxy.id)
+        {
             proxy.host = updated_proxy.host.clone();
             proxy.port = updated_proxy.port;
             // Note: codename and id should not change

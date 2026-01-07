@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iroh::SecretKey;
 use log::{info, warn};
 
-use crate::{auth::Auth, config::Config, state::State};
+use crate::{auth::Auth, config::Config, datum_cloud::AuthState, state::State};
 
 // Repo builds up a series of file path conventions from a root directory path.
 #[derive(Debug)]
@@ -14,7 +14,7 @@ impl Repo {
     const CONNECT_KEY_FILE: &str = "connect_key";
     const LISTEN_KEY_FILE: &str = "listen_key";
     const CONFIG_FILE: &str = "config.yml";
-    // const OAUTH_TOKEN_FILE: &str = "oauth_token";
+    const OAUTH_FILE: &str = "oauth.yml";
     const AUTH_FILE: &str = "auth.yml";
     const STATE_FILE: &str = "state.yml";
 
@@ -98,5 +98,26 @@ impl Repo {
         let key = SecretKey::generate(&mut rand::rng());
         tokio::fs::write(key_file_path, key.to_bytes()).await?;
         Ok(key)
+    }
+
+    pub async fn write_oauth(&self, state: &AuthState) -> Result<()> {
+        let path = self.0.join(Self::OAUTH_FILE);
+        let data = serde_yml::to_string(state)?;
+        tokio::fs::write(path, data).await?;
+        Ok(())
+    }
+
+    pub async fn read_oauth(&self) -> Result<Option<AuthState>> {
+        let path = self.0.join(Self::OAUTH_FILE);
+        if !path.exists() {
+            Ok(None)
+        } else {
+            let data = tokio::fs::read_to_string(path)
+                .await
+                .context("failed to read oauth file")?;
+            let state: AuthState =
+                serde_yml::from_str(&data).context("failed to parse oauth file")?;
+            Ok(Some(state))
+        }
     }
 }
