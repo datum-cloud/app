@@ -14,7 +14,7 @@ use openidconnect::{
     OAuth2TokenResponse, PkceCodeChallenge, Scope, TokenResponse,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use self::{redirect_server::RedirectServer, types::OidcTokenResponse};
 use super::ApiEnv;
@@ -145,8 +145,7 @@ impl AuthClient {
             CoreProviderMetadata::discover_async(IssuerUrl::new(provider.issuer_url)?, &http)
                 .await?;
 
-        // Create an OpenID Connect client by specifying the client ID, client secret, authorization URL
-        // and token URL.
+        // Create an OpenID Connect client
         let oidc = CoreClient::from_provider_metadata(
             provider_metadata,
             ClientId::new(provider.client_id),
@@ -160,7 +159,6 @@ impl AuthClient {
     pub async fn login(&self) -> Result<AuthState> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
-        // Generate the full authorization URL.
         let (auth_url, csrf_token, nonce) = self
             .oidc
             .authorize_url(
@@ -168,11 +166,9 @@ impl AuthClient {
                 CsrfToken::new_random,
                 Nonce::new_random,
             )
-            // Set the desired scopes.
             .add_scope(Scope::new("openid".to_string()))
             .add_scope(Scope::new("profile".to_string()))
             .add_scope(Scope::new("email".to_string()))
-            // Set the PKCE code challenge.
             .set_pkce_challenge(pkce_challenge)
             .url();
         debug!(auth_uri=%self.oidc.auth_uri(), "attempting login");
@@ -182,13 +178,14 @@ impl AuthClient {
 
         // Open the auth URL in the platform's default browser.
         if let Err(err) = open::that(auth_url.to_string()) {
-            tracing::warn!("Failed to auto-open url: {err}");
-            println!("Please open this URL in a browser:\n{auth_url}")
+            warn!("Failed to auto-open url: {err}");
+            println!("Open this URL in a browser to complete the login:\n{auth_url}")
         }
 
         let authorization_code = redirect_server.recv_with_timeout(LOGIN_TIMEOUT).await?;
         debug!("received redirect with authorization code");
-        // Now you can exchange it for an access token and ID token.
+
+        // Exchange auth code for ID and access tokens.
         let tokens = self
             .oidc
             .exchange_code(AuthorizationCode::new(authorization_code))?
@@ -322,6 +319,8 @@ mod types {
 }
 
 mod redirect_server {
+    //! Web server waiting for OAuth redirct requests
+
     use anyhow::Context;
     use axum::{
         Router,
