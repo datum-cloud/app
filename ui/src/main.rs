@@ -46,7 +46,11 @@ enum Route {
 }
 
 fn main() {
+    tracing_subscriber::fmt::init();
     dotenv::dotenv().ok();
+
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    gtk::init().unwrap();
 
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();

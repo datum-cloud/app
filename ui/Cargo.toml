@@ -42,3 +42,6 @@ desktop = [
 ]
 # The feature that are only required for the mobile = ["dioxus/mobile"] build target should be optional and only enabled in the mobile = ["dioxus/mobile"] feature
 mobile = ["dioxus/mobile"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
