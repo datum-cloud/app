@@ -7,7 +7,7 @@ use log::{info, warn};
 use crate::{auth::Auth, config::Config, datum_cloud::AuthState, state::State};
 
 // Repo builds up a series of file path conventions from a root directory path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Repo(PathBuf);
 
 impl Repo {

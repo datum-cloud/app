@@ -20,22 +20,16 @@ async fn main() -> anyhow::Result<()> {
     println!("repo location: {}", repo_path.display());
     let repo = Repo::open_or_create(repo_path).await?;
 
-    // Read persisted auth tokens. Is None if the file does not exist.
-    let auth_state = repo.read_oauth().await?;
-
     // Init client, and login if needed.
     // If a login is needed, a browser will open, and a local HTTP server awaits the OIDC redirect.
-    let client = DatumCloudClient::login_or_refresh(ApiEnv::Staging, auth_state).await?;
-
-    // Persist auth state.
-    repo.write_oauth(&client.auth_state()).await?;
-
-    println!("user {} logged in!", client.user_profile().email);
+    // The access tokens will be persisted to the repo.
+    let client = DatumCloudClient::with_repo(ApiEnv::Staging, repo).await?;
+    println!("user {} logged in!", client.auth_state().profile.email);
     println!(
         "access token expires at {}",
         client.auth_state().tokens.expires_at()
     );
-    println!("profile: {:?}", client.user_profile());
+    println!("profile: {:?}", client.auth_state().profile);
 
     // Fetch orgs and projects.
     let orgs = client.orgs_and_projects().await?;

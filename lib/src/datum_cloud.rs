@@ -1,8 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
+use n0_future::boxed::BoxFuture;
 use n0_future::{BufferedStreamExt, TryStreamExt};
 use tracing::warn;
+
+use crate::Repo;
 
 pub use self::{
     auth::{AuthClient, AuthState, UserProfile},
@@ -12,29 +16,40 @@ pub use self::{
 mod auth;
 mod env;
 
-#[derive(Debug, Clone)]
+/// Refresh auth or relogin if access token is valid for less than 30min
+const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
+
+#[derive(derive_more::Debug, Clone)]
 pub struct DatumCloudClient {
     env: ApiEnv,
-    auth: Arc<AuthState>,
+    auth: Arc<ArcSwap<AuthState>>,
     http: reqwest::Client,
+    auth_client: AuthClient,
+    #[debug("{:?}", on_auth_refresh.as_ref().map(|_| "Fn"))]
+    on_auth_refresh:
+        Option<Arc<dyn Fn(Arc<AuthState>) -> BoxFuture<Result<()>> + Send + Sync + 'static>>,
 }
 
 impl DatumCloudClient {
-    pub async fn login(env: ApiEnv) -> Result<Self> {
-        let auth_client = AuthClient::new(env).await?;
-        let auth = auth_client.login().await?;
-        Self::new(env, auth)
+    pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
+        let auth_state = repo.read_oauth().await?;
+        let mut client = Self::login(env, auth_state).await?;
+        repo.write_oauth(&client.auth_state()).await?;
+        client.on_auth_refresh = Some(Arc::new(move |auth_state| {
+            let repo = repo.clone();
+            Box::pin(async move {
+                repo.write_oauth(&auth_state).await?;
+                Ok(())
+            })
+        }));
+        Ok(client)
     }
 
-    pub async fn login_or_refresh(env: ApiEnv, auth: Option<AuthState>) -> Result<Self> {
+    pub async fn login(env: ApiEnv, last_auth_state: Option<AuthState>) -> Result<Self> {
         let auth_client = AuthClient::new(env).await?;
-        let auth = match auth {
+        let auth = match last_auth_state {
             None => auth_client.login().await?,
-            Some(auth)
-                if auth
-                    .tokens
-                    .expires_in_less_than(Duration::from_secs(60 * 30)) =>
-            {
+            Some(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
                 match auth_client.refresh(&auth.tokens).await {
                     Ok(auth) => auth,
                     Err(err) => {
@@ -45,21 +60,30 @@ impl DatumCloudClient {
             }
             Some(auth) => auth,
         };
-        Self::new(env, auth)
-    }
-
-    pub fn new(env: ApiEnv, auth: AuthState) -> Result<Self> {
-        let http = reqwest::Client::builder().build()?;
         let auth = Arc::new(auth);
-        Ok(Self { env, auth, http })
+        let http = reqwest::Client::builder().build()?;
+        Ok(Self {
+            env,
+            auth: Arc::new(ArcSwap::from(auth)),
+            http,
+            auth_client,
+            on_auth_refresh: None,
+        })
     }
 
-    pub fn user_profile(&self) -> &UserProfile {
-        &self.auth.profile
+    pub fn auth_state(&self) -> Arc<AuthState> {
+        self.auth.load_full()
     }
 
-    pub fn auth_state(&self) -> &AuthState {
-        &self.auth
+    pub async fn refresh_auth(&self) -> Result<()> {
+        let auth = self.auth.load();
+        let new_auth = self.auth_client.refresh(&auth.tokens).await?;
+        let new_auth = Arc::new(new_auth);
+        self.auth.store(new_auth.clone());
+        if let Some(f) = self.on_auth_refresh.as_ref() {
+            f(new_auth).await?;
+        }
+        Ok(())
     }
 
     pub async fn orgs_and_projects(&self) -> Result<Vec<OrganizationWithProjects>> {
@@ -100,7 +124,7 @@ impl DatumCloudClient {
 
         let json = self
             .fetch(
-                Scope::user(&self.auth),
+                Scope::user(&self.auth.load().profile),
                 Api::ResourceManager(ResourceManager::OrganizationMemberships),
             )
             .await?;
@@ -146,19 +170,19 @@ impl DatumCloudClient {
         let url = self.url(scope, api);
         tracing::debug!("GET {url}");
 
-        // TODO: Refresh access token if expired once we get refresh tokens.
-        // Likely need to put self.auth into a Mutex.
-        // if self.auth.tokens.is_expired() {
-        //     let auth_client = AuthClient::new(self.env).await?;
-        //     self.auth = auth_client.refresh(&self.auth.tokens).await?;
-        // }
+        // Refresh access token if they are close to expiring.
+        let mut auth = self.auth.load();
+        if auth.tokens.expires_in_less_than(Duration::from_secs(60)) {
+            self.refresh_auth().await?;
+            auth = self.auth.load();
+        }
 
         let res = self
             .http
             .get(&url)
             .header(
                 "Authorization",
-                format!("Bearer {}", self.auth.tokens.access_token.secret()),
+                format!("Bearer {}", auth.tokens.access_token.secret()),
             )
             .send()
             .await
@@ -205,8 +229,8 @@ enum Scope {
 }
 
 impl Scope {
-    fn user(auth: &AuthState) -> Self {
-        Self::User(auth.profile.user_id.to_string())
+    fn user(profile: &UserProfile) -> Self {
+        Self::User(profile.user_id.to_string())
     }
 }
 

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+arc-swap.workspace = true
 axum.workspace = true
 chrono.workspace = true
 data-encoding.workspace = true

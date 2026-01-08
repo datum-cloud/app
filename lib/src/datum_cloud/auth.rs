@@ -27,11 +27,6 @@ pub struct AuthProvider {
     pub client_secret: Option<String>,
 }
 
-pub struct AuthClient {
-    oidc: types::OidcClient,
-    http: reqwest::Client,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthState {
     pub tokens: AuthTokens,
@@ -128,6 +123,12 @@ impl UserProfile {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AuthClient {
+    oidc: types::OidcClient,
+    http: reqwest::Client,
+}
+
 impl AuthClient {
     pub async fn new(env: ApiEnv) -> Result<Self> {
         Self::with_provider(env.auth_provider()).await
@@ -169,6 +170,7 @@ impl AuthClient {
             .add_scope(Scope::new("openid".to_string()))
             .add_scope(Scope::new("profile".to_string()))
             .add_scope(Scope::new("email".to_string()))
+            .add_scope(Scope::new("offline_access".to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
         debug!(auth_uri=%self.oidc.auth_uri(), "attempting login");
@@ -212,12 +214,14 @@ impl AuthClient {
 
     pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
         let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
+        debug!("Refreshing access token");
         let tokens = self
             .oidc
             .exchange_refresh_token(refresh_token)?
             .request_async(&self.http)
             .await?;
         let state = self.parse_token_response(tokens, refresh_nonce_verifier)?;
+        debug!("Access token refreshed");
         Ok(state)
     }
 
