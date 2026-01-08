@@ -2,16 +2,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use openidconnect::core::{
-    CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreUserInfoClaims,
-};
 use openidconnect::{
-    AccessToken, AdditionalClaims, GenderClaim, IdTokenClaims, NonceVerifier, RefreshToken,
-    StandardClaims, reqwest,
-};
-use openidconnect::{
-    AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, Scope, TokenResponse,
+    AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
+    CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
+    PkceCodeChallenge, RefreshToken, Scope, StandardClaims, TokenResponse,
+    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreUserInfoClaims},
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
