@@ -77,7 +77,13 @@ impl DatumCloudClient {
 
     pub async fn refresh_auth(&self) -> Result<()> {
         let auth = self.auth.load();
-        let new_auth = self.auth_client.refresh(&auth.tokens).await?;
+        let new_auth = match self.auth_client.refresh(&auth.tokens).await {
+            Ok(auth) => auth,
+            Err(err) => {
+                warn!("Failed to refresh auth tokens: {err:#}");
+                self.auth_client.login().await?
+            }
+        };
         let new_auth = Arc::new(new_auth);
         self.auth.store(new_auth.clone());
         if let Some(f) = self.on_auth_refresh.as_ref() {
