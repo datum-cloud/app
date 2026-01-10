@@ -2,6 +2,7 @@
 members = [
   "cli",
   "lib",
+  "n0des-local",
   "ui"
 ]
 resolver = "2"

@@ -15,6 +15,7 @@ mod login;
 mod navbar;
 mod proxies_list;
 mod signup;
+mod tunnel_bandwidth;
 
 pub use create_proxy::CreateProxy;
 pub use edit_proxy::EditProxy;
@@ -23,3 +24,4 @@ pub use login::Login;
 pub use navbar::Navbar;
 pub use proxies_list::TempProxies;
 pub use signup::Signup;
+pub use tunnel_bandwidth::TunnelBandwidth;

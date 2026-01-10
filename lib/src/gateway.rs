@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, error, info, warn};
 
 use crate::node::Node;
@@ -67,14 +68,23 @@ async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
     // Parse the initial request to get the Host header
     let (host, initial_data) = parse_http_host(&mut client).await?;
     let codename = extract_subdomain(&host);
+    info!(host = %host, codename = %codename, "gateway: incoming request");
 
     // go to my existing pool of tunnels, if it's there, open a new set of steams & proxy over
     // if not, create a new tunnel, add it to the pool, and return the streams
-    let (info, (mut tunnel_write, mut tunnel_read)) = match node.connect(codename.clone()).await {
-        Ok(result) => result,
-        Err(e) => {
+    // Overall connect timeout for gateway requests. This must be >= the internal timeouts in Node::connect
+    // (ticket fetch, dial, stream open), otherwise we'll cancel mid-flight and n0des-local won't even see a TicketGet.
+    let connect_result = timeout(Duration::from_secs(15), node.connect(codename.clone())).await;
+    let (info, (mut tunnel_write, mut tunnel_read)) = match connect_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
             warn!("Failed to connect to proxy '{}': {}", codename, e);
             send_404_response(&mut client).await?;
+            return Ok(());
+        }
+        Err(_) => {
+            warn!("Timed out connecting to proxy '{}'", codename);
+            send_504_response(&mut client).await?;
             return Ok(());
         }
     };
@@ -123,6 +133,24 @@ async fn send_404_response(stream: &mut TcpStream) -> Result<()> {
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
 
+    Ok(())
+}
+
+/// Send an HTTP 504 Gateway Timeout response to the client.
+async fn send_504_response(stream: &mut TcpStream) -> Result<()> {
+    let body = "Gateway timeout: tunnel connect took too long.\n";
+    let response = format!(
+        "HTTP/1.1 504 Gateway Timeout\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await?;
     Ok(())
 }
 

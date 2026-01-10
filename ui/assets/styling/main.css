@@ -1,8 +1,22 @@
+html,
 body {
-    background-color: #0f1116;
-    color: #ffffff;
-    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-    /*margin: 20px;*/
+    height: 100%;
+    overflow: hidden;
+    /* Desktop uses a transparent window so we can render rounded corners ourselves. */
+    background: transparent;
+}
+
+body {
+    /* Figma-like app chrome */
+    color: #111827;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+}
+
+/* Dioxus uses a root container in some platforms; keep it from creating page scroll. */
+#main,
+#root {
+    height: 100%;
 }
 
 #hero {

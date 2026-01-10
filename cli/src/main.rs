@@ -134,8 +134,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Serve(args) => {
             let port = args.port.unwrap_or(8080);
-            let listen_key = repo.listen_key().await?;
-            let node = Node::new(listen_key, repo).await?;
+            // Gateway acts as a client dialing published tunnel endpoints, so it should use the connect key.
+            // Using the listen key can cause the gateway to share identity with the UI and end up dialing itself.
+            let connect_key = repo.connect_key().await?;
+            let node = Node::new_connect_only(connect_key, repo).await?;
             println!("serving on port {port}");
             lib::gateway::serve(node, port).await?;
             tokio::signal::ctrl_c().await?;

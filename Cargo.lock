@@ -1315,6 +1315,7 @@ dependencies = [
  "dioxus",
  "dioxus-desktop",
  "dotenv",
+ "gtk",
  "hex",
  "image",
  "iroh",
@@ -4591,6 +4592,21 @@ dependencies = [
  "derive_more 2.1.0",
  "n0-error",
  "n0-future",
+]
+
+[[package]]
+name = "n0des-local"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "iroh",
+ "iroh-n0des",
+ "irpc",
+ "irpc-iroh",
+ "rand 0.9.2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

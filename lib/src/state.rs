@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
-use iroh::EndpointId;
+use iroh::EndpointAddr;
 use iroh_tickets::{ParseError, Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -131,24 +131,30 @@ pub struct ListnerInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TcpProxy {
     pub id: Uuid,
+    #[serde(default)]
+    pub label: Option<String>,
     pub codename: String,
     pub host: String,
     pub port: u16,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 impl TcpProxy {
-    pub fn new(host: String, port: u16) -> Self {
+    pub fn new(host: String, port: u16, label: Option<String>) -> Self {
         let id = Uuid::new_v4();
         let codename = generate_codename(id);
         TcpProxy {
             id,
+            label,
             codename,
             host,
             port,
+            enabled: true,
         }
     }
 
-    pub fn ticket(&self, endpoint: EndpointId) -> TcpProxyTicket {
+    pub fn ticket(&self, endpoint: EndpointAddr) -> TcpProxyTicket {
         TcpProxyTicket {
             id: self.id,
             endpoint,
@@ -158,10 +164,14 @@ impl TcpProxy {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TcpProxyTicket {
     pub id: Uuid,
-    pub endpoint: EndpointId,
+    pub endpoint: EndpointAddr,
     pub host: String,
     pub port: u16,
 }
