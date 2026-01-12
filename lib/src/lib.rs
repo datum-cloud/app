@@ -7,9 +7,9 @@ mod node;
 mod repo;
 mod state;
 
-pub use node::{Metrics, Node};
+pub use node::*;
 pub use repo::Repo;
-pub use state::{ConnectionInfo, ListnerInfo, TcpProxy, TcpProxyTicket};
+pub use state::*;
 
 /// The root domain for datum connect urls to subdomain from. A proxy URL will
 /// be a three-word-codename subdomain off this URL. eg: "https://vast-gold-mine.iroh.datum.net"

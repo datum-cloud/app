@@ -1,172 +1,185 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
+use anyhow::{Context, Result};
+use arc_swap::{ArcSwap, Guard};
 use iroh::EndpointId;
-use iroh_tickets::{ParseError, Ticket, endpoint::EndpointTicket};
+use iroh_tickets::{ParseError, Ticket};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::auth::Protocol;
+use crate::Repo;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct State {
-    me: Option<User>,
-    org: Option<Organization>,
-    project: Option<Project>,
-    connector: Connector,
-    advertisements: Vec<Advertisement>,
-    proxies: Vec<HttpProxy>,
-    // this is a shim we're using for now while we stand up datum control plane mgmt
-    pub tcp_proxies: Vec<TcpProxy>,
+    pub proxies: Vec<ProxyState>,
 }
 
 impl State {
-    pub(crate) async fn from_file(path: PathBuf) -> anyhow::Result<Self> {
+    pub fn set_proxy(&mut self, proxy: ProxyState) {
+        if let Some(existing) = self
+            .proxies
+            .iter_mut()
+            .find(|p| p.info.resource_id == proxy.info.resource_id)
+        {
+            *existing = proxy;
+        } else {
+            self.proxies.push(proxy);
+        }
+    }
+
+    pub fn remove_proxy(&mut self, resouce_id: &str) -> Option<ProxyState> {
+        if let Some(idx) = self
+            .proxies
+            .iter()
+            .position(|p| p.info.resource_id == resouce_id)
+        {
+            Some(self.proxies.remove(idx))
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StateWrapper {
+    inner: Arc<ArcSwap<State>>,
+    notify: Arc<Notify>,
+}
+
+impl StateWrapper {
+    pub fn new(state: State) -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::new(Arc::new(state))),
+            notify: Default::default(),
+        }
+    }
+
+    pub fn get(&self) -> Guard<Arc<State>> {
+        self.inner.load()
+    }
+
+    pub fn get_cloned(&self) -> Arc<State> {
+        self.inner.load_full()
+    }
+
+    pub async fn updated(&self) {
+        self.notify.notified().await
+    }
+
+    pub async fn update<R>(
+        &self,
+        repo: &Repo,
+        f: impl FnOnce(&mut State) -> R,
+    ) -> n0_error::Result<R> {
+        let mut inner = (*self.inner.load_full()).clone();
+        let res = f(&mut inner);
+        let inner = Arc::new(inner);
+        self.inner.store(inner.clone());
+        repo.write_state(&inner).await?;
+        self.notify.notify_waiters();
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+pub struct ProxyState {
+    pub info: Advertisment,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+pub struct Advertisment {
+    pub resource_id: String,
+    pub label: Option<String>,
+    pub data: TcpProxyData,
+}
+
+impl Advertisment {
+    pub fn new(data: TcpProxyData, label: Option<String>) -> Self {
+        let resource_id = format!("proxy-{}", rand_str(12));
+        Self {
+            resource_id,
+            data,
+            label,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        self.label
+            .as_deref()
+            .unwrap_or_else(|| self.resource_id.as_str())
+    }
+
+    pub fn codename(&self) -> String {
+        self.resource_id.clone()
+    }
+
+    pub fn service(&self) -> &TcpProxyData {
+        &self.data
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+pub struct TcpProxyData {
+    pub host: String,
+    pub port: u16,
+}
+
+impl TcpProxyData {
+    pub fn from_host_port_str(s: &str) -> Result<Self> {
+        let (host, port) = Self::parse_host_port(s)?;
+        Ok(Self { host, port })
+    }
+
+    pub fn address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+
+    fn parse_host_port(s: &str) -> Result<(String, u16)> {
+        let (host, port) = s.rsplit_once(":").context("missing colon")?;
+        let port: u16 = port.parse().context("invalid port")?;
+        Ok((host.to_string(), port))
+    }
+}
+
+impl State {
+    pub(crate) async fn from_file(path: PathBuf) -> Result<Self> {
         let data = tokio::fs::read(path).await?;
         let state: State = serde_yml::from_slice(&data)?;
         Ok(state)
     }
 
-    pub(crate) async fn write_to_file(&self, path: PathBuf) -> anyhow::Result<()> {
+    pub(crate) async fn write_to_file(&self, path: PathBuf) -> Result<()> {
         let data = serde_yml::to_string(&self)?;
         tokio::fs::write(&path, &data).await?;
         Ok(())
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct User {}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Organization {}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Project {}
-
-// const DATUM_CONNECTOR_CLASS: &'static str = "datum-connect";
-
-/// Datum Connectors introduce a method to model outbound connectivity as
-/// first class resources in the control plane. A Connector resource lives in a
-/// project and captures what kinds of network access it can facilitate, while
-/// ConnectorAdvertisement resources describe the networks and endpoints that
-/// are reachable through that connector.
-///
-/// There is one connector for each datum connect app instance.
-///
-/// Other platform components, such as proxies, can then target backends via
-/// these connectors, allowing the control plane to reason about and route
-/// traffic to remote or otherwise inaccessible environments.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Connector {}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Advertisement {
-    layer3: Option<AdvertisementLayer3>,
-    layer4: Option<AdvertisementLayer4>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AdvertisementLayer3 {
-    name: Option<String>,
-    cidrs: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AdvertisementLayer4 {
-    name: Option<String>,
-    services: Vec<Layer4ServiceAddress>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Layer4ServiceAddress {
-    // TODO - make this an IPv4, IPv6, or a DNS address type
-    address: String,
-    ports: Vec<Port>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Port {
-    name: Option<String>,
-    port: u32,
-    protocol: Protocol,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpProxy {
-    backends: Vec<HttpProxyBackend>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpProxyBackend {
-    // TODO - change from string -> url
-    endpoint: String,
-    connector: ConnectorRef,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ConnectorRef {
-    name: String,
-    selector: Option<Selector>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Selector {
-    match_labels: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConnectionInfo {
-    pub id: Uuid,
-    pub codename: String,
-    pub host: String,
-    pub port: u16,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ListnerInfo {
-    pub id: Uuid,
-    pub label: String,
-    pub ticket: EndpointTicket,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TcpProxy {
-    pub id: Uuid,
-    pub codename: String,
-    pub host: String,
-    pub port: u16,
-}
-
-impl TcpProxy {
-    pub fn new(host: String, port: u16) -> Self {
-        let id = Uuid::new_v4();
-        let codename = generate_codename(id);
-        TcpProxy {
-            id,
-            codename,
-            host,
-            port,
-        }
-    }
-
-    pub fn ticket(&self, endpoint: EndpointId) -> TcpProxyTicket {
-        TcpProxyTicket {
-            id: self.id,
+impl Advertisment {
+    pub fn ticket(&self, endpoint: EndpointId) -> AdvertismentTicket {
+        AdvertismentTicket {
+            data: self.clone(),
             endpoint,
-            host: self.host.clone(),
-            port: self.port,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TcpProxyTicket {
-    pub id: Uuid,
+pub struct AdvertismentTicket {
+    pub data: Advertisment,
     pub endpoint: EndpointId,
-    pub host: String,
-    pub port: u16,
 }
 
-impl FromStr for TcpProxyTicket {
+impl AdvertismentTicket {
+    pub fn service(&self) -> &TcpProxyData {
+        &self.data.data
+    }
+}
+
+impl FromStr for AdvertismentTicket {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -174,7 +187,7 @@ impl FromStr for TcpProxyTicket {
     }
 }
 
-impl Ticket for TcpProxyTicket {
+impl Ticket for AdvertismentTicket {
     const KIND: &'static str = "datum";
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -187,6 +200,16 @@ impl Ticket for TcpProxyTicket {
     }
 }
 
+fn rand_str(len: usize) -> String {
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+#[allow(unused)]
 pub(crate) fn generate_codename(id: Uuid) -> String {
     const ADJECTIVES: &[&str] = &[
         "amber", "bold", "calm", "dark", "eager", "fair", "gentle", "happy", "icy", "jolly",
@@ -262,12 +285,12 @@ mod tests {
         assert_ne!(codename1, codename2);
     }
 
-    #[test]
-    fn test_tcp_proxy_has_codename() {
-        let proxy = TcpProxy::new("127.0.0.1".to_string(), 8080);
-        let codename = &proxy.codename;
+    // #[test]
+    // fn test_tcp_proxy_has_codename() {
+    //     let proxy = TcpProxy::new("127.0.0.1".to_string(), 8080);
+    //     let codename = &proxy.codename;
 
-        let parts: Vec<&str> = codename.split('-').collect();
-        assert_eq!(parts.len(), 3);
-    }
+    //     let parts: Vec<&str> = codename.split('-').collect();
+    //     assert_eq!(parts.len(), 3);
+    // }
 }

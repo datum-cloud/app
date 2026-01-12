@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use iroh::SecretKey;
 use log::{info, warn};
 
-use crate::{auth::Auth, config::Config, datum_cloud::AuthState, state::State};
+use crate::{StateWrapper, auth::Auth, config::Config, datum_cloud::AuthState, state::State};
 
 // Repo builds up a series of file path conventions from a root directory path.
 #[derive(Debug, Clone)]
@@ -45,15 +45,16 @@ impl Repo {
         Config::from_file(config_file_path).await
     }
 
-    pub async fn load_state(&self) -> Result<State> {
+    pub async fn load_state(&self) -> Result<StateWrapper> {
         let state_file_path = self.0.join(Self::STATE_FILE);
-        if !state_file_path.exists() {
+        let state = if !state_file_path.exists() {
             let state = State::default();
             state.write_to_file(state_file_path).await?;
-            return Ok(state);
+            state
+        } else {
+            State::from_file(state_file_path).await?
         };
-
-        State::from_file(state_file_path).await
+        Ok(StateWrapper::new(state))
     }
 
     pub async fn write_state(&self, state: &State) -> Result<()> {

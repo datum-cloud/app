@@ -1,143 +1,177 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use lib::{Node, Repo, TcpProxyTicket};
-use std::{
-    net::{SocketAddrV4, SocketAddrV6},
-    path::PathBuf,
-    str::FromStr,
+use lib::{
+    Advertisment, AdvertismentTicket, InboundListener, OutboundDialer, ProxyState, Repo,
+    TcpProxyData,
+    datum_cloud::{ApiEnv, DatumCloudClient},
 };
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
+use tracing::info;
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
-pub struct Args {
+struct Args {
+    #[clap(short, long, env = "DATUM_CONNECT_REPO")]
+    repo: Option<PathBuf>,
     #[clap(subcommand)]
-    pub command: Commands,
+    command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Listen on a magicsocket and forward incoming connections to the specified
-    /// host and port.
-    Listen(ListenArgs),
+enum Commands {
+    /// Start a tunnel server that exposes configured local services through the Datum gateway.
+    Serve,
 
-    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
-    /// to it.
+    /// Join a proxy, i.e. connect to the proxy and expose the service locally.
     Connect(ConnectArgs),
 
-    /// Spin up a connect server that will construct connections based
-    Serve(ServeArgs),
+    /// Start a gateway server that forwards HTTP requests through a Datum Connect tunnel.
+    Gateway(ServeArgs),
+
+    /// List configured proxies.
+    List,
+
+    /// Add proxies.
+    #[clap(subcommand, alias = "ls")]
+    Add(AddCommands),
 }
 
-#[derive(Parser, Debug)]
-pub struct ListenArgs {
-    #[clap(flatten)]
-    pub common: CommonArgs,
+#[derive(Debug, clap::Parser)]
+enum AddCommands {
+    TcpProxy {
+        host: String,
+        #[clap(long)]
+        label: Option<String>,
+    },
 }
 
 #[derive(Parser, Debug)]
 pub struct ConnectArgs {
     /// The addresses to listen on for incoming tcp connections.
     ///
+    /// If unset uses the addr provided in the advertisment.
+    ///
     /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
-    pub addr: String,
+    pub bind: SocketAddr,
 
     /// three-word-name for a tunnel to connect to.
-    #[clap(long)]
+    #[clap(long, conflicts_with = "ticket")]
     pub codename: Option<String>,
 
     /// provide a ticket to drive connection directly.
-    #[clap(long)]
-    pub ticket: Option<String>,
-
-    #[clap(flatten)]
-    pub common: CommonArgs,
-}
-
-#[derive(Parser, Debug)]
-pub struct CommonArgs {
-    /// The IPv4 address that magicsocket will listen on.
-    ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
-    #[clap(long, default_value = None)]
-    pub magic_ipv4_addr: Option<SocketAddrV4>,
-
-    /// The IPv6 address that magicsocket will listen on.
-    ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
-    #[clap(long, default_value = None)]
-    pub magic_ipv6_addr: Option<SocketAddrV6>,
-
-    /// The verbosity level. Repeat to increase verbosity.
-    #[clap(short = 'v', long, action = clap::ArgAction::Count)]
-    pub verbose: u8,
+    #[clap(long, conflicts_with = "codename")]
+    pub ticket: Option<AdvertismentTicket>,
 }
 
 #[derive(Parser, Debug)]
 pub struct ServeArgs {
-    /// The port that magicsocket will listen on.
-    ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
-    #[clap(long, default_value = None)]
-    pub port: Option<u16>,
+    #[clap(long, default_value = "0.0.0.0")]
+    pub bind_addr: IpAddr,
+    #[clap(long, default_value = "8080")]
+    pub port: u16,
 }
-
-const REPO_LOCATION_ENV_VAR_NAME: &'static str = "DATUM_CONNECT_PATH";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
+    let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    tracing_subscriber::fmt::init();
 
-    let path = match std::env::var(REPO_LOCATION_ENV_VAR_NAME) {
-        Ok(path) => PathBuf::from(path),
-        Err(_) => Repo::default_location(),
-    };
+    let path = args.repo.unwrap_or_else(Repo::default_location);
+    info!("opening repo at {}", path.display());
     let repo = Repo::open_or_create(path).await?;
 
-    let args = Args::parse();
     match args.command {
-        Commands::Listen(_args) => {
-            let listen_key = repo.listen_key().await?;
-            let node = Node::new(listen_key, repo).await?;
-            node.start_listening("".to_string(), "127.0.0.1:5173".to_string())
-                .await
-                .unwrap();
-            println!("{}", node.endpoint_id());
+        Commands::List => {
+            let datum = DatumCloudClient::with_repo(ApiEnv::Staging, repo.clone()).await?;
+            let orgs = datum.orgs_and_projects().await?;
+            for org in orgs {
+                println!("org: {} {}", org.org.resource_id, org.org.display_name);
+                for project in org.projects {
+                    println!(
+                        "  project: {} {}",
+                        project.resource_id, project.display_name
+                    );
+                }
+            }
+
+            println!("");
+            let state = repo.load_state().await?;
+            for p in state.get().proxies.iter() {
+                println!(
+                    "{} -> {}:{} (enabled: {})",
+                    p.info.resource_id, p.info.data.host, p.info.data.port, p.enabled
+                )
+            }
+        }
+        Commands::Add(AddCommands::TcpProxy { host, label }) => {
+            let service = TcpProxyData::from_host_port_str(&host)?;
+            let advertisment = Advertisment::new(service, label);
+            let proxy = ProxyState {
+                enabled: true,
+                info: advertisment,
+            };
+
+            let state = repo.load_state().await?;
+            state
+                .update(&repo, |state| {
+                    state.set_proxy(proxy);
+                })
+                .await?;
+        }
+        Commands::Serve => {
+            let node = InboundListener::new(repo).await?;
+            println!("listening as {}", node.endpoint_id());
+            for p in node.proxies() {
+                if !p.enabled {
+                    continue;
+                };
+                println!(
+                    "{} -> {}:{}",
+                    p.info.resource_id, p.info.data.host, p.info.data.port
+                )
+            }
             tokio::signal::ctrl_c().await?;
             println!()
         }
         Commands::Connect(args) => {
             let ConnectArgs {
-                addr,
+                bind,
                 codename,
                 ticket,
-                ..
             } = args;
-            let connect_key = repo.connect_key().await?;
-            let node = Node::new(connect_key, repo).await?;
-            let ticket = ticket.map(|s| TcpProxyTicket::from_str(&s).unwrap());
+            let node = OutboundDialer::new(repo).await?;
+            let ticket = if let Some(codename) = codename {
+                node.fetch_ticket(&codename).await?
+            } else if let Some(ticket) = ticket {
+                ticket
+            } else {
+                anyhow::bail!("either --codename or --ticket is required");
+            };
 
-            let _conn = node
-                .wrap_connection_tcp(codename, ticket, &addr)
-                .await
-                .unwrap();
-            println!("{}", node.endpoint_id());
+            let handle = node
+                .connect_and_bind_local(ticket.endpoint, &ticket.data.data, bind)
+                .await?;
+            println!(
+                "server listening on {}, forwarding connections to {} -> {}:{}",
+                handle.bound_addr(),
+                handle.remote_id().fmt_short(),
+                handle.advertisment().host,
+                handle.advertisment().port,
+            );
             tokio::signal::ctrl_c().await?;
-            println!()
+            handle.abort();
         }
-        Commands::Serve(args) => {
-            let port = args.port.unwrap_or(8080);
-            let listen_key = repo.listen_key().await?;
-            let node = Node::new(listen_key, repo).await?;
-            println!("serving on port {port}");
-            lib::gateway::serve(node, port).await?;
+        Commands::Gateway(args) => {
+            let bind_addr = (args.bind_addr, args.port).into();
+            let node = OutboundDialer::new(repo).await?;
+            println!("serving on port {bind_addr}");
+            lib::gateway::serve(node, bind_addr).await?;
             tokio::signal::ctrl_c().await?;
         }
     }

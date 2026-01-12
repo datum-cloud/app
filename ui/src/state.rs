@@ -8,8 +8,7 @@ pub struct AppState {
 impl AppState {
     pub async fn load() -> anyhow::Result<Self> {
         let repo = Repo::open_or_create(Repo::default_location()).await?;
-        let listen_key = repo.listen_key().await?;
-        let node = Node::new(listen_key, repo).await?;
+        let node = Node::new(repo).await?;
 
         Ok(AppState { node })
     }

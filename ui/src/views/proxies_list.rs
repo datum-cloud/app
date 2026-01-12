@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use chrono::Local;
 use dioxus::prelude::*;
-use lib::{Metrics, TcpProxy, DATUM_CONNECT_GATEWAY_DOMAIN_NAME};
+use lib::{MetricsUpdate, ProxyState, DATUM_CONNECT_GATEWAY_DOMAIN_NAME};
 
 use crate::{
     components::{Button, BwTsChart, ChartData, CloseButton, Subhead},
@@ -19,38 +19,45 @@ pub fn TempProxies() -> Element {
         metrics.push_back(ChartData::default());
         metrics
     });
-    let mut metrics_2 = metrics.clone();
     use_future(move || async move {
         let state = consume_context::<AppState>();
-        let lstnrs = state.node().proxies().await.unwrap();
-        listeners.set(lstnrs);
+        let inbound = &state.node().inbound;
+
+        let updated = inbound.state().updated();
+        tokio::pin!(updated);
+
+        loop {
+            let proxies = inbound.proxies();
+            listeners.set(proxies);
+            (&mut updated).await;
+            updated.set(inbound.state().updated());
+        }
     });
 
     use_future(move || {
         let state = consume_context::<AppState>();
+        let mut metrics = metrics.clone();
         async move {
-            let mut metrics_sub = state.node().metrics().await.unwrap();
-            let mut prior = Metrics::default();
-            while let Ok(metrics) = metrics_sub.recv().await {
-                let mut update = metrics_2();
-                update.push_back(ChartData {
+            let mut metrics_sub = state.node().inbound.metrics();
+            let mut prior = MetricsUpdate::default();
+            while let Ok(update) = metrics_sub.recv().await {
+                let mut list = metrics.write();
+                list.push_back(ChartData {
                     ts: Local::now(),
-                    send: metrics.send - prior.send,
-                    recv: metrics.recv - prior.recv,
+                    send: update.send_total - prior.send_total,
+                    recv: update.recv_total - prior.recv_total,
                 });
 
-                if update.len() > 120 {
-                    update.pop_front();
+                if list.len() > 120 {
+                    list.pop_front();
                 }
-
-                metrics_2.set(update);
-                prior = metrics;
+                prior = update;
             }
         }
     });
 
     rsx! {
-        BwTsChart{ data: metrics_2().into(), }
+        BwTsChart{ data: metrics().into(), }
         // div {
         //     class: "my-5",
         //     div {
@@ -85,51 +92,14 @@ pub fn TempProxies() -> Element {
     }
 }
 
-// #[component]
-// fn ProxyConnectionItem(conn: ConnectionInfo, connections: Signal<Vec<ConnectionInfo>>) -> Element {
-//     let conn_2 = conn.clone();
-//     rsx! {
-//         div {
-//             div {
-//                 class: "flex mt-8",
-//                 h3 {
-//                     class: "text-xl flex-grow",
-//                     "{conn.codename}"
-//                 }
-//                 CloseButton{
-//                     onclick: move |_| {
-//                         let conn_2 = proxy_2.clone();
-//                         async move {
-//                             let state = consume_context::<AppState>();
-//                             let node = state.node();
-//                             // TODO(b5) - remove unwrap
-//                             // node.disconnect(&conn_2).await.unwrap();
-
-//                             // refresh list of connections
-//                             // let conns = node.connections().await;
-//                             // connections.set(conns);
-//                         }
-//                     },
-//                 }
-//             }
-//             Subhead { text: "{conn_2.addr}" }
-//             // if let Some(ticket) = &proxy_2.ticket() {
-//             //     p {
-//             //         class: "text-sm break-all max-w-2/3 mt-1",
-//             //         "{ticket}"
-//             //     }
-//             // }
-//         }
-//     }
-// }
-
 #[component]
-fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Element {
+fn ProxyListenerItem(proxy: ProxyState, listeners: Signal<Vec<ProxyState>>) -> Element {
     let proxy_2 = proxy.clone();
     let proxy_url = format!(
         "http://{}.{}",
-        proxy.codename, DATUM_CONNECT_GATEWAY_DOMAIN_NAME
+        proxy.info.resource_id, DATUM_CONNECT_GATEWAY_DOMAIN_NAME
     );
+    let proxy_target = format!("{}:{}", proxy.info.data.host, proxy.info.data.port);
 
     rsx! {
         div {
@@ -137,7 +107,7 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
                 class: "flex mt-8 gap-10",
                 h3 {
                     class: "text-xl flex-grow",
-                    "{proxy.codename}"
+                    "{proxy.info.label()}"
                 }
                 CloseButton{
                     onclick: move |_| {
@@ -146,23 +116,24 @@ fn ProxyListenerItem(proxy: TcpProxy, listeners: Signal<Vec<TcpProxy>>) -> Eleme
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.stop_listening(&proxy_3).await.unwrap();
+                            node.inbound.remove_proxy(&proxy_3.info.resource_id).await.unwrap();
 
-                            // refresh list of listeners
-                            let lstns = node.proxies().await.unwrap();
-                            listeners.set(lstns);
+                            // // refresh list of listeners
+                            // let lstns = node.proxies().await.unwrap();
+                            // listeners.set(lstns);
                         }
                     },
                 }
             }
             div {
                 class: "flex gap-10",
-                Subhead { text: "{proxy.host}:{proxy.port}" }
+                Subhead { text: "{proxy_target}" }
                 Link {
                     class: "text-sm block mt-2 pl-20 flex-grow cursor-pointer text-gray-600/80",
-                    to: Route::EditProxy { id: proxy.id.to_string() },
+                    to: Route::EditProxy { id: proxy.info.resource_id.to_string() },
                     "Edit"
                 }
+                Subhead { text: "{proxy.info.resource_id}" }
             }
 
             div {

@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use uuid::Uuid;
+use lib::{ProxyState, TcpProxyData};
 
 use crate::{
     components::{Button, Subhead},
@@ -7,79 +7,116 @@ use crate::{
     Route,
 };
 
+#[derive(Debug, Eq, PartialEq, Clone)]
+enum LoadState<T> {
+    Pending,
+    Ready(T),
+    Failed(String),
+}
+
 #[component]
 pub fn EditProxy(id: String) -> Element {
     let mut address = use_signal(|| "".to_string());
-    let mut codename = use_signal(|| "".to_string());
-    let mut proxy_id = use_signal(|| None::<Uuid>);
-    let mut loaded = use_signal(|| false);
+    let mut label = use_signal(|| "".to_string());
+    // let mut codename = use_signal(|| "".to_string());
+    // let mut proxy_id = use_signal(|| None::<Uuid>);
+    // let mut loaded = use_signal(|| false);
+    let mut loaded = use_signal::<LoadState<ProxyState>>(|| LoadState::Pending);
+    let mut error = use_signal(|| None);
 
     // Load the existing proxy data
     use_future(move || {
         let id_clone = id.clone();
         async move {
             let state = consume_context::<AppState>();
-            let proxies = state.node().proxies().await.unwrap();
+            let proxies = state.node().inbound.proxies();
 
             // Find the proxy by ID
-            if let Ok(uuid) = Uuid::parse_str(&id_clone) {
-                if let Some(proxy) = proxies.iter().find(|p| p.id == uuid) {
-                    address.set(format!("{}:{}", proxy.host, proxy.port));
-                    codename.set(proxy.codename.clone());
-                    proxy_id.set(Some(proxy.id));
-                    loaded.set(true);
-                }
+            if let Some(proxy) = proxies.iter().find(|p| p.info.resource_id == id_clone) {
+                address.set(proxy.info.data.address());
+                label.set(proxy.info.label().to_string());
+                loaded.set(LoadState::Ready(proxy.clone()));
+                // address.set(format!(
+                //     "{}:{}",
+                //     proxy.info.service.host, proxy.info.service.port
+                // ));
+                // // codename.set(proxy.codename.clone());
+                // proxy_id.set(Some(proxy.id));
+                // loaded.set(true);
+            } else {
+                loaded.set(LoadState::Failed("Proxy not found".to_string()))
             }
         }
     });
 
-    if !loaded() {
-        return rsx! {
-            div {
-                class: "flex items-center justify-center h-screen",
-                p { "Loading proxy details..." }
+    let proxy = match (*loaded.read()).clone() {
+        LoadState::Pending => {
+            return rsx! {
+                div {
+                    class: "flex items-center justify-center h-screen",
+                    p { "Loading proxy details..." }
+                }
             }
-        };
-    }
+        }
+        LoadState::Failed(error) => {
+            return rsx! {
+                div {
+                    class: "flex items-center justify-center h-screen",
+                    {error}
+                }
+            }
+        }
+        LoadState::Ready(proxy) => proxy,
+    };
+
+    // let ProxyState { info, enabled } = &proxy;
+    // let Advertisment { resource_id, data } = &info;
 
     rsx! {
         div {
             id: "edit-proxy",
             h1 {
                 class: "text-xl font-bold mb-20",
-                "Edit Proxy: {codename}"
+                "Edit Proxy: {proxy.info.resource_id}"
             },
             Subhead { text: "local address to forward" },
             input {
                 class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
                 placeholder: "Address",
-                value: "{address}",
+                value: address(),
                 onchange: move |e| {
                     address.set(e.value());
                 }
             }
 
+            input {
+                class: "border border-gray-300 rounded-md px-3 py-2 my-1 mr-4",
+                placeholder: "Label",
+                value: label(),
+                onchange: move |e| {
+                    label.set(e.value());
+                }
+            }
+
+            {render_error(error)}
+
             Button {
-                onclick: move |_| async move {
-                    if let Some(id) = proxy_id() {
-                        let state = consume_context::<AppState>();
-
-                        // Parse the address into host and port
-                        let addr_str = address();
-                        let addr_parts: Vec<&str> = addr_str.split(':').collect();
-                        if addr_parts.len() == 2 {
-                            let host = addr_parts[0].to_string();
-                            if let Ok(port) = addr_parts[1].parse::<u16>() {
-                                // Create updated proxy
-                                let updated_proxy = lib::TcpProxy {
-                                    id,
-                                    codename: codename(),
-                                    host,
-                                    port,
-                                };
-
-                                state.node().update_proxy(&updated_proxy).await.unwrap();
-
+                onclick: move |_event| async move {
+                    match TcpProxyData::from_host_port_str(&address()) {
+                        Err(err) => {
+                            error.set(Some(err.to_string()));
+                        },
+                        Ok(new_data) => {
+                            let state = consume_context::<AppState>();
+                            let mut proxy = match (*loaded.read()).clone() {
+                                LoadState::Ready(proxy) => proxy.clone(),
+                                _ => unreachable!()
+                            };
+                            proxy.info.data = new_data;
+                            proxy.info.label = Some(label.read().to_string());
+                            if let Err(err) = state.node().inbound.set_proxy(proxy).await {
+                                error.set(Some(err.to_string()))
+                            } else {
                                 let nav = use_navigator();
                                 nav.push(Route::TempProxies {  });
                             }
@@ -95,6 +132,18 @@ pub fn EditProxy(id: String) -> Element {
                     nav.push(Route::TempProxies {  });
                 },
                 text: "Cancel"
+            }
+        }
+    }
+}
+
+fn render_error(error: Signal<Option<String>>) -> Element {
+    let inner = error.read();
+    match &*inner {
+        None => Element::Ok(VNode::placeholder()),
+        Some(err) => {
+            rsx! {
+                div { {err.clone()} }
             }
         }
     }
