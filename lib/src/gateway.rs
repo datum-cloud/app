@@ -15,14 +15,13 @@ use self::parse::{PartialHttpRequest, extract_subdomain};
 
 mod parse;
 
-// const IROH_DESTINATION_HEADER: &str = "X-Iroh-Destination";
-const DATUM_CONNECTOR_HEADER: &str = "X-Datum-Connector";
+const DATUM_PROXY_ID_HEADER: &str = "X-Datum-Proxy-Id";
 
 async fn resolve_target(
     req: &PartialHttpRequest,
     node: &OutboundDialer,
 ) -> n0_error::Result<(EndpointId, TcpProxyData)> {
-    let codename = if let Some(value) = req.headers.get(DATUM_CONNECTOR_HEADER) {
+    let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
         value.as_str()
     } else {
         extract_subdomain(&req.host).context("No codename found")?
@@ -36,7 +35,7 @@ async fn resolve_target(
 
 async fn handle_tcp_connection(mut client: TcpStream, node: OutboundDialer) -> Result<()> {
     // Parse the initial request to get the Host header and/or X-Connector header
-    let header_names = [DATUM_CONNECTOR_HEADER];
+    let header_names = [DATUM_PROXY_ID_HEADER];
     let req = PartialHttpRequest::read(&mut client, header_names).await?;
     trace!(?req, "parsed request");
 
@@ -131,23 +130,3 @@ pub async fn serve(node: OutboundDialer, bind_addr: SocketAddr) -> Result<()> {
         }
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_extract_subdomain() {
-//         assert_eq!(extract_subdomain("foo.example.com"), "foo");
-//         assert_eq!(extract_subdomain("bar.baz.example.com"), "bar");
-//         assert_eq!(extract_subdomain("example.com"), "");
-//         assert_eq!(extract_subdomain("localhost"), "");
-//         assert_eq!(extract_subdomain("sub.localhost:8080"), "sub");
-
-//         // IP addresses should return empty string
-//         assert_eq!(extract_subdomain("192.168.1.1"), "");
-//         assert_eq!(extract_subdomain("127.0.0.1:8080"), "");
-//         assert_eq!(extract_subdomain("::1"), "");
-//         assert_eq!(extract_subdomain("[::1]:8080"), "");
-//     }
-// }

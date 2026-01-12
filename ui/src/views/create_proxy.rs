@@ -57,22 +57,11 @@ pub fn CreateProxy() -> Element {
                         enabled: true
                     };
                     state.node().inbound.set_proxy(proxy).await.unwrap();
-                    // let tkt = state.clone().node().listen().await.unwrap();
-                    // ticket.set(tkt.to_string())
                     let nav = use_navigator();
                     nav.push(Route::TempProxies {  });
                 },
                 text: "Create"
             }
-            // div {
-            //     id: "ticket-container",
-            //     class: "my-5",
-            //     Subhead { text: "Ticket" },
-            //     p {
-            //         class: "max-w-5/10 break-all",
-            //         "{ticket}"
-            //     },
-            // }
         }
     }
 }

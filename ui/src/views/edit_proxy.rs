@@ -18,9 +18,6 @@ enum LoadState<T> {
 pub fn EditProxy(id: String) -> Element {
     let mut address = use_signal(|| "".to_string());
     let mut label = use_signal(|| "".to_string());
-    // let mut codename = use_signal(|| "".to_string());
-    // let mut proxy_id = use_signal(|| None::<Uuid>);
-    // let mut loaded = use_signal(|| false);
     let mut loaded = use_signal::<LoadState<ProxyState>>(|| LoadState::Pending);
     let mut error = use_signal(|| None);
 
@@ -36,13 +33,6 @@ pub fn EditProxy(id: String) -> Element {
                 address.set(proxy.info.data.address());
                 label.set(proxy.info.label().to_string());
                 loaded.set(LoadState::Ready(proxy.clone()));
-                // address.set(format!(
-                //     "{}:{}",
-                //     proxy.info.service.host, proxy.info.service.port
-                // ));
-                // // codename.set(proxy.codename.clone());
-                // proxy_id.set(Some(proxy.id));
-                // loaded.set(true);
             } else {
                 loaded.set(LoadState::Failed("Proxy not found".to_string()))
             }
@@ -68,9 +58,6 @@ pub fn EditProxy(id: String) -> Element {
         }
         LoadState::Ready(proxy) => proxy,
     };
-
-    // let ProxyState { info, enabled } = &proxy;
-    // let Advertisment { resource_id, data } = &info;
 
     rsx! {
         div {
@@ -113,7 +100,12 @@ pub fn EditProxy(id: String) -> Element {
                                 _ => unreachable!()
                             };
                             proxy.info.data = new_data;
-                            proxy.info.label = Some(label.read().to_string());
+                            let label = label().to_string();
+                            proxy.info.label = if label.is_empty() {
+                                None
+                            } else {
+                                Some(label)
+                            };
                             if let Err(err) = state.node().inbound.set_proxy(proxy).await {
                                 error.set(Some(err.to_string()))
                             } else {

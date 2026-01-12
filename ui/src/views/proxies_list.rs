@@ -117,10 +117,6 @@ fn ProxyListenerItem(proxy: ProxyState, listeners: Signal<Vec<ProxyState>>) -> E
                             let node = state.node();
                             // TODO(b5) - remove unwrap
                             node.inbound.remove_proxy(&proxy_3.info.resource_id).await.unwrap();
-
-                            // // refresh list of listeners
-                            // let lstns = node.proxies().await.unwrap();
-                            // listeners.set(lstns);
                         }
                     },
                 }
@@ -153,11 +149,6 @@ fn ProxyListenerItem(proxy: ProxyState, listeners: Signal<Vec<ProxyState>>) -> E
                     "{proxy_url}"
                 }
             }
-
-            // p {
-            //     class: "text-sm break-all max-w-2/3 mt-1",
-            //     "{proxy_2.ticket()}"
-            // }
         }
     }
 }
