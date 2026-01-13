@@ -1,14 +1,14 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use lib::{
-    Advertisment, AdvertismentTicket, InboundListener, OutboundDialer, ProxyState, Repo,
-    TcpProxyData,
+    Advertisment, AdvertismentTicket, ConnectNode, ListenNode, ProxyState, Repo, TcpProxyData,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Datum Connect Agent
@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
         }
         Commands::Serve => {
-            let node = InboundListener::new(repo).await?;
+            let node = ListenNode::new(repo).await?;
             println!("listening as {}", node.endpoint_id());
             for p in node.proxies() {
                 if !p.enabled {
@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
                 codename,
                 ticket,
             } = args;
-            let node = OutboundDialer::new(repo).await?;
+            let node = ConnectNode::new(repo).await?;
             let ticket = if let Some(codename) = codename {
                 node.fetch_ticket(&codename).await?
             } else if let Some(ticket) = ticket {
@@ -169,10 +169,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Gateway(args) => {
             let bind_addr = (args.bind_addr, args.port).into();
-            let node = OutboundDialer::new(repo).await?;
+            let node = ConnectNode::new(repo).await?;
             println!("serving on port {bind_addr}");
-            lib::gateway::serve(node, bind_addr).await?;
-            tokio::signal::ctrl_c().await?;
+            let cancel_token = CancellationToken::new();
+            let fut = lib::gateway::serve(node, bind_addr, cancel_token.clone());
+            tokio::pin!(fut);
+            tokio::select! {
+                res = &mut fut => res?,
+                _ = tokio::signal::ctrl_c() => {
+                    cancel_token.cancel();
+                    fut.await?;
+                }
+            }
         }
     }
     Ok(())

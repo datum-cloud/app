@@ -21,16 +21,16 @@ pub fn TempProxies() -> Element {
     });
     use_future(move || async move {
         let state = consume_context::<AppState>();
-        let inbound = &state.node().inbound;
+        let node = &state.node().listen;
 
-        let updated = inbound.state().updated();
+        let updated = node.state().updated();
         tokio::pin!(updated);
 
         loop {
-            let proxies = inbound.proxies();
+            let proxies = node.proxies();
             listeners.set(proxies);
             (&mut updated).await;
-            updated.set(inbound.state().updated());
+            updated.set(node.state().updated());
         }
     });
 
@@ -38,7 +38,7 @@ pub fn TempProxies() -> Element {
         let state = consume_context::<AppState>();
         let mut metrics = metrics.clone();
         async move {
-            let mut metrics_sub = state.node().inbound.metrics();
+            let mut metrics_sub = state.node().listen.metrics();
             let mut prior = MetricsUpdate::default();
             while let Ok(update) = metrics_sub.recv().await {
                 let mut list = metrics.write();
@@ -116,7 +116,7 @@ fn ProxyListenerItem(proxy: ProxyState, listeners: Signal<Vec<ProxyState>>) -> E
                             let state = consume_context::<AppState>();
                             let node = state.node();
                             // TODO(b5) - remove unwrap
-                            node.inbound.remove_proxy(&proxy_3.info.resource_id).await.unwrap();
+                            node.listen.remove_proxy(&proxy_3.info.resource_id).await.unwrap();
                         }
                     },
                 }

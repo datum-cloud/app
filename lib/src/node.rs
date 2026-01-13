@@ -3,18 +3,19 @@ use iroh::{Endpoint, EndpointId, SecretKey};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_future::{IterExt, StreamExt};
-use quinn::{RecvStream, SendStream};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tracing::{Instrument, debug, error, error_span, warn};
 
-use iroh_proxy_utils::http_connect::{
-    AuthHandler, IROH_HTTP_CONNECT_ALPN, TunnelClientStreams, TunnelListener,
+use iroh_proxy_utils::{
+    ALPN as IROH_HTTP_CONNECT_ALPN, AuthError, AuthHandler, Authority, HttpRequest, RequestKind,
+    TunnelClientPool, TunnelListener,
 };
 
 use crate::state::AdvertismentTicket;
@@ -23,15 +24,15 @@ use crate::{Repo, config::Config};
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub inbound: InboundListener,
-    pub outbound: OutboundDialer,
+    pub listen: ListenNode,
+    pub connect: ConnectNode,
 }
 
 impl Node {
     pub async fn new(repo: Repo) -> Result<Self> {
-        let inbound = InboundListener::new(repo.clone()).await?;
-        let outbound = OutboundDialer::new(repo).await?;
-        Ok(Self { inbound, outbound })
+        let listen = ListenNode::new(repo.clone()).await?;
+        let connect = ConnectNode::new(repo).await?;
+        Ok(Self { listen, connect })
     }
 }
 
@@ -42,7 +43,7 @@ pub struct MetricsUpdate {
 }
 
 #[derive(Debug, Clone)]
-pub struct InboundListener {
+pub struct ListenNode {
     router: Router,
     state: StateWrapper,
     repo: Repo,
@@ -51,7 +52,7 @@ pub struct InboundListener {
     _metrics_task: Arc<AbortOnDropHandle<()>>,
 }
 
-impl InboundListener {
+impl ListenNode {
     pub async fn new(repo: Repo) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.listen_key().await?;
@@ -119,7 +120,7 @@ impl InboundListener {
             .update(&self.repo, |state| state.set_proxy(proxy.clone()))
             .await?;
         if proxy.enabled {
-            self.announce_proxy(&proxy.info).await;
+            self.announce_proxy(&proxy.info).await?;
         }
         Ok(())
     }
@@ -139,25 +140,29 @@ impl InboundListener {
         res
     }
 
-    async fn announce_proxy(&self, proxy: &Advertisment) {
+    async fn announce_proxy(&self, proxy: &Advertisment) -> Result<()> {
         let ticket = proxy.ticket(self.endpoint_id());
         let name = ticket.data.resource_id.clone();
         debug!(%name, ?proxy, "announce");
         if let Err(err) = self.n0des.publish_ticket(name, ticket).await {
             error!(?proxy, "Failed to publish ticket: {err:#}");
+            Err(err).anyerr()
+        } else {
+            Ok(())
         }
     }
 
     async fn announce_all(&self) {
         let state = self.state.get();
-        state
+        let count = state
             .proxies
             .iter()
             .filter(|proxy| proxy.enabled)
-            .map(async |proxy| self.announce_proxy(&proxy.info))
+            .map(async |proxy| self.announce_proxy(&proxy.info).await)
             .into_unordered_stream()
             .count()
             .await;
+        debug!("announced {count} proxies");
     }
 
     pub fn endpoint_id(&self) -> EndpointId {
@@ -166,7 +171,7 @@ impl InboundListener {
 }
 
 impl StateWrapper {
-    fn is_tcp_allowed(&self, host: &str, port: u16) -> bool {
+    fn tcp_proxy_exists(&self, host: &str, port: u16) -> bool {
         self.get()
             .proxies
             .iter()
@@ -177,34 +182,48 @@ impl StateWrapper {
 impl AuthHandler for StateWrapper {
     fn authorize<'a>(
         &'a self,
-        req: &'a iroh_proxy_utils::http_connect::Request,
-    ) -> std::pin::Pin<
-        Box<dyn Future<Output = Result<bool, iroh_proxy_utils::error::AuthError>> + Send + 'a>,
-    > {
+        _remote_id: EndpointId,
+        req: &'a HttpRequest,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
         Box::pin(async move {
-            match req {
-                iroh_proxy_utils::http_connect::Request::Connect(req) => {
-                    Ok(self.is_tcp_allowed(&req.host, req.port))
-                }
-                iroh_proxy_utils::http_connect::Request::Http(_req) => Ok(false),
+            let authority = match &req.kind {
+                RequestKind::Connect { authority } => authority,
+                RequestKind::Http {
+                    authority_from_path,
+                    ..
+                } => authority_from_path
+                    .as_ref()
+                    .ok_or_else(|| AuthError::BadRequest)?,
+            };
+
+            if self.tcp_proxy_exists(&authority.host, authority.port) {
+                Ok(())
+            } else {
+                Err(AuthError::Forbidden)
             }
         })
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct OutboundDialer {
-    endpoint: Endpoint,
-    n0des: Arc<iroh_n0des::Client>,
+pub struct ConnectNode {
+    pub(crate) endpoint: Endpoint,
+    pub(crate) n0des: Arc<iroh_n0des::Client>,
+    pub(crate) pool: TunnelClientPool,
 }
 
-impl OutboundDialer {
+impl ConnectNode {
     pub async fn new(repo: Repo) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.connect_key().await?;
         let endpoint = build_endpoint(secret_key, &config, vec![]).await?;
         let n0des = build_n0des_client(&endpoint).await?;
-        Ok(Self { endpoint, n0des })
+        let pool = TunnelClientPool::new(endpoint.clone(), Default::default());
+        Ok(Self {
+            endpoint,
+            n0des,
+            pool,
+        })
     }
 
     pub async fn fetch_ticket(&self, codename: &str) -> Result<AdvertismentTicket> {
@@ -222,11 +241,6 @@ impl OutboundDialer {
         self.endpoint.id()
     }
 
-    pub async fn connect_codename(&self, codename: &str) -> Result<OutboundProxyStreams> {
-        let ticket = self.fetch_ticket(codename).await?;
-        self.connect(ticket.endpoint, ticket.service()).await
-    }
-
     pub async fn connect_codename_and_bind_local(
         &self,
         codename: &str,
@@ -237,43 +251,23 @@ impl OutboundDialer {
             .await
     }
 
-    pub async fn connect(
-        &self,
-        endpoint: EndpointId,
-        advertisment: &TcpProxyData,
-    ) -> Result<OutboundProxyStreams> {
-        let conn = TunnelClientStreams::new(
-            &self.endpoint,
-            endpoint,
-            advertisment.host.clone(),
-            advertisment.port,
-        )
-        .await?;
-        let (send, recv) = conn.new_streams().await?;
-        Ok(OutboundProxyStreams {
-            endpoint_id: endpoint,
-            send,
-            recv,
-        })
-    }
-
     pub async fn connect_and_bind_local(
         &self,
         remote_id: EndpointId,
         advertisment: &TcpProxyData,
         bind_addr: SocketAddr,
     ) -> Result<OutboundProxyHandle> {
-        let conn = TunnelClientStreams::new(
-            &self.endpoint,
-            remote_id,
-            advertisment.host.clone(),
-            advertisment.port,
-        )
-        .await?;
-        let handle = conn.wrap_tcp([bind_addr]).await?;
+        let local_socket = TcpListener::bind(bind_addr).await?;
+        let pool = self.pool.clone();
+        let authority: Authority = advertisment.clone().into();
+        let task = tokio::spawn(async move {
+            if let Err(err) = pool.forward_from_local_listener(remote_id, authority, local_socket).await {
+                warn!("Forwarding local socket failed: {err:#}");
+            }
+        }.instrument(error_span!("forward-tcp", %bind_addr, %remote_id, authority=%advertisment.address())));
         Ok(OutboundProxyHandle {
             remote_id,
-            task: handle,
+            task,
             bound_addr: bind_addr,
             advertisment: advertisment.clone(),
         })
@@ -303,26 +297,6 @@ impl OutboundProxyHandle {
     pub fn advertisment(&self) -> &TcpProxyData {
         &self.advertisment
     }
-}
-
-pub enum BindAddr {
-    AsAdvertised,
-    Override(SocketAddr),
-}
-
-impl BindAddr {
-    pub fn or_default(&self, addr: SocketAddr) -> SocketAddr {
-        match self {
-            BindAddr::AsAdvertised => addr,
-            BindAddr::Override(addr) => *addr,
-        }
-    }
-}
-
-pub struct OutboundProxyStreams {
-    pub endpoint_id: EndpointId,
-    pub send: SendStream,
-    pub recv: RecvStream,
 }
 
 /// Build a new iroh endpoint, applying all relevant details from Configuration

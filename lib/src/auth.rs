@@ -2,10 +2,7 @@ use std::{path::PathBuf, pin::Pin};
 
 use anyhow::Context;
 use iroh::EndpointId;
-use iroh_proxy_utils::{
-    error::AuthError,
-    http_connect::{AuthHandler, Request},
-};
+use iroh_proxy_utils::{AuthError, AuthHandler, HttpRequest as Request, RequestKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,12 +124,16 @@ pub struct Auth {
 impl AuthHandler for Auth {
     fn authorize<'a>(
         &'a self,
+        _remote_id: EndpointId,
         req: &'a Request,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, AuthError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
         let res = self.allows_req(req);
         Box::pin(async move {
-            let res: Result<bool, AuthError> = Ok(res);
-            res
+            if res {
+                Ok(())
+            } else {
+                Err(AuthError::Forbidden)
+            }
         })
     }
 }
@@ -153,17 +154,17 @@ impl Auth {
     }
 
     fn allows_req(&self, req: &Request) -> bool {
-        match req {
-            Request::Connect(connect_req) => {
+        match &req.kind {
+            RequestKind::Connect { authority } => {
                 // if !self.allows_endpoint(connect_req.endpoint_addr) {
                 //     return false;
                 // }
-                if !self.allows_port(connect_req.port) {
+                if !self.allows_port(authority.port) {
                     return false;
                 }
                 false
             }
-            Request::Http(_http_req) => {
+            RequestKind::Http { .. } => {
                 // TODO - finish
                 // if !self.allows_port(http_req.path) {
                 //     return Ok(false)
@@ -191,7 +192,8 @@ impl Auth {
 
 #[cfg(test)]
 mod tests {
-    use iroh_proxy_utils::http_connect::{AuthHandler, Request};
+    use iroh::EndpointId;
+    use iroh_proxy_utils::{AuthHandler, HttpRequest as Request};
     use serde::Deserialize;
 
     use crate::auth::Auth;
@@ -201,16 +203,15 @@ mod tests {
         let no_auth = Auth::default();
         let request = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
         let req = Request::parse(request).unwrap();
-        let got = no_auth.authorize(&req).await.unwrap();
-
-        assert_eq!(got, false);
+        let remote_id = EndpointId::from_bytes(&[0u8; 32]).unwrap();
+        let got = no_auth.authorize(remote_id, &req).await;
+        assert!(got.is_err());
     }
 
     #[derive(Deserialize)]
     struct Fixture {
         request: String,
-        allow: Option<bool>,
-        error: Option<String>,
+        allow: bool,
     }
 
     #[tokio::test]
@@ -219,14 +220,11 @@ mod tests {
         let fixtures = include_str!("../tests/auth/01_tcp_443.fixtures.json");
         let fixtures: Vec<Fixture> = serde_json::from_str(fixtures).unwrap();
         let auth: Auth = serde_yml::from_str(auth).unwrap();
+        let remote_id = EndpointId::from_bytes(&[0u8; 32]).unwrap();
         for fixture in fixtures {
             let req = Request::parse(fixture.request.as_bytes()).unwrap();
-            match auth.authorize(&req).await {
-                Ok(allow) => assert_eq!(fixture.allow, Some(allow)),
-                Err(e) => {
-                    assert_eq!(fixture.error, Some(format!("{:?}", e)))
-                }
-            }
+            let res = auth.authorize(remote_id, &req).await;
+            assert_eq!(fixture.allow, res.is_ok());
         }
     }
 }

@@ -3,6 +3,7 @@ use std::{path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use iroh::EndpointId;
+use iroh_proxy_utils::Authority;
 use iroh_tickets::{ParseError, Ticket};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,15 @@ impl Advertisment {
 pub struct TcpProxyData {
     pub host: String,
     pub port: u16,
+}
+
+impl From<TcpProxyData> for Authority {
+    fn from(value: TcpProxyData) -> Self {
+        Self {
+            host: value.host,
+            port: value.port,
+        }
+    }
 }
 
 impl TcpProxyData {

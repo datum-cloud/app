@@ -26,7 +26,7 @@ pub fn EditProxy(id: String) -> Element {
         let id_clone = id.clone();
         async move {
             let state = consume_context::<AppState>();
-            let proxies = state.node().inbound.proxies();
+            let proxies = state.node().listen.proxies();
 
             // Find the proxy by ID
             if let Some(proxy) = proxies.iter().find(|p| p.info.resource_id == id_clone) {
@@ -106,7 +106,7 @@ pub fn EditProxy(id: String) -> Element {
                             } else {
                                 Some(label)
                             };
-                            if let Err(err) = state.node().inbound.set_proxy(proxy).await {
+                            if let Err(err) = state.node().listen.set_proxy(proxy).await {
                                 error.set(Some(err.to_string()))
                             } else {
                                 let nav = use_navigator();

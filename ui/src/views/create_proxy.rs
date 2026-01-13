@@ -56,7 +56,7 @@ pub fn CreateProxy() -> Element {
                         info,
                         enabled: true
                     };
-                    state.node().inbound.set_proxy(proxy).await.unwrap();
+                    state.node().listen.set_proxy(proxy).await.unwrap();
                     let nav = use_navigator();
                     nav.push(Route::TempProxies {  });
                 },

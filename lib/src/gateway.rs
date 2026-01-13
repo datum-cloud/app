@@ -1,132 +1,129 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use iroh::EndpointId;
-use n0_error::StackResultExt;
-use quinn::SendStream;
-use tokio::io::{self, AsyncRead, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{Instrument, debug, error, info, trace, warn, warn_span};
+use iroh_proxy_utils::{HttpRequest, IROH_DESTINATION_HEADER, RequestKind, ResolveDestination};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, debug, info, warn, warn_span};
 
-use crate::TcpProxyData;
-use crate::node::OutboundDialer;
+use crate::{AdvertismentTicket, node::ConnectNode};
 
-use self::parse::{PartialHttpRequest, extract_subdomain};
+const DATUM_PROXY_ID_HEADER: &str = "Datum-Proxy-Id";
 
-mod parse;
-
-const DATUM_PROXY_ID_HEADER: &str = "X-Datum-Proxy-Id";
-
-async fn resolve_target(
-    req: &PartialHttpRequest,
-    node: &OutboundDialer,
-) -> n0_error::Result<(EndpointId, TcpProxyData)> {
-    let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
-        value.as_str()
-    } else {
-        extract_subdomain(&req.host).context("No codename found")?
-    };
-    let ticket = node
-        .fetch_ticket(codename)
-        .await
-        .context("Failed to resolve codename")?;
-    Ok((ticket.endpoint, ticket.service().clone()))
-}
-
-async fn handle_tcp_connection(mut client: TcpStream, node: OutboundDialer) -> Result<()> {
-    // Parse the initial request to get the Host header and/or X-Connector header
-    let header_names = [DATUM_PROXY_ID_HEADER];
-    let req = PartialHttpRequest::read(&mut client, header_names).await?;
-    trace!(?req, "parsed request");
-
-    let (endpoint_id, target_authority) = match resolve_target(&req, &node).await {
-        Ok(res) => res,
-        Err(err) => {
-            warn!("Failed to resolve destination from HTTP request: {err:#}");
-            send_404_response(&mut client).await?;
-            return Ok(());
-        }
-    };
-
-    let mut streams = node.connect(endpoint_id, &target_authority).await?;
-    info!(remote=%streams.endpoint_id.fmt_short(), "iroh connection opened");
-
-    let (mut client_read, mut client_write) = client.split();
-
-    // Run both directions concurrently
-    tokio::join!(
-        async {
-            let res = send_all(&mut streams.send, &req.initial_data, &mut client_read).await;
-            debug!("Client to tunnel copy ended: {res:?}");
-        },
-        async {
-            let res = tokio::io::copy(&mut streams.recv, &mut client_write).await;
-            debug!("Tunnel to client copy ended: {res:?}");
-        },
-    );
-
-    debug!("connection finished");
-
-    Ok(())
-}
-
-async fn send_all(
-    send: &mut SendStream,
-    initial_data: &[u8],
-    reader: &mut (impl AsyncRead + Unpin),
-) -> io::Result<u64> {
-    send.write_all(&initial_data).await?;
-    let res = tokio::io::copy(reader, send).await;
-    send.finish()?;
-    res.map(|n| n + initial_data.len() as u64)
-}
-
-/// Send an HTTP 404 Not Found response to the client, assumes TCP stream has
-/// made an HTTP request.
-async fn send_404_response(stream: &mut TcpStream) -> Result<()> {
-    let html_body = include_str!("../static/gateway_not_found.html");
-
-    let response = format!(
-        "HTTP/1.1 404 Not Found\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {}",
-        html_body.len(),
-        html_body
-    );
-
-    stream.write_all(response.as_bytes()).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
-pub async fn serve(node: OutboundDialer, bind_addr: SocketAddr) -> Result<()> {
+pub async fn serve(
+    node: ConnectNode,
+    bind_addr: SocketAddr,
+    cancel_token: CancellationToken,
+) -> Result<()> {
     let listener = TcpListener::bind(bind_addr).await?;
     info!(?bind_addr, endpoint_id = %node.endpoint_id().fmt_short(),"TCP proxy gateway started");
 
+    let parse_destination = Resolver {
+        n0des: node.n0des.clone(),
+    };
+
+    let html_body = include_str!("../static/gateway_not_found.html");
+
     let mut conn_id = 0;
     loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                conn_id += 1;
-                let span = warn_span!("conn", id = conn_id);
-                let node = node.clone();
-                tokio::spawn(
-                    async move {
-                        debug!("New connection from {}", peer_addr);
-                        if let Err(e) = handle_tcp_connection(stream, node).await {
-                            warn!("Connection handling error: {}", e);
+        let (stream, peer_addr) = tokio::select! {
+            res = listener.accept() => res?,
+            _ = cancel_token.cancelled() => break,
+        };
+        conn_id += 1;
+
+        tokio::spawn({
+            let pool = node.pool.clone();
+            let parse_destination = parse_destination.clone();
+            let cancel_token = cancel_token.child_token();
+            cancel_token.run_until_cancelled_owned(
+                async move {
+                    debug!("New connection from {}", peer_addr);
+                    match pool
+                        .forward_http_connection(stream, &parse_destination)
+                        .await
+                    {
+                        Ok(()) => {
+                            debug!("connection closed");
+                        }
+                        Err(mut err) => {
+                            warn!("proxy request failed: {} {:#}", err.status, err.source);
+                            if let Err(err) = err.finalize_with_body(html_body.as_bytes()).await {
+                                warn!("failed to send error response to client: {err:#}");
+                            }
                         }
                     }
-                    .instrument(span),
-                );
+                }
+                .instrument(warn_span!("conn", %conn_id)),
+            )
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct Resolver {
+    n0des: Arc<iroh_n0des::Client>,
+}
+
+impl ResolveDestination for Resolver {
+    fn resolve_destination<'a>(
+        &'a self,
+        req: &'a HttpRequest,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<EndpointId>> + Send + 'a>> {
+        // Note: This is currently a bit of a grab-all bag for development. Once we deploy this,
+        // we'll only support exactly the forms that envoy sends over.
+        Box::pin(async {
+            // If "Iroh-Destination" header is set, use that directly.
+            if let Some(endpoint_id) = req.headers.get(IROH_DESTINATION_HEADER) {
+                return Some(endpoint_id.to_str().ok()?.parse().ok()?);
             }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
+
+            // If "Datum-Proxy-Id" header is set, use that to fetch a ticket.
+            let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
+                value.to_str().ok()
+
+            // If this is a regular HTTP request (not HTTP CONNECT), we try to parse the codename
+            // from either the authority (which is set if this is a proxy request) or from the host
+            // (for regular HTTP requests)
+            } else if let RequestKind::Http {
+                authority_from_path,
+                ..
+            } = &req.kind
+            {
+                let host = authority_from_path
+                    .as_ref()
+                    .map(|x| x.host.as_str())
+                    .or_else(|| req.headers.get("host").and_then(|h| h.to_str().ok()));
+                host.and_then(extract_subdomain)
+
+            // Otherwise, no destination, abort.
+            } else {
+                None
+            };
+
+            let codename = codename?;
+            let ticket = self
+                .n0des
+                .fetch_ticket::<AdvertismentTicket>(codename.to_string())
+                .await
+                .inspect_err(|err| warn!("Failed to fetch ticket: {err:#}"))
+                .ok()??;
+            Some(ticket.ticket.endpoint)
+        })
+    }
+}
+
+pub(super) fn extract_subdomain(host: &str) -> Option<&str> {
+    let host = host
+        .rsplit_once(':')
+        .map(|(host, _port)| host)
+        .unwrap_or(host);
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        None
+    } else {
+        host.split_once(".").map(|(first, _rest)| first)
     }
 }
