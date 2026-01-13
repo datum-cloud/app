@@ -11,7 +11,7 @@ use std::vec;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{Instrument, debug, error, error_span, warn};
+use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use iroh_proxy_utils::{
     ALPN as IROH_HTTP_CONNECT_ALPN, AuthError, AuthHandler, Authority, HttpRequest, RequestKind,
@@ -258,13 +258,15 @@ impl ConnectNode {
         bind_addr: SocketAddr,
     ) -> Result<OutboundProxyHandle> {
         let local_socket = TcpListener::bind(bind_addr).await?;
+        let bound_addr = local_socket.local_addr()?;
         let pool = self.pool.clone();
         let authority: Authority = advertisment.clone().into();
         let task = tokio::spawn(async move {
+            info!("bound local socket on {bound_addr}");
             if let Err(err) = pool.forward_from_local_listener(remote_id, authority, local_socket).await {
                 warn!("Forwarding local socket failed: {err:#}");
             }
-        }.instrument(error_span!("forward-tcp", %bind_addr, %remote_id, authority=%advertisment.address())));
+        }.instrument(error_span!("forward-tcp", remote_id=%remote_id.fmt_short(), authority=%advertisment.address())));
         Ok(OutboundProxyHandle {
             remote_id,
             task,
