@@ -1,12 +1,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use n0_error::Result;
 use hyper::StatusCode;
-use iroh::EndpointId;
 use iroh_proxy_utils::{
-    ExtractDestination, HttpRequest, IROH_DESTINATION_HEADER, RequestKind, ResolveDestination,
+    Authority, Destination, ExtractDestination, ForwardMode, HttpRequest, ResolveDestination,
 };
+use n0_error::Result;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     net::TcpListener,
@@ -16,7 +15,7 @@ use tracing::{Instrument, debug, info, warn, warn_span};
 
 use crate::{AdvertismentTicket, node::ConnectNode};
 
-const DATUM_PROXY_ID_HEADER: &str = "Datum-Proxy-Id";
+// const DATUM_PROXY_ID_HEADER: &str = "Datum-Proxy-Id";
 
 pub async fn serve(
     node: ConnectNode,
@@ -73,46 +72,62 @@ impl ResolveDestination for Resolver {
     fn resolve_destination<'a>(
         &'a self,
         req: &'a HttpRequest,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Option<EndpointId>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<Destination>> + Send + 'a>> {
+        info!("resolve: {req:?}");
         // Note: This is currently a bit of a grab-all bag for development. Once we deploy this,
         // we'll only support exactly the forms that envoy sends over.
         Box::pin(async {
-            // If "Iroh-Destination" header is set, use that directly.
-            if let Some(endpoint_id) = req.headers.get(IROH_DESTINATION_HEADER) {
-                return Some(endpoint_id.to_str().ok()?.parse().ok()?);
-            }
+            // // If "Iroh-Destination" header is set, use that directly.
+            // if let Some(endpoint_id) = req.headers.get(IROH_DESTINATION_HEADER) {
+            //     return Some(endpoint_id.to_str().ok()?.parse().ok()?);
+            // }
 
-            // If "Datum-Proxy-Id" header is set, use that to fetch a ticket.
-            let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
-                value.to_str().ok()
+            // // If "Datum-Proxy-Id" header is set, use that to fetch a ticket.
+            // let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
+            //     value.to_str().ok()
 
             // If this is a regular HTTP request (not HTTP CONNECT), we try to parse the codename
             // from either the authority (which is set if this is a proxy request) or from the host
             // (for regular HTTP requests)
-            } else if let RequestKind::Http {
-                authority_from_path,
-                ..
-            } = &req.kind
-            {
-                let host = authority_from_path
-                    .as_ref()
-                    .map(|x| x.host.as_str())
-                    .or_else(|| req.headers.get("host").and_then(|h| h.to_str().ok()));
-                host.and_then(extract_subdomain)
+            // } else if let RequestKind::Http {
+            // } else if let RequestKind::Http {
+            //     authority_from_path,
+            //     ..
+            // } = &req.kind
+            // {
+            //     let host = authority_from_path
+            //         .as_ref()
+            //         .map(|x| x.host.as_str())
+            //         .or_else(|| req.headers.get("host").and_then(|h| h.to_str().ok()));
+            //     host.and_then(extract_subdomain)
+            // // Otherwise, no destination, abort.
+            // } else {
+            //     None
+            // };
 
-            // Otherwise, no destination, abort.
-            } else {
-                None
-            };
+            // We only support the subdomain extraction for now.
+            let codename = req
+                .headers
+                .get("host")
+                .and_then(|h| h.to_str().ok())
+                .and_then(extract_subdomain)?;
 
-            let codename = codename?;
+            debug!(%codename, "extracted codename, fetching ticket...");
             let ticket = self
                 .n0des
                 .fetch_ticket::<AdvertismentTicket>(codename.to_string())
                 .await
                 .inspect_err(|err| warn!("Failed to fetch ticket: {err:#}"))
-                .ok()??;
-            Some(ticket.ticket.endpoint)
+                .ok()??
+                .ticket;
+            debug!(?ticket, "fetched ticket");
+            Some(Destination {
+                endpoint_id: ticket.endpoint,
+                mode: ForwardMode::ConnectTunnel(Authority {
+                    host: ticket.data.data.host.clone(),
+                    port: ticket.data.data.port,
+                }),
+            })
         })
     }
 }
