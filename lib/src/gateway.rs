@@ -2,9 +2,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use hyper::StatusCode;
 use iroh::EndpointId;
-use iroh_proxy_utils::{HttpRequest, IROH_DESTINATION_HEADER, RequestKind, ResolveDestination};
-use tokio::net::TcpListener;
+use iroh_proxy_utils::{
+    ExtractDestination, HttpRequest, IROH_DESTINATION_HEADER, RequestKind, ResolveDestination,
+};
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, warn, warn_span};
 
@@ -20,15 +26,13 @@ pub async fn serve(
     let listener = TcpListener::bind(bind_addr).await?;
     info!(?bind_addr, endpoint_id = %node.endpoint_id().fmt_short(),"TCP proxy gateway started");
 
-    let parse_destination = Resolver {
+    let extract_destination = ExtractDestination::Custom(Arc::new(Resolver {
         n0des: node.n0des.clone(),
-    };
-
-    let html_body = include_str!("../static/gateway_not_found.html");
+    }));
 
     let mut conn_id = 0;
     loop {
-        let (stream, peer_addr) = tokio::select! {
+        let (mut stream, peer_addr) = tokio::select! {
             res = listener.accept() => res?,
             _ = cancel_token.cancelled() => break,
         };
@@ -36,24 +40,21 @@ pub async fn serve(
 
         tokio::spawn({
             let pool = node.pool.clone();
-            let parse_destination = parse_destination.clone();
+            let extract_destination = extract_destination.clone();
             let cancel_token = cancel_token.child_token();
             cancel_token.run_until_cancelled_owned(
                 async move {
                     debug!("New connection from {}", peer_addr);
-                    match pool
-                        .forward_http_connection(stream, &parse_destination)
+                    if let Err(err) = pool
+                        .forward_http_connection(&mut stream, &extract_destination)
                         .await
                     {
-                        Ok(()) => {
-                            debug!("connection closed");
+                        warn!("proxy request failed: {:#}", err);
+                        if let Some(status) = err.should_reply() {
+                            send_error_response(&mut stream, status).await.ok();
                         }
-                        Err(mut err) => {
-                            warn!("proxy request failed: {} {:#}", err.status, err.source);
-                            if let Err(err) = err.finalize_with_body(html_body.as_bytes()).await {
-                                warn!("failed to send error response to client: {err:#}");
-                            }
-                        }
+                    } else {
+                        debug!("connection closed");
                     }
                 }
                 .instrument(warn_span!("conn", %conn_id)),
@@ -126,4 +127,20 @@ pub(super) fn extract_subdomain(host: &str) -> Option<&str> {
     } else {
         host.split_once(".").map(|(first, _rest)| first)
     }
+}
+
+pub(super) async fn send_error_response(
+    mut writer: impl AsyncWrite + Unpin,
+    status: StatusCode,
+) -> Result<()> {
+    let html_body = include_str!("../static/gateway_not_found.html");
+    let header_section = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or(""),
+        html_body.len()
+    );
+    writer.write_all(header_section.as_bytes()).await?;
+    writer.write_all(html_body.as_bytes()).await?;
+    Ok(())
 }
