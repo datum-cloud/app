@@ -2,7 +2,9 @@ use dioxus::prelude::*;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
-use crate::views::{CreateProxy, EditProxy, JoinProxy, Login, Navbar, Signup, TempProxies};
+use crate::views::{
+    CreateProxy, EditProxy, JoinProxy, Login, Navbar, ProxiesList, Signup, TunnelBandwidth,
+};
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
@@ -34,13 +36,15 @@ enum Route {
     // many routes with a common UI like a navbar.
     #[layout(Navbar)]
         #[route("/")]
-        TempProxies{},
+        ProxiesList {},
         // The route attribute can include dynamic parameters that implement [`std::str::FromStr`] and [`std::fmt::Display`] with the `:` syntax.
         // In this case, id will match any integer like `/blog/123` or `/blog/-456`.
         #[route("/proxy/create")]
         CreateProxy {},
         #[route("/proxy/edit/:id")]
         EditProxy { id: String },
+        #[route("/proxy/edit/:id/bandwidth")]
+        TunnelBandwidth { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
 }
@@ -55,6 +59,29 @@ fn main() {
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
 
+    #[cfg(feature = "desktop")]
+    {
+        // Use a custom titlebar so we can theme the top chrome (height + color).
+        use dioxus_desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
+
+        dioxus::LaunchBuilder::desktop()
+            .with_cfg(desktop! {
+                Config::new()
+                    // Make "close" behave like hide, so the tray icon can restore it.
+                    .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+                    .with_window(
+                        WindowBuilder::new()
+                            .with_title("Datum Connect")
+                            .with_inner_size(LogicalSize::new(740.0, 740.0))
+                            // Required for rounded app chrome: we render our own rounded container inside.
+                            .with_transparent(true)
+                            .with_decorations(false),
+                    )
+            })
+            .launch(App);
+    }
+
+    #[cfg(not(feature = "desktop"))]
     dioxus::launch(App);
 }
 

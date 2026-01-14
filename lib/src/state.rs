@@ -7,10 +7,10 @@ use iroh_proxy_utils::Authority;
 use iroh_tickets::{ParseError, Ticket};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, futures::Notified};
 use uuid::Uuid;
 
-use crate::Repo;
+use crate::{DATUM_CONNECT_GATEWAY_DOMAIN_NAME, Repo};
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct State {
@@ -65,8 +65,8 @@ impl StateWrapper {
         self.inner.load_full()
     }
 
-    pub async fn updated(&self) {
-        self.notify.notified().await
+    pub fn updated(&self) -> Notified<'_> {
+        self.notify.notified()
     }
 
     pub async fn update<R>(
@@ -90,6 +90,12 @@ pub struct ProxyState {
     pub enabled: bool,
 }
 
+impl ProxyState {
+    pub fn id(&self) -> &str {
+        &self.info.resource_id
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
 pub struct Advertisment {
     pub resource_id: String,
@@ -107,10 +113,12 @@ impl Advertisment {
         }
     }
 
+    pub fn id(&self) -> &str {
+        &self.resource_id
+    }
+
     pub fn label(&self) -> &str {
-        self.label
-            .as_deref()
-            .unwrap_or_else(|| self.resource_id.as_str())
+        self.label.as_deref().unwrap_or_else(|| self.id())
     }
 
     pub fn codename(&self) -> String {
@@ -119,6 +127,19 @@ impl Advertisment {
 
     pub fn service(&self) -> &TcpProxyData {
         &self.data
+    }
+
+    pub fn domain(&self) -> String {
+        format!("{}.{}", self.id(), DATUM_CONNECT_GATEWAY_DOMAIN_NAME)
+    }
+
+    // TODO: Not everything is HTTP
+    pub fn local_url(&self) -> String {
+        format!("http://{}", self.service().address())
+    }
+
+    pub fn datum_url(&self) -> String {
+        format!("datum://{}", self.id())
     }
 }
 

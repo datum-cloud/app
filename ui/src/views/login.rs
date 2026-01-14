@@ -9,7 +9,7 @@ pub fn Login() -> Element {
             id: "create-domain",
             h1 { "TODO: login" }
             Link {
-                to: Route::TempProxies {  },
+                to: Route::ProxiesList {  },
                 "Proxies"
             }
         }

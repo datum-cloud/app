@@ -10,8 +10,9 @@ mod head;
 mod splash;
 mod typography;
 
-pub use bandwidth_timeseries_chart::{BwTsChart, ChartData};
-pub use button::{Button, CloseButton};
+pub use button::Button;
+pub use button::ButtonKind;
 pub use head::Head;
 pub use splash::Splash;
+#[allow(unused)]
 pub use typography::Subhead;

@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::vec;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, debug, error, error_span, info, warn};
 
@@ -38,8 +39,8 @@ impl Node {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MetricsUpdate {
-    pub send_total: u64,
-    pub recv_total: u64,
+    pub send: u64,
+    pub recv: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -82,8 +83,8 @@ impl ListenNode {
                         + metrics.magicsock.recv_data_relay.get();
                     let send_total = metrics.magicsock.send_data.get();
                     let update = MetricsUpdate {
-                        send_total,
-                        recv_total,
+                        send: send_total,
+                        recv: recv_total,
                     };
                     metrics_tx.send(update).ok();
                     n0_future::time::sleep(metrics_update_interval).await;
@@ -103,6 +104,10 @@ impl ListenNode {
         Ok(this)
     }
 
+    pub fn state_updated(&self) -> Notified<'_> {
+        self.state.updated()
+    }
+
     pub fn state(&self) -> &StateWrapper {
         &self.state
     }
@@ -113,6 +118,15 @@ impl ListenNode {
 
     pub fn proxies(&self) -> Vec<ProxyState> {
         self.state.get().proxies.iter().cloned().collect()
+    }
+
+    pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {
+        self.state
+            .get()
+            .proxies
+            .iter()
+            .find(|p| p.id() == id)
+            .cloned()
     }
 
     pub async fn set_proxy(&self, proxy: ProxyState) -> Result<()> {
@@ -126,10 +140,12 @@ impl ListenNode {
     }
 
     pub async fn remove_proxy(&self, resource_id: &str) -> Result<Option<ProxyState>> {
+        debug!(%resource_id, "removing proxy {resource_id}");
         let res = self
             .state
             .update(&self.repo, move |state| state.remove_proxy(resource_id))
             .await;
+        debug!(%resource_id, "removed {res:?}");
         if let Err(err) = self
             .n0des
             .unpublish_ticket::<AdvertismentTicket>(resource_id.to_string())

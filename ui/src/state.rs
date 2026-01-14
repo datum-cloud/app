@@ -1,4 +1,4 @@
-use lib::{Node, Repo};
+use lib::{ListenNode, Node, Repo};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -15,5 +15,9 @@ impl AppState {
 
     pub fn node(&self) -> &Node {
         &self.node
+    }
+
+    pub fn listen_node(&self) -> &ListenNode {
+        &self.node().listen
     }
 }

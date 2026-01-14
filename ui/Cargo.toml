@@ -30,6 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 data-encoding.workspace = true
 uuid.workspace = true
+n0-error.workspace = true
 
 [features]
 default = ["desktop"]
