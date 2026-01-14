@@ -1,171 +1,146 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use anyhow::{Result, bail};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, warn};
+use anyhow::Result;
+use hyper::StatusCode;
+use iroh::EndpointId;
+use iroh_proxy_utils::{
+    ExtractDestination, HttpRequest, IROH_DESTINATION_HEADER, RequestKind, ResolveDestination,
+};
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, debug, info, warn, warn_span};
 
-use crate::node::Node;
+use crate::{AdvertismentTicket, node::ConnectNode};
 
-/// Parse HTTP request to extract Host header and determine subdomain
-async fn parse_http_host(stream: &mut TcpStream) -> Result<(String, Vec<u8>)> {
-    let mut buffer = Vec::new();
-    let mut temp = [0u8; 8192];
+const DATUM_PROXY_ID_HEADER: &str = "Datum-Proxy-Id";
 
+pub async fn serve(
+    node: ConnectNode,
+    bind_addr: SocketAddr,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let listener = TcpListener::bind(bind_addr).await?;
+    info!(?bind_addr, endpoint_id = %node.endpoint_id().fmt_short(),"TCP proxy gateway started");
+
+    let extract_destination = ExtractDestination::Custom(Arc::new(Resolver {
+        n0des: node.n0des.clone(),
+    }));
+
+    let mut conn_id = 0;
     loop {
-        let n = stream.read(&mut temp).await?;
-        if n == 0 {
-            bail!("Connection closed before complete headers");
-        }
+        let (mut stream, peer_addr) = tokio::select! {
+            res = listener.accept() => res?,
+            _ = cancel_token.cancelled() => break,
+        };
+        conn_id += 1;
 
-        buffer.extend_from_slice(&temp[..n]);
-
-        // Look for end of headers
-        if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-            let headers_end = pos + 4;
-            let headers = std::str::from_utf8(&buffer[..headers_end])?;
-
-            // Parse Host header
-            for line in headers.lines() {
-                if line.to_lowercase().starts_with("host:") {
-                    let host = line[5..].trim().to_string();
-                    return Ok((host, buffer));
-                }
-            }
-
-            bail!("No Host header found");
-        }
-
-        // Prevent unbounded buffering
-        if buffer.len() > 16384 {
-            bail!("Headers too large");
-        }
-    }
-}
-
-fn extract_subdomain(host: &str) -> String {
-    let host = host.split(':').next().unwrap_or(host);
-
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        return String::new();
-    }
-
-    let parts: Vec<&str> = host.split('.').collect();
-
-    if parts.len() == 2 && parts[1] == "localhost" {
-        return parts[0].to_string();
-    }
-
-    if parts.len() > 2 {
-        parts[0].to_string()
-    } else {
-        String::new()
-    }
-}
-
-async fn handle_connection(mut client: TcpStream, node: Node) -> Result<()> {
-    // Parse the initial request to get the Host header
-    let (host, initial_data) = parse_http_host(&mut client).await?;
-    let codename = extract_subdomain(&host);
-
-    // go to my existing pool of tunnels, if it's there, open a new set of steams & proxy over
-    // if not, create a new tunnel, add it to the pool, and return the streams
-    let (info, (mut tunnel_write, mut tunnel_read)) = match node.connect(codename.clone()).await {
-        Ok(result) => result,
-        Err(e) => {
-            warn!("Failed to connect to proxy '{}': {}", codename, e);
-            send_404_response(&mut client).await?;
-            return Ok(());
-        }
-    };
-    info!(info = ?info, "connection opened");
-
-    // Send the buffered request data through the tunnel
-    tunnel_write.write_all(&initial_data).await?;
-
-    let (mut client_read, mut client_write) = client.split();
-    let client_to_tunnel = async { tokio::io::copy(&mut client_read, &mut tunnel_write).await };
-    let tunnel_to_client = async { tokio::io::copy(&mut tunnel_read, &mut client_write).await };
-
-    // Run both directions concurrently
-    tokio::select! {
-        result = client_to_tunnel => {
-            if let Err(e) = result {
-                debug!("Client to tunnel copy ended: {}", e);
-            }
-        }
-        result = tunnel_to_client => {
-            if let Err(e) = result {
-                debug!("Tunnel to client copy ended: {}", e);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Send an HTTP 404 Not Found response to the client, assumes TCP stream has
-/// made an HTTP request.
-async fn send_404_response(stream: &mut TcpStream) -> Result<()> {
-    let html_body = include_str!("../static/gateway_not_found.html");
-
-    let response = format!(
-        "HTTP/1.1 404 Not Found\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {}",
-        html_body.len(),
-        html_body
-    );
-
-    stream.write_all(response.as_bytes()).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
-pub async fn serve(node: Node, port: u16) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await?;
-    info!(addr = ?addr, endpoint_id = node.endpoint_id(),"TCP proxy gateway started");
-
-    loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                debug!("New connection from {}", peer_addr);
-                let node = node.clone();
-
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, node).await {
-                        warn!("Connection handling error: {}", e);
+        tokio::spawn({
+            let pool = node.pool.clone();
+            let extract_destination = extract_destination.clone();
+            let cancel_token = cancel_token.child_token();
+            cancel_token.run_until_cancelled_owned(
+                async move {
+                    debug!("New connection from {}", peer_addr);
+                    if let Err(err) = pool
+                        .forward_http_connection(&mut stream, &extract_destination)
+                        .await
+                    {
+                        warn!("proxy request failed: {:#}", err);
+                        if let Some(status) = err.should_reply() {
+                            send_error_response(&mut stream, status).await.ok();
+                        }
+                    } else {
+                        debug!("connection closed");
                     }
-                });
+                }
+                .instrument(warn_span!("conn", %conn_id)),
+            )
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct Resolver {
+    n0des: Arc<iroh_n0des::Client>,
+}
+
+impl ResolveDestination for Resolver {
+    fn resolve_destination<'a>(
+        &'a self,
+        req: &'a HttpRequest,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<EndpointId>> + Send + 'a>> {
+        // Note: This is currently a bit of a grab-all bag for development. Once we deploy this,
+        // we'll only support exactly the forms that envoy sends over.
+        Box::pin(async {
+            // If "Iroh-Destination" header is set, use that directly.
+            if let Some(endpoint_id) = req.headers.get(IROH_DESTINATION_HEADER) {
+                return Some(endpoint_id.to_str().ok()?.parse().ok()?);
             }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
+
+            // If "Datum-Proxy-Id" header is set, use that to fetch a ticket.
+            let codename = if let Some(value) = req.headers.get(DATUM_PROXY_ID_HEADER) {
+                value.to_str().ok()
+
+            // If this is a regular HTTP request (not HTTP CONNECT), we try to parse the codename
+            // from either the authority (which is set if this is a proxy request) or from the host
+            // (for regular HTTP requests)
+            } else if let RequestKind::Http {
+                authority_from_path,
+                ..
+            } = &req.kind
+            {
+                let host = authority_from_path
+                    .as_ref()
+                    .map(|x| x.host.as_str())
+                    .or_else(|| req.headers.get("host").and_then(|h| h.to_str().ok()));
+                host.and_then(extract_subdomain)
+
+            // Otherwise, no destination, abort.
+            } else {
+                None
+            };
+
+            let codename = codename?;
+            let ticket = self
+                .n0des
+                .fetch_ticket::<AdvertismentTicket>(codename.to_string())
+                .await
+                .inspect_err(|err| warn!("Failed to fetch ticket: {err:#}"))
+                .ok()??;
+            Some(ticket.ticket.endpoint)
+        })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_subdomain() {
-        assert_eq!(extract_subdomain("foo.example.com"), "foo");
-        assert_eq!(extract_subdomain("bar.baz.example.com"), "bar");
-        assert_eq!(extract_subdomain("example.com"), "");
-        assert_eq!(extract_subdomain("localhost"), "");
-        assert_eq!(extract_subdomain("sub.localhost:8080"), "sub");
-
-        // IP addresses should return empty string
-        assert_eq!(extract_subdomain("192.168.1.1"), "");
-        assert_eq!(extract_subdomain("127.0.0.1:8080"), "");
-        assert_eq!(extract_subdomain("::1"), "");
-        assert_eq!(extract_subdomain("[::1]:8080"), "");
+pub(super) fn extract_subdomain(host: &str) -> Option<&str> {
+    let host = host
+        .rsplit_once(':')
+        .map(|(host, _port)| host)
+        .unwrap_or(host);
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        None
+    } else {
+        host.split_once(".").map(|(first, _rest)| first)
     }
+}
+
+pub(super) async fn send_error_response(
+    mut writer: impl AsyncWrite + Unpin,
+    status: StatusCode,
+) -> Result<()> {
+    let html_body = include_str!("../static/gateway_not_found.html");
+    let header_section = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\n\r\n",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or(""),
+        html_body.len()
+    );
+    writer.write_all(header_section.as_bytes()).await?;
+    writer.write_all(html_body.as_bytes()).await?;
+    Ok(())
 }

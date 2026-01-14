@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
-arc-swap.workspace = true
+arc-swap = { workspace = true, features = ["serde"] }
 axum.workspace = true
 chrono.workspace = true
 data-encoding.workspace = true
@@ -38,6 +38,11 @@ tracing-subscriber.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+iroh-blobs = "0.97.0"
+clap = { version = "4.5.54", features = ["env"] }
+httparse = "1.10.1"
+unicase = "2.9.0"
+notify = "8.2.0"
 
 [dev-dependencies]
 

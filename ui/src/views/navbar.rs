@@ -1,16 +1,11 @@
-use crate::{components::Button, state::AppState, Route};
+use crate::{components::Button, Route};
 use dioxus::prelude::*;
 use dioxus_desktop::use_window;
 
 /// The Navbar component that will be rendered on all pages of our app since every page is under the layout.
-///
-///
-/// This layout component wraps the UI of [Route::Home] and [Route::Blog] in a common navbar. The contents of the Home and Blog
-/// routes will be rendered under the outlet inside this component
 #[component]
 pub fn Navbar() -> Element {
     let window = use_window();
-    let state = consume_context::<AppState>();
     rsx! {
         div {
             class: "flex flex-col p-5",
