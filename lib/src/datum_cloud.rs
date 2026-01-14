@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
+use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::boxed::BoxFuture;
 use n0_future::{BufferedStreamExt, TryStreamExt};
 use tracing::warn;
@@ -61,7 +61,7 @@ impl DatumCloudClient {
             Some(auth) => auth,
         };
         let auth = Arc::new(auth);
-        let http = reqwest::Client::builder().build()?;
+        let http = reqwest::Client::builder().build().anyerr()?;
         Ok(Self {
             env,
             auth: Arc::new(ArcSwap::from(auth)),
@@ -96,7 +96,7 @@ impl DatumCloudClient {
         let orgs = self.orgs().await?;
         let stream = n0_future::stream::iter(orgs.into_iter().map(async |org| {
             let projects = self.projects(&org.resource_id).await?;
-            anyhow::Ok(OrganizationWithProjects { org, projects })
+            n0_error::Ok(OrganizationWithProjects { org, projects })
         }));
         stream.buffered_unordered(16).try_collect().await
     }
@@ -192,7 +192,8 @@ impl DatumCloudClient {
             )
             .send()
             .await
-            .inspect_err(|e| warn!(%url, "Failed to fetch: {e:#}"))?;
+            .inspect_err(|e| warn!(%url, "Failed to fetch: {e:#}"))
+            .with_std_context(|_| format!("Failed to fetch {url}"))?;
         let status = res.status();
         if !status.is_success() {
             let text = match res.text().await {
@@ -200,10 +201,13 @@ impl DatumCloudClient {
                 Err(err) => err.to_string(),
             };
             warn!(%url, "Request failed: {status} {text}");
-            anyhow::bail!("Request failed with status {status}");
+            n0_error::bail_any!("Request failed with status {status}");
         }
 
-        let json: serde_json::Value = res.json().await?;
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .std_context("Failed to parse response text as JSON")?;
         Ok(json)
     }
 }

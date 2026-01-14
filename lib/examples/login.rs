@@ -12,7 +12,7 @@ use lib::{
 };
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> n0_error::Result<()> {
     tracing_subscriber::fmt::init();
 
     // Open a repo in a temp dir.

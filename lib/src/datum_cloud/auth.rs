@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
+use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use openidconnect::{
     AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
     CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
@@ -137,9 +137,12 @@ impl AuthClient {
             .expect("Client should build");
 
         // Use OpenID Connect Discovery to fetch the provider metadata.
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(IssuerUrl::new(provider.issuer_url)?, &http)
-                .await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(
+            IssuerUrl::new(provider.issuer_url).std_context("Invalid OIDC provider issuer URL")?,
+            &http,
+        )
+        .await
+        .std_context("Failed to discover OIDC provider metadata")?;
 
         // Create an OpenID Connect client
         let oidc = CoreClient::from_provider_metadata(
@@ -185,11 +188,13 @@ impl AuthClient {
         // Exchange auth code for ID and access tokens.
         let tokens = self
             .oidc
-            .exchange_code(AuthorizationCode::new(authorization_code))?
+            .exchange_code(AuthorizationCode::new(authorization_code))
+            .std_context("Missing OIDC provider metadata")?
             .set_pkce_verifier(pkce_verifier)
             .request_async(&self.http)
             .await
-            .inspect_err(|e| error!("Failed to exchange auth code to access token: {e:#}"))?;
+            .std_context("Failed to exchange auth code to access token")
+            .inspect_err(|e| error!("{e:#}"))?;
 
         let state = self.parse_token_response(tokens, &nonce)?;
         info!(email=%state.profile.email, expires_at=%state.tokens.expires_at(), "login succesfull");
@@ -199,10 +204,11 @@ impl AuthClient {
     pub async fn fetch_profile(&self, tokens: &AuthTokens) -> Result<UserProfile> {
         let userinfo: CoreUserInfoClaims = self
             .oidc
-            .user_info(tokens.access_token.clone(), None)?
+            .user_info(tokens.access_token.clone(), None)
+            .std_context("Missing OIDC provider metadata")?
             .request_async(&self.http)
             .await
-            .map_err(|err| anyhow!("Failed requesting user info: {}", err))?;
+            .std_context("Failed to fetch user info")?;
         let profile = UserProfile::from_standard_claims(userinfo.standard_claims())?;
         Ok(profile)
     }
@@ -212,9 +218,11 @@ impl AuthClient {
         debug!("Refreshing access token");
         let tokens = self
             .oidc
-            .exchange_refresh_token(refresh_token)?
+            .exchange_refresh_token(refresh_token)
+            .std_context("Missing OIDC provider metadata")?
             .request_async(&self.http)
-            .await?;
+            .await
+            .std_context("Failed to refresh tokens")?;
         let state = self.parse_token_response(tokens, refresh_nonce_verifier)?;
         debug!("Access token refreshed");
         Ok(state)
@@ -228,7 +236,7 @@ impl AuthClient {
         // Extract the ID token claims after verifying its authenticity and nonce.
         let id_token = tokens
             .id_token()
-            .ok_or_else(|| anyhow!("Server did not return an ID token"))?;
+            .ok_or_else(|| anyerr!("Server did not return an ID token"))?;
         let id_token_verifier = self
             .oidc
             .id_token_verifier()
@@ -237,19 +245,24 @@ impl AuthClient {
 
         let claims = id_token
             .claims(&id_token_verifier, nonce_verifier)
-            .inspect_err(|e| error!("Failed to verify claims: {e:#}"))?;
+            .std_context("Failed to verify claims")
+            .inspect_err(|e| error!("{e:#}"))?;
 
         // Verify the access token hash to ensure that the access token hasn't been substituted for
         // another user's.
         if let Some(expected_access_token_hash) = claims.access_token_hash() {
             let actual_access_token_hash = AccessTokenHash::from_token(
                 tokens.access_token(),
-                id_token.signing_alg()?,
-                id_token.signing_key(&id_token_verifier)?,
+                id_token
+                    .signing_alg()
+                    .std_context("Invalid id token signing algorithm")?,
+                id_token
+                    .signing_key(&id_token_verifier)
+                    .std_context("Missing id token signing key")?,
             )
-            .context("failed to create access token hash from token")?;
+            .std_context("failed to create access token hash from token")?;
             if actual_access_token_hash != *expected_access_token_hash {
-                return Err(anyhow!("Invalid access token"));
+                return Err(anyerr!("Invalid access token"));
             }
         }
 
@@ -320,12 +333,12 @@ mod types {
 mod redirect_server {
     //! Web server waiting for OAuth redirct requests
 
-    use anyhow::Context;
     use axum::{
         Router,
         extract::{Query, State},
         routing::get,
     };
+    use n0_error::StdResultExt;
     use openidconnect::{CsrfToken, RedirectUrl};
     use serde::Deserialize;
     use std::{
@@ -344,13 +357,13 @@ mod redirect_server {
     }
 
     pub struct RedirectServer {
-        rx: mpsc::Receiver<anyhow::Result<OauthRedirectData>>,
+        rx: mpsc::Receiver<n0_error::Result<OauthRedirectData>>,
         cancel_token: CancellationToken,
         csrf_token: CsrfToken,
     }
 
     impl RedirectServer {
-        pub async fn bind(csrf_token: CsrfToken) -> anyhow::Result<Self> {
+        pub async fn bind(csrf_token: CsrfToken) -> std::io::Result<Self> {
             let bind_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), REDIRECT_SERVER_PORT);
             let cancel_token = CancellationToken::new();
             let (tx, rx) = mpsc::channel(1);
@@ -359,9 +372,7 @@ mod redirect_server {
             let app = Router::new()
                 .route("/oauth/redirect", get(oauth_redirect))
                 .with_state(state);
-            let listener = TcpListener::bind(bind_addr)
-                .await
-                .with_context(|| format!("Failed to bind TCP server on {bind_addr}"))?;
+            let listener = TcpListener::bind(bind_addr).await?;
 
             tokio::spawn({
                 let cancel_token = cancel_token.clone();
@@ -390,20 +401,20 @@ mod redirect_server {
             .expect("valid url")
         }
 
-        pub async fn recv_with_timeout(&mut self, timeout: Duration) -> anyhow::Result<String> {
+        pub async fn recv_with_timeout(&mut self, timeout: Duration) -> n0_error::Result<String> {
             let res = tokio::time::timeout(timeout, self.recv()).await;
             self.cancel_token.cancel();
-            res?
+            res.anyerr()?
         }
 
-        pub async fn recv(&mut self) -> anyhow::Result<String> {
+        pub async fn recv(&mut self) -> n0_error::Result<String> {
             let code = loop {
                 let reply = self
                     .rx
                     .recv()
                     .await
-                    .context("web server closed")?
-                    .context("web server failed")?;
+                    .std_context("web server closed")?
+                    .std_context("web server failed")?;
                 if reply.state == *self.csrf_token.secret() {
                     break reply.code;
                 }
@@ -421,7 +432,7 @@ mod redirect_server {
 
     #[derive(Clone)]
     struct AppState {
-        sender: mpsc::Sender<anyhow::Result<OauthRedirectData>>,
+        sender: mpsc::Sender<n0_error::Result<OauthRedirectData>>,
     }
 
     async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> String {

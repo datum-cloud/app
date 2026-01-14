@@ -9,7 +9,6 @@ resolver = "2"
 [workspace.dependencies]
 iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "Frando/refactor" }
 lib = { path = "lib" }
-anyhow = "1"
 arc-swap = "1.8.0"
 axum = "0.7"
 chrono = { version = "0.4", features = ["clock"] }

@@ -6,7 +6,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn load() -> anyhow::Result<Self> {
+    pub async fn load() -> n0_error::Result<Self> {
         let repo = Repo::open_or_create(Repo::default_location()).await?;
         let node = Node::new(repo).await?;
 

@@ -1,4 +1,6 @@
 use dioxus::prelude::*;
+#[cfg(feature = "desktop")]
+use n0_error::Result;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
@@ -124,8 +126,10 @@ fn App() -> Element {
 }
 
 #[cfg(feature = "desktop")]
-fn init_menu_bar() -> anyhow::Result<TrayIcon> {
+fn init_menu_bar() -> Result<TrayIcon> {
     // Initialize the tray menu
+
+    use n0_error::StdResultExt;
     let tray_menu = Menu::new();
 
     // Create menu items with IDs for event handling
@@ -146,7 +150,7 @@ fn init_menu_bar() -> anyhow::Result<TrayIcon> {
         .with_tooltip("Dioxus Tray App")
         .with_icon(icon)
         .build()
-        .context("building tray icon")
+        .std_context("building tray icon")
 }
 
 /// Load an icon from a PNG file

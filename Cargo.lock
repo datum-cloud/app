@@ -1423,10 +1423,10 @@ checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 name = "datum-connect"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "dotenv",
  "lib",
+ "n0-error",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1437,7 +1437,6 @@ dependencies = [
 name = "datum_proxy"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "data-encoding",
  "dioxus",
@@ -4477,7 +4476,6 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 name = "lib"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "arc-swap",
  "axum 0.7.9",
  "chrono",

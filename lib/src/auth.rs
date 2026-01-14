@@ -1,8 +1,8 @@
 use std::{path::PathBuf, pin::Pin};
 
-use anyhow::Context;
 use iroh::EndpointId;
 use iroh_proxy_utils::{AuthError, AuthHandler, HttpRequest as Request, RequestKind};
+use n0_error::{StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,16 +139,16 @@ impl AuthHandler for Auth {
 }
 
 impl Auth {
-    pub async fn from_file(path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn from_file(path: PathBuf) -> n0_error::Result<Self> {
         let config = tokio::fs::read_to_string(path)
             .await
             .context("reading auth file")?;
-        let config = serde_yml::from_str(&config).context("parsing auth file")?;
+        let config = serde_yml::from_str(&config).std_context("parsing auth file")?;
         Ok(config)
     }
 
-    pub async fn write(&self, path: PathBuf) -> anyhow::Result<()> {
-        let data = serde_yml::to_string(self)?;
+    pub async fn write(&self, path: PathBuf) -> n0_error::Result<()> {
+        let data = serde_yml::to_string(self).anyerr()?;
         tokio::fs::write(path, data).await?;
         Ok(())
     }

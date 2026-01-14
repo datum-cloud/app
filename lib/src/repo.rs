@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use iroh::SecretKey;
 use log::{info, warn};
+use n0_error::{Result, StackResultExt, StdResultExt};
 
 use crate::{StateWrapper, auth::Auth, config::Config, datum_cloud::AuthState, state::State};
 
@@ -91,7 +91,7 @@ impl Repo {
         };
 
         let key = tokio::fs::read(key_file_path).await?;
-        let key = key.as_slice().try_into()?;
+        let key = key.as_slice().try_into().anyerr()?;
         Ok(SecretKey::from_bytes(key))
     }
 
@@ -103,7 +103,7 @@ impl Repo {
 
     pub async fn write_oauth(&self, state: &AuthState) -> Result<()> {
         let path = self.0.join(Self::OAUTH_FILE);
-        let data = serde_yml::to_string(state)?;
+        let data = serde_yml::to_string(state).anyerr()?;
         tokio::fs::write(path, data).await?;
         Ok(())
     }
@@ -117,7 +117,7 @@ impl Repo {
                 .await
                 .context("failed to read oauth file")?;
             let state: AuthState =
-                serde_yml::from_str(&data).context("failed to parse oauth file")?;
+                serde_yml::from_str(&data).std_context("failed to parse oauth file")?;
             Ok(Some(state))
         }
     }

@@ -1,10 +1,10 @@
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 
-use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use iroh::EndpointId;
 use iroh_proxy_utils::Authority;
 use iroh_tickets::{ParseError, Ticket};
+use n0_error::{Result, StackResultExt, StdResultExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, futures::Notified};
@@ -170,7 +170,7 @@ impl TcpProxyData {
 
     fn parse_host_port(s: &str) -> Result<(String, u16)> {
         let (host, port) = s.rsplit_once(":").context("missing colon")?;
-        let port: u16 = port.parse().context("invalid port")?;
+        let port: u16 = port.parse().std_context("invalid port")?;
         Ok((host.to_string(), port))
     }
 }
@@ -178,12 +178,12 @@ impl TcpProxyData {
 impl State {
     pub(crate) async fn from_file(path: PathBuf) -> Result<Self> {
         let data = tokio::fs::read(path).await?;
-        let state: State = serde_yml::from_slice(&data)?;
+        let state: State = serde_yml::from_slice(&data).anyerr()?;
         Ok(state)
     }
 
     pub(crate) async fn write_to_file(&self, path: PathBuf) -> Result<()> {
-        let data = serde_yml::to_string(&self)?;
+        let data = serde_yml::to_string(&self).anyerr()?;
         tokio::fs::write(&path, &data).await?;
         Ok(())
     }

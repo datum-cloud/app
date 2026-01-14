@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{Context, Result};
+use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -28,12 +28,12 @@ impl Config {
         let config = tokio::fs::read_to_string(path)
             .await
             .context("reading config file")?;
-        let config = serde_yml::from_str(&config).context("paring config file")?;
+        let config = serde_yml::from_str(&config).std_context("parsing config file")?;
         Ok(config)
     }
 
     pub async fn write(&self, path: PathBuf) -> Result<()> {
-        let data = serde_yml::to_string(self)?;
+        let data = serde_yml::to_string(self).anyerr()?;
         fs::write(path, data)?;
         Ok(())
     }

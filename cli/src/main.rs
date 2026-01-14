@@ -76,7 +76,7 @@ pub struct ServeArgs {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> n0_error::Result<()> {
     dotenv::dotenv().ok();
     let args = Args::parse();
 
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(ticket) = ticket {
                 ticket
             } else {
-                anyhow::bail!("either --codename or --ticket is required");
+                n0_error::bail_any!("either --codename or --ticket is required");
             };
 
             let handle = node

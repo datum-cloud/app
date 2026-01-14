@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
+use n0_error::Result;
 use hyper::StatusCode;
 use iroh::EndpointId;
 use iroh_proxy_utils::{
