@@ -77,13 +77,14 @@ pub struct ServeArgs {
 
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
-    dotenv::dotenv().ok();
+    tracing_subscriber::fmt::init();
+    if let Some(path) = dotenv::dotenv().ok() {
+        info!("Loaded environment variables from {}", path.display());
+    }
+
     let args = Args::parse();
 
-    tracing_subscriber::fmt::init();
-
     let path = args.repo.unwrap_or_else(Repo::default_location);
-    info!("opening repo at {}", path.display());
     let repo = Repo::open_or_create(path).await?;
 
     match args.command {
@@ -117,12 +118,14 @@ async fn main() -> n0_error::Result<()> {
                 info: advertisment,
             };
 
+            println!("Adding {proxy:?})");
             let state = repo.load_state().await?;
             state
                 .update(&repo, |state| {
                     state.set_proxy(proxy);
                 })
                 .await?;
+            println!("OK.");
         }
         Commands::Serve => {
             let node = ListenNode::new(repo).await?;

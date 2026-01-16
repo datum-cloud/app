@@ -19,7 +19,12 @@ impl Repo {
     const STATE_FILE: &str = "state.yml";
 
     pub fn default_location() -> PathBuf {
-        dirs_next::data_local_dir().unwrap().join("datum_connect")
+        match std::env::var("DATUM_CONNECT_REPO") {
+            Ok(path) => path.into(),
+            Err(_) => dirs_next::data_local_dir()
+                .expect("Failed to get local data dir")
+                .join("datum_connect"),
+        }
     }
 
     /// Opens or creates a repo at the given base directory.

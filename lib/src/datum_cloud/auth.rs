@@ -511,6 +511,7 @@ mod redirect_server {
     };
     use tokio::{net::TcpListener, sync::mpsc};
     use tokio_util::sync::CancellationToken;
+    use tracing::{Instrument, debug, instrument, warn};
 
     pub const REDIRECT_SERVER_PORT: u16 = 7076;
 
@@ -527,6 +528,7 @@ mod redirect_server {
     }
 
     impl RedirectServer {
+        #[instrument("oidc-redirect-server")]
         pub async fn bind(csrf_token: CsrfToken) -> std::io::Result<Self> {
             let bind_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), REDIRECT_SERVER_PORT);
             let cancel_token = CancellationToken::new();
@@ -537,6 +539,7 @@ mod redirect_server {
                 .route("/oauth/redirect", get(oauth_redirect))
                 .with_state(state);
             let listener = TcpListener::bind(bind_addr).await?;
+            debug!(addr=%bind_addr, "OIDC redirect HTTP server listening");
 
             tokio::spawn({
                 let cancel_token = cancel_token.clone();
@@ -545,9 +548,13 @@ mod redirect_server {
                         .with_graceful_shutdown(cancel_token.cancelled_owned())
                         .await
                     {
+                        warn!("OIDC redirect HTTP server failed: {err:#}");
                         tx.send(Err(err.into())).await.ok();
+                    } else {
+                        debug!("OIDC redirect HTTP server stopped");
                     }
                 }
+                .instrument(tracing::Span::current())
             });
 
             Ok(Self {

@@ -54,7 +54,9 @@ enum Route {
 
 fn main() {
     tracing_subscriber::fmt::init();
-    dotenv::dotenv().ok();
+    if let Some(path) = dotenv::dotenv().ok() {
+        info!("Loaded environment variables from {}", path.display());
+    }
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     gtk::init().unwrap();

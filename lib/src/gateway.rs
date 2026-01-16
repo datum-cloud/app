@@ -5,7 +5,7 @@ use hyper::StatusCode;
 use iroh_proxy_utils::{
     Authority, Destination, ExtractDestination, ForwardMode, HttpRequest, ResolveDestination,
 };
-use n0_error::Result;
+use n0_error::{Result, StackResultExt, StdResultExt};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     net::TcpListener,
@@ -117,8 +117,12 @@ impl ResolveDestination for Resolver {
                 .n0des
                 .fetch_ticket::<AdvertismentTicket>(codename.to_string())
                 .await
-                .inspect_err(|err| warn!("Failed to fetch ticket: {err:#}"))
-                .ok()??
+                .std_context("Failed to fetch ticket")
+                .inspect_err(|err| warn!("{err:#}"))
+                .ok()?
+                .context("Ticket not found on n0des")
+                .inspect_err(|err| warn!("{err:#}"))
+                .ok()?
                 .ticket;
             debug!(?ticket, "fetched ticket");
             Some(Destination {
