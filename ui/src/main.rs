@@ -147,7 +147,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
         .append_items(&[&show_item, &separator, &quit_item])
         .expect("Failed to build tray menu");
 
-    let icon = load_icon_from_file("assets/images/logo-datum-light.png");
+    let icon = icon();
 
     // Build the tray icon
     TrayIconBuilder::new()
@@ -159,14 +159,15 @@ fn init_menu_bar() -> Result<TrayIcon> {
 }
 
 /// Load an icon from a PNG file
-#[allow(dead_code)]
-fn load_icon_from_file(path: &str) -> Icon {
-    let image = image::open(path)
-        .expect("Failed to open icon file")
-        .to_rgba8();
+#[cfg(feature = "desktop")]
+fn icon() -> Icon {
+    use image::GenericImageView;
+
+    let icon_bytes = include_bytes!("../assets/images/logo-datum-light.png");
+    let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
-    let rgba = image.into_raw();
+    let rgba = image.to_rgba8().into_raw();
 
     Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
 }

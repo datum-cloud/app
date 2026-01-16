@@ -133,12 +133,17 @@ impl Advertisment {
         format!("{}.{}", self.id(), DATUM_CONNECT_GATEWAY_DOMAIN_NAME)
     }
 
+    // TODO: Change to HTTPS
+    pub fn datum_url(&self) -> String {
+        format!("http://{}.{}", self.id(), DATUM_CONNECT_GATEWAY_DOMAIN_NAME)
+    }
+
     // TODO: Not everything is HTTP
     pub fn local_url(&self) -> String {
         format!("http://{}", self.service().address())
     }
 
-    pub fn datum_url(&self) -> String {
+    pub fn datum_resource_url(&self) -> String {
         format!("datum://{}", self.id())
     }
 }

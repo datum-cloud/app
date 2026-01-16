@@ -96,15 +96,15 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
     rsx! {
         div {
             // darker shadow + hover lift
-            class: "bg-white rounded-xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] hover:shadow-[0_14px_34px_rgba(17,24,39,0.14)] transition-shadow cursor-pointer",
-            onclick: move |_| {
-                let id = proxy_signal().id().to_string();
-                // Clicking the card opens details (unless the kebab menu is open)
-                if menu_open() {
-                    return;
-                }
-                nav.push(Route::EditProxy { id });
-            },
+            class: "bg-white rounded-xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] hover:shadow-[0_14px_34px_rgba(17,24,39,0.14)] transition-shadow",
+            // onclick: move |_| {
+            //     let id = proxy_signal().id().to_string();
+            //     // Clicking the card opens details (unless the kebab menu is open)
+            //     if menu_open() {
+            //         return;
+            //     }
+            //     nav.push(Route::EditProxy { id });
+            // },
             div { class: "",
                 // header row: title + toggle
                 div { class: "p-4 flex items-start justify-between",
@@ -123,15 +123,21 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                     div { class: "space-y-4",
                         div { class: "flex items-center gap-5",
                             GlobeIcon { class: "w-[20] h-[20]" }
-                            span { class: "text-base font-medium text-slate-800", {proxy.info.domain()} }
+                            a { class: "text-base font-medium text-slate-800",
+                                href: format!("http://{}", proxy.info.domain()),
+                                {proxy.info.domain()}
+                            }
                         }
                         div { class: "flex items-center gap-5",
                             ArrowIcon { class: "w-[20] h-[20] "}
-                            span { class: "text-base text-slate-700", {proxy.info.local_url()} }
+                            a { class: "text-base text-slate-800",
+                                href: proxy.info.local_url(),
+                                {proxy.info.local_url()}
+                            }
                         }
                         div { class: "flex items-center gap-5",
                             PlugIcon { class: "w-[20] h-[20] "}
-                            span { class: "text-base text-slate-700", {proxy.info.datum_url()} }
+                            span { class: "text-base text-slate-700", {proxy.info.datum_resource_url()} }
                         }
                     }
                     div { class: "relative",

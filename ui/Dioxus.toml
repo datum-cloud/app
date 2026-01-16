@@ -1,9 +1,14 @@
 [application]
+# Web `build` & `serve` dist path
+out_dir = "dist"
+
+# resource (static) file folder
+asset_dir = "assets"
 
 [web.app]
 
 # HTML title tag content
-title = "datum_proxy"
+title = "Datum Connect"
 
 # include `assets` in web platform
 [web.resource]
@@ -19,3 +24,16 @@ script = []
 # Javascript code file
 # serve: [dev-server] only
 script = []
+
+[bundle]
+identifier = "net.datum"
+publisher = "Datum"
+icon = ["assets/images/logo-datum-dark.png"]
+resources = ["assets/*"]
+short_description = "Create Datum tunnels"
+long_description = """
+Datum Datum Datum
+"""
+
+[bundle.macos]
+bundle_name = "Datum Connect"

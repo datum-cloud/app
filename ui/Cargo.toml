@@ -1,5 +1,5 @@
 [package]
-name = "datum_proxy"
+name = "datum-connect-gui"
 version = "0.1.0"
 authors = ["b5 <sparkle_pony_2000@qri.io>"]
 edition = "2021"

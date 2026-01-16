@@ -125,7 +125,7 @@ pub fn EditProxy(id: String) -> Element {
                         }
                         div { class: "text-sm text-slate-600",
                             span { class: "font-medium text-slate-700", "datum:// " }
-                            span { class: "font-mono text-slate-800", {proxy.info.datum_url()} }
+                            span { class: "font-mono text-slate-800", {proxy.info.datum_resource_url()} }
                         }
                     }
 

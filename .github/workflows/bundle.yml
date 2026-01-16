@@ -1,0 +1,119 @@
+name: bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    env:
+      BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            rpm \
+            libfuse2 \
+            libxdo-dev
+
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --locked --force -y
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ./ui
+        run: dx bundle --locked --desktop --release --package-types dmg
+
+      - name: Bundle (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ./ui
+        # TODO: stripping fails currently, it seems to be a known issues
+        # See https://github.com/DioxusLabs/dioxus/issues/3426
+        # and https://github.com/linuxdeploy/linuxdeploy/issues/272
+        # For now we set NO_STRIP, which makes the bundles *huge*...
+        env:
+          NO_STRIP: true
+        run: dx bundle --locked --desktop --release --package-types appimage
+
+      - name: Bundle (Windows)
+        working-directory: ./ui
+        if: runner.os == 'Windows'
+        run: dx bundle --locked --desktop --release --package-types nsis
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: DatumConnect-${{ runner.os }}
+          path: ui/dist/**
+
+  release:
+    needs: [bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Set Version Info and Paths
+        id: set_paths
+        env:
+          FULL_SHA: ${{ github.sha }}
+        run: |
+          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
+          SHORT_SHA=${FULL_SHA::7}
+          echo "RELEASE_VERSION=$(date +'%Y.%m.%d')-$SHORT_SHA" >> $GITHUB_ENV
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Prepare Release Body Data
+        id: release_data
+        run: |
+          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
+
+      - name: Create Main Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Continuous release (${{ env.RELEASE_VERSION }})
+          tag_name: rolling
+          make_latest: true
+          prerelease: false
+          body: |
+            This is a rolling release of DatumConnect, published automatically on every commit to main.
+
+            Version: ${{ env.RELEASE_VERSION }}
+            Commit: ${{ github.sha }}
+            Built: ${{ env.CURRENT_DATE_STR }}
+            Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            See the release assets for SHA256 checksums.
+          files: artifacts/*/*
+          generate_release_notes: false

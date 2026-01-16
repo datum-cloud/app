@@ -336,11 +336,17 @@ async fn build_endpoint(
 }
 
 async fn build_n0des_client(endpoint: &Endpoint) -> Result<Arc<iroh_n0des::Client>> {
+    let secret = match std::env::var("N0DES_API_SECRET") {
+        Ok(secret) => secret,
+        Err(_) => match option_env!("BUILD_N0DES_API_SECRET") {
+            None => n0_error::bail_any!("N0DES_API_SECRET is not set"),
+            Some(val) => val.to_string(),
+        },
+    };
     let client = iroh_n0des::Client::builder(endpoint)
-        .api_secret_from_env()
-        .context("failed to read api secret from env")?
+        .api_secret_from_str(&secret)?
         .build()
         .await
-        .std_context("construction n0des client")?;
+        .std_context("Failed to start n0des client")?;
     Ok(Arc::new(client))
 }
