@@ -5,7 +5,7 @@ use n0_error::Result;
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    CreateProxy, EditProxy, JoinProxy, Login, Navbar, ProxiesList, Signup, TunnelBandwidth,
+    Chrome, CreateProxy, EditProxy, JoinProxy, Login, ProxiesList, Sidebar, Signup, TunnelBandwidth,
 };
 
 #[cfg(feature = "desktop")]
@@ -30,14 +30,15 @@ mod views;
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 enum Route {
-    #[route("/login")]
+    #[layout(Chrome)]
+    #[route("/")]
     Login{},
     #[route("/signup")]
     Signup{},
     // The layout attribute defines a wrapper for all routes under the layout. Layouts are great for wrapping
     // many routes with a common UI like a navbar.
-    #[layout(Navbar)]
-        #[route("/")]
+    #[layout(Sidebar)]
+        #[route("/proxies")]
         ProxiesList {},
         // The route attribute can include dynamic parameters that implement [`std::str::FromStr`] and [`std::fmt::Display`] with the `:` syntax.
         // In this case, id will match any integer like `/blog/123` or `/blog/-456`.
@@ -92,6 +93,10 @@ fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
+        // let nav = navigator();
+        // if state.datum().login_state() == LoginState::Missing {
+        //     nav.push(Route::Login {});
+        // }
         provide_context(state);
         app_state_ready.set(true);
     });

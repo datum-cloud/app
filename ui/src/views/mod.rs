@@ -17,7 +17,7 @@ pub use create_proxy::CreateProxy;
 pub use edit_proxy::EditProxy;
 pub use join_proxy::JoinProxy;
 pub use login::Login;
-pub use navbar::Navbar;
+pub use navbar::*;
 pub use proxies_list::ProxiesList;
 pub use signup::Signup;
 pub use tunnel_bandwidth::TunnelBandwidth;

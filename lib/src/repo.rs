@@ -101,9 +101,9 @@ impl Repo {
         Ok(key)
     }
 
-    pub async fn write_oauth(&self, state: &AuthState) -> Result<()> {
+    pub async fn write_oauth(&self, state: Option<&AuthState>) -> Result<()> {
         let path = self.0.join(Self::OAUTH_FILE);
-        let data = serde_yml::to_string(state).anyerr()?;
+        let data = serde_yml::to_string(&state).anyerr()?;
         tokio::fs::write(path, data).await?;
         Ok(())
     }
@@ -116,9 +116,9 @@ impl Repo {
             let data = tokio::fs::read_to_string(path)
                 .await
                 .context("failed to read oauth file")?;
-            let state: AuthState =
+            let state: Option<AuthState> =
                 serde_yml::from_str(&data).std_context("failed to parse oauth file")?;
-            Ok(Some(state))
+            Ok(state)
         }
     }
 }

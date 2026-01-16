@@ -24,12 +24,12 @@ async fn main() -> n0_error::Result<()> {
     // If a login is needed, a browser will open, and a local HTTP server awaits the OIDC redirect.
     // The access tokens will be persisted to the repo.
     let client = DatumCloudClient::with_repo(ApiEnv::Staging, repo).await?;
-    println!("user {} logged in!", client.auth_state().profile.email);
-    println!(
-        "access token expires at {}",
-        client.auth_state().tokens.expires_at()
-    );
-    println!("profile: {:?}", client.auth_state().profile);
+    client.auth().login().await?;
+    let auth = client.auth_state();
+    let auth = auth.get()?;
+    println!("user {} logged in!", auth.profile.email);
+    println!("access token expires at {}", auth.tokens.expires_at());
+    println!("profile: {:?}", auth.profile);
 
     // Fetch orgs and projects.
     let orgs = client.orgs_and_projects().await?;

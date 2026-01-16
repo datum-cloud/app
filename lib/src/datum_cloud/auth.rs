@@ -1,25 +1,37 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
+use arc_swap::ArcSwap;
 use chrono::Utc;
-use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_error::{Result, StackResultExt, StdResultExt, anyerr, stack_error};
 use openidconnect::{
     AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
     CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
-    PkceCodeChallenge, RefreshToken, Scope, StandardClaims, TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreUserInfoClaims},
+    PkceCodeChallenge, RefreshToken, Scope, TokenResponse,
+    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
+
+use crate::Repo;
 
 use self::{redirect_server::RedirectServer, types::OidcTokenResponse};
 use super::ApiEnv;
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Refresh auth or relogin if access token is valid for less than 30min
+const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
 
 pub struct AuthProvider {
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum LoginState {
+    Missing,
+    NeedsRefresh,
+    Valid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +60,13 @@ impl AuthTokens {
     pub fn expires_in_less_than(&self, duration: Duration) -> bool {
         self.issued_at + self.expires_in < chrono::Utc::now() + duration
     }
+
+    pub fn login_state(&self) -> LoginState {
+        match self.expires_in_less_than(Duration::from_secs(60 * 5)) {
+            true => LoginState::NeedsRefresh,
+            false => LoginState::Valid,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
@@ -59,32 +78,41 @@ pub struct UserProfile {
 }
 
 impl UserProfile {
-    fn from_standard_claims<GC>(claims: &StandardClaims<GC>) -> Result<Self>
-    where
-        GC: GenderClaim,
-    {
-        Ok(Self {
-            user_id: claims.subject().to_string(),
-            email: claims
-                .email()
-                .map(|x| x.to_string())
-                .context("missing email address")?,
-            first_name: claims
-                .given_name()
-                .map(|x| x.iter())
-                .into_iter()
-                .flatten()
-                .next()
-                .map(|(_lang, name)| name.to_string()),
-            last_name: claims
-                .family_name()
-                .map(|x| x.iter())
-                .into_iter()
-                .flatten()
-                .next()
-                .map(|(_lang, name)| name.to_string()),
-        })
+    pub fn display_name(&self) -> String {
+        match (self.first_name.as_ref(), self.last_name.as_ref()) {
+            (Some(x), Some(y)) => format!("{x} {y}"),
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => y.clone(),
+            (None, None) => self.email.clone(),
+        }
     }
+
+    // fn from_standard_claims<GC>(claims: &StandardClaims<GC>) -> Result<Self>
+    // where
+    //     GC: GenderClaim,
+    // {
+    //     Ok(Self {
+    //         user_id: claims.subject().to_string(),
+    //         email: claims
+    //             .email()
+    //             .map(|x| x.to_string())
+    //             .context("missing email address")?,
+    //         first_name: claims
+    //             .given_name()
+    //             .map(|x| x.iter())
+    //             .into_iter()
+    //             .flatten()
+    //             .next()
+    //             .map(|(_lang, name)| name.to_string()),
+    //         last_name: claims
+    //             .family_name()
+    //             .map(|x| x.iter())
+    //             .into_iter()
+    //             .flatten()
+    //             .next()
+    //             .map(|(_lang, name)| name.to_string()),
+    //     })
+    // }
 
     // TODO: `IdTokenClaims` contains `StandardClaims` but does not expose it directly.
     // File PR to openidconnect and then remove this function (which is a literal copy-paste)
@@ -119,12 +147,12 @@ impl UserProfile {
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthClient {
+pub struct StatelessClient {
     oidc: types::OidcClient,
     http: reqwest::Client,
 }
 
-impl AuthClient {
+impl StatelessClient {
     pub async fn new(env: ApiEnv) -> Result<Self> {
         Self::with_provider(env.auth_provider()).await
     }
@@ -201,17 +229,17 @@ impl AuthClient {
         Ok(state)
     }
 
-    pub async fn fetch_profile(&self, tokens: &AuthTokens) -> Result<UserProfile> {
-        let userinfo: CoreUserInfoClaims = self
-            .oidc
-            .user_info(tokens.access_token.clone(), None)
-            .std_context("Missing OIDC provider metadata")?
-            .request_async(&self.http)
-            .await
-            .std_context("Failed to fetch user info")?;
-        let profile = UserProfile::from_standard_claims(userinfo.standard_claims())?;
-        Ok(profile)
-    }
+    // pub async fn fetch_profile(&self, tokens: &AuthTokens) -> Result<UserProfile> {
+    //     let userinfo: CoreUserInfoClaims = self
+    //         .oidc
+    //         .user_info(tokens.access_token.clone(), None)
+    //         .std_context("Missing OIDC provider metadata")?
+    //         .request_async(&self.http)
+    //         .await
+    //         .std_context("Failed to fetch user info")?;
+    //     let profile = UserProfile::from_standard_claims(userinfo.standard_claims())?;
+    //     Ok(profile)
+    // }
 
     pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
         let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
@@ -275,6 +303,142 @@ impl AuthClient {
         };
 
         Ok(AuthState { tokens, profile })
+    }
+}
+
+#[stack_error(derive)]
+#[error("Not logged in")]
+pub struct NotLoggedIn;
+
+#[derive(Default, Debug)]
+pub struct MaybeAuth(Option<AuthState>);
+
+impl MaybeAuth {
+    pub fn get(&self) -> Result<&AuthState, NotLoggedIn> {
+        self.0.as_ref().ok_or(NotLoggedIn)
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AuthStateWrapper {
+    inner: Arc<ArcSwap<MaybeAuth>>,
+    repo: Option<Repo>,
+}
+
+impl AuthStateWrapper {
+    fn empty() -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::new(Default::default())),
+            repo: None,
+        }
+    }
+
+    async fn from_repo(repo: Repo) -> Result<Self> {
+        let state = repo.read_oauth().await?;
+        Ok(Self {
+            inner: Arc::new(ArcSwap::new(Arc::new(MaybeAuth(state)))),
+            repo: Some(repo),
+        })
+    }
+
+    fn load(&self) -> Arc<MaybeAuth> {
+        self.inner.load_full()
+    }
+
+    async fn set(&self, auth: Option<AuthState>) -> Result<()> {
+        if let Some(repo) = self.repo.as_ref() {
+            repo.write_oauth(auth.as_ref()).await?;
+        }
+        self.inner.store(Arc::new(MaybeAuth(auth)));
+        Ok(())
+    }
+}
+
+#[derive(derive_more::Debug, Clone)]
+pub struct AuthClient {
+    state: AuthStateWrapper,
+    client: StatelessClient,
+}
+
+impl AuthClient {
+    pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
+        let auth = AuthStateWrapper::from_repo(repo).await?;
+        let auth_client = StatelessClient::new(env).await?;
+        Ok(Self {
+            state: auth,
+            client: auth_client,
+        })
+    }
+
+    pub async fn new(env: ApiEnv) -> Result<Self> {
+        let auth = AuthStateWrapper::empty();
+        let auth_client = StatelessClient::new(env).await?;
+        Ok(Self {
+            state: auth,
+            client: auth_client,
+        })
+    }
+
+    pub fn login_state(&self) -> LoginState {
+        match self.state.load().get().ok() {
+            None => LoginState::Missing,
+            Some(state) => state.tokens.login_state(),
+        }
+    }
+
+    pub fn load(&self) -> Arc<MaybeAuth> {
+        self.state.load()
+    }
+
+    pub async fn load_refreshed(&self) -> Result<Arc<MaybeAuth>> {
+        let state = self.state.load();
+        match state.get() {
+            Err(_) => Ok(state),
+            Ok(inner) if inner.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
+                self.refresh().await?;
+                Ok(self.state.load())
+            }
+            Ok(_) => Ok(state),
+        }
+    }
+
+    pub async fn logout(&self) -> Result<()> {
+        self.state.set(None).await?;
+        Ok(())
+    }
+
+    pub async fn login(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = match auth.get() {
+            Err(_) => self.client.login().await?,
+            Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
+                match self.client.refresh(&auth.tokens).await {
+                    Ok(auth) => auth,
+                    Err(err) => {
+                        warn!("Failed to refresh auth token: {err:#}");
+                        self.client.login().await?
+                    }
+                }
+            }
+            Ok(_) => return Ok(()),
+        };
+        self.state.set(Some(auth)).await?;
+        Ok(())
+    }
+
+    pub async fn refresh(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = auth.get()?;
+        let new_auth = match self.client.refresh(&auth.tokens).await {
+            Ok(auth) => auth,
+            Err(err) => Err(err).context("Failed to refresh auth tokens, needs login")?,
+        };
+        self.state.set(Some(new_auth)).await?;
+        Ok(())
     }
 }
 
