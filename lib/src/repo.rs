@@ -13,6 +13,7 @@ pub struct Repo(PathBuf);
 impl Repo {
     const CONNECT_KEY_FILE: &str = "connect_key";
     const LISTEN_KEY_FILE: &str = "listen_key";
+    const GATEWAY_KEY_FILE: &str = "gateway_key";
     const CONFIG_FILE: &str = "config.yml";
     const OAUTH_FILE: &str = "oauth.yml";
     const AUTH_FILE: &str = "auth.yml";
@@ -80,6 +81,11 @@ impl Repo {
 
     pub async fn listen_key(&self) -> Result<SecretKey> {
         let key_file_path = self.0.join(Self::LISTEN_KEY_FILE);
+        self.secret_key(key_file_path).await
+    }
+
+    pub async fn gateway_key(&self) -> Result<SecretKey> {
+        let key_file_path = self.0.join(Self::GATEWAY_KEY_FILE);
         self.secret_key(key_file_path).await
     }
 

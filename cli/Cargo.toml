@@ -9,6 +9,6 @@ lib.workspace = true
 n0-error.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
-clap = { version = "4.5.50", features = ["derive"] }
+clap = { version = "4.5.50", features = ["derive", "env"] }
 tracing.workspace = true
 tokio-util.workspace = true

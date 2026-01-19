@@ -1,0 +1,16 @@
+[package]
+name = "n0des-local"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+iroh = { workspace = true }
+iroh-n0des = { workspace = true, features = ["tickets"] }
+irpc = "0.11"
+irpc-iroh = "0.11"
+n0-error = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

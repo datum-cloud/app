@@ -8,7 +8,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Datum Connect Agent
@@ -150,7 +149,7 @@ async fn main() -> n0_error::Result<()> {
             } = args;
             let node = ConnectNode::new(repo).await?;
             let ticket = if let Some(codename) = codename {
-                node.fetch_ticket(&codename).await?
+                node.tickets.get(&codename).await?
             } else if let Some(ticket) = ticket {
                 ticket
             } else {
@@ -171,18 +170,13 @@ async fn main() -> n0_error::Result<()> {
             handle.abort();
         }
         Commands::Gateway(args) => {
-            let bind_addr = (args.bind_addr, args.port).into();
-            let node = ConnectNode::new(repo).await?;
+            let bind_addr: SocketAddr = (args.bind_addr, args.port).into();
+            let secret_key = repo.gateway_key().await?;
+            let config = Default::default();
             println!("serving on port {bind_addr}");
-            let cancel_token = CancellationToken::new();
-            let fut = lib::gateway::serve(node, bind_addr, cancel_token.clone());
-            tokio::pin!(fut);
             tokio::select! {
-                res = &mut fut => res?,
-                _ = tokio::signal::ctrl_c() => {
-                    cancel_token.cancel();
-                    fut.await?;
-                }
+                res = lib::gateway::bind_and_serve(secret_key, config, bind_addr) => res?,
+                _ = tokio::signal::ctrl_c() => {}
             }
         }
     }

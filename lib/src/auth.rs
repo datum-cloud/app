@@ -1,7 +1,10 @@
-use std::{path::PathBuf, pin::Pin};
+use std::path::PathBuf;
 
 use iroh::EndpointId;
-use iroh_proxy_utils::{AuthError, AuthHandler, HttpRequest as Request, RequestKind};
+use iroh_proxy_utils::{
+    HttpProxyRequest, HttpProxyRequestKind,
+    upstream::{AuthError, AuthHandler},
+};
 use n0_error::{StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
@@ -122,19 +125,17 @@ pub struct Auth {
 }
 
 impl AuthHandler for Auth {
-    fn authorize<'a>(
+    async fn authorize<'a>(
         &'a self,
-        _remote_id: EndpointId,
-        req: &'a Request,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
-        let res = self.allows_req(req);
-        Box::pin(async move {
-            if res {
-                Ok(())
-            } else {
-                Err(AuthError::Forbidden)
-            }
-        })
+        remote_id: EndpointId,
+        req: &'a HttpProxyRequest,
+    ) -> Result<(), AuthError> {
+        let res = self.allows_req(remote_id, req);
+        if res {
+            Ok(())
+        } else {
+            Err(AuthError::Forbidden)
+        }
     }
 }
 
@@ -153,23 +154,21 @@ impl Auth {
         Ok(())
     }
 
-    fn allows_req(&self, req: &Request) -> bool {
+    fn allows_req(&self, remote_id: EndpointId, req: &HttpProxyRequest) -> bool {
+        if !self.allows_endpoint(&remote_id) {
+            return false;
+        }
         match &req.kind {
-            RequestKind::Connect { authority } => {
-                // if !self.allows_endpoint(connect_req.endpoint_addr) {
-                //     return false;
-                // }
-                if !self.allows_port(authority.port) {
-                    return false;
+            HttpProxyRequestKind::Tunnel { target } => {
+                if !self.allows_port(target.port) {
+                    false
+                } else {
+                    true
                 }
-                false
             }
-            RequestKind::Http { .. } => {
+            HttpProxyRequestKind::Absolute { .. } => {
                 // TODO - finish
-                // if !self.allows_port(http_req.path) {
-                //     return Ok(false)
-                // }
-                true
+                false
             }
         }
     }
@@ -193,7 +192,7 @@ impl Auth {
 #[cfg(test)]
 mod tests {
     use iroh::EndpointId;
-    use iroh_proxy_utils::{AuthHandler, HttpRequest as Request};
+    use iroh_proxy_utils::{HttpRequest as Request, upstream::AuthHandler};
     use serde::Deserialize;
 
     use crate::auth::Auth;
@@ -202,7 +201,11 @@ mod tests {
     async fn test_auth_smoke() {
         let no_auth = Auth::default();
         let request = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
-        let req = Request::parse(request).unwrap();
+        let req = Request::parse(request)
+            .unwrap()
+            .unwrap()
+            .try_into_proxy_request()
+            .unwrap();
         let remote_id = EndpointId::from_bytes(&[0u8; 32]).unwrap();
         let got = no_auth.authorize(remote_id, &req).await;
         assert!(got.is_err());
@@ -222,7 +225,11 @@ mod tests {
         let auth: Auth = serde_yml::from_str(auth).unwrap();
         let remote_id = EndpointId::from_bytes(&[0u8; 32]).unwrap();
         for fixture in fixtures {
-            let req = Request::parse(fixture.request.as_bytes()).unwrap();
+            let req = Request::parse(fixture.request.as_bytes())
+                .unwrap()
+                .unwrap()
+                .try_into_proxy_request()
+                .unwrap();
             let res = auth.authorize(remote_id, &req).await;
             assert_eq!(fixture.allow, res.is_ok());
         }

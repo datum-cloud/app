@@ -38,12 +38,17 @@ tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 iroh-blobs = "0.97.0"
-clap = { version = "4.5.54", features = ["env"] }
 httparse = "1.10.1"
-unicase = "2.9.0"
-notify = "8.2.0"
+ttl_cache = "0.5.1"
+askama = "0.15.1"
 
 [dev-dependencies]
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["full"] }
+hyper-util = { version = "0.1.19", features = ["full"] }
+n0-tracing-test = "0.3.0"
+n0des-local = { path = "../n0des-local" }
+tempfile = "3"
 
 [features]
 default = ["server"]

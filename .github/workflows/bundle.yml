@@ -41,7 +41,10 @@ jobs:
             libxdo-dev
 
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --locked --force -y
+        # Should be pinned to same version as dioxus in Cargo.toml
+        # note: dx bundle on Windows fails with 0.7.3, see
+        # https://github.com/DioxusLabs/dioxus/issues/5233
+        run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

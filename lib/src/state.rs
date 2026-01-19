@@ -91,6 +91,13 @@ pub struct ProxyState {
 }
 
 impl ProxyState {
+    pub fn new(info: Advertisment) -> Self {
+        Self {
+            info,
+            enabled: true,
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.info.resource_id
     }
@@ -174,7 +181,7 @@ impl TcpProxyData {
     }
 
     fn parse_host_port(s: &str) -> Result<(String, u16)> {
-        let (host, port) = s.rsplit_once(":").context("missing colon")?;
+        let (host, port) = s.rsplit_once(":").context("missing port")?;
         let port: u16 = port.parse().std_context("invalid port")?;
         Ok((host.to_string(), port))
     }
@@ -319,6 +326,25 @@ mod tests {
         let codename2 = generate_codename(id2);
 
         assert_ne!(codename1, codename2);
+    }
+
+    #[test]
+    fn parse_tcp_proxy_data_from_host_port() {
+        let data = TcpProxyData::from_host_port_str("example.test:443").unwrap();
+        assert_eq!(data.host, "example.test");
+        assert_eq!(data.port, 443);
+    }
+
+    #[test]
+    fn parse_tcp_proxy_data_rejects_missing_port() {
+        let err = TcpProxyData::from_host_port_str("example.test").unwrap_err();
+        assert!(err.to_string().contains("missing port"));
+    }
+
+    #[test]
+    fn parse_tcp_proxy_data_rejects_invalid_port() {
+        let err = TcpProxyData::from_host_port_str("example.test:abc").unwrap_err();
+        assert!(err.to_string().contains("invalid port"));
     }
 
     // #[test]

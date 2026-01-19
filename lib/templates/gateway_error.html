@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
     <head>
-        <title>404 Not Found</title>
+        <title>{{ title }}</title>
         <style>
             body {
                 font-family:
@@ -61,10 +61,7 @@
                 ></path>
             </svg>
         </div>
-        <h1>404 - Proxy Not Found</h1>
-        <p>
-            The requested proxy connection could not be established. Please
-            check your subdomain and try again.
-        </p>
+        <h1>{{ title }}</h1>
+        <p>{{ body }}</p>
     </body>
 </html>
