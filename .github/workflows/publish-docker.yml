@@ -3,8 +3,6 @@ name: Publish Docker Image
 on:
   pull_request:
   push:
-    branches:
-      - main
   release:
     types:
       - published
@@ -15,7 +13,7 @@ permissions:
 
 jobs:
   publish:
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@main
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.9.0
     with:
       image-name: iroh-gateway
     secrets: inherit
