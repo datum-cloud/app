@@ -12,3 +12,11 @@ tracing-subscriber.workspace = true
 clap = { version = "4.5.50", features = ["derive", "env"] }
 tracing.workspace = true
 tokio-util.workspace = true
+serde.workspace = true
+serde_yml.workspace = true
+async-trait = "0.1.89"
+humantime = "2.1.0"
+hickory-server = "0.25.2"
+hickory-proto = "0.25.2"
+iroh-base.workspace = true
+z32 = "1.0.3"

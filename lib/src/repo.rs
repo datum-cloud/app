@@ -4,7 +4,10 @@ use iroh::SecretKey;
 use log::{info, warn};
 use n0_error::{Result, StackResultExt, StdResultExt};
 
-use crate::{StateWrapper, auth::Auth, config::Config, datum_cloud::AuthState, state::State};
+use crate::{
+    StateWrapper, auth::Auth, config::{Config, GatewayConfig}, datum_cloud::AuthState,
+    state::State,
+};
 
 // Repo builds up a series of file path conventions from a root directory path.
 #[derive(Debug, Clone)]
@@ -49,6 +52,18 @@ impl Repo {
         };
 
         Config::from_file(config_file_path).await
+    }
+
+    pub async fn gateway_config(&self) -> Result<GatewayConfig> {
+        let config_file_path = self.0.join(Self::CONFIG_FILE);
+        if !config_file_path.exists() {
+            warn!("gateway config does not exist. creating new config");
+            let cfg = GatewayConfig::default();
+            cfg.write(config_file_path).await?;
+            return Ok(cfg);
+        };
+
+        GatewayConfig::from_file(config_file_path).await
     }
 
     pub async fn load_state(&self) -> Result<StateWrapper> {

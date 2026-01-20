@@ -1,13 +1,13 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
 
 use askama::Template;
 use hyper::StatusCode;
-use iroh::{Endpoint, SecretKey};
+use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_proxy_utils::{
-    HttpOriginRequest, HttpResponse,
+    HttpOriginRequest, HttpProxyRequest, HttpProxyRequestKind, HttpResponse,
     downstream::{
-        DownstreamProxy, EndpointAuthority, ExtractError, HttpProxyOpts, ProxyMode,
-        ReverseProxyResolver, WriteErrorResponse,
+        DownstreamProxy, EndpointAuthority, ExtractError, ForwardProxyResolver, HttpProxyOpts,
+        ProxyMode, ReverseProxyResolver, WriteErrorResponse,
     },
 };
 use n0_error::Result;
@@ -23,35 +23,59 @@ use crate::{
 
 pub async fn bind_and_serve(
     secret_key: SecretKey,
-    config: crate::config::Config,
+    config: crate::config::GatewayConfig,
     tcp_bind_addr: SocketAddr,
 ) -> Result<()> {
     let listener = TcpListener::bind(tcp_bind_addr).await?;
-    let endpoint = build_endpoint(secret_key, &config).await?;
-    let n0des_api_secret = n0des_api_secret_from_env()?;
-    let n0des = build_n0des_client(&endpoint, n0des_api_secret).await?;
-    serve(endpoint, n0des, listener).await
+    let endpoint = build_endpoint(secret_key, &config.common).await?;
+    let n0des = match config.gateway_mode {
+        crate::config::GatewayMode::Reverse => {
+            let n0des_api_secret = n0des_api_secret_from_env()?;
+            Some(build_n0des_client(&endpoint, n0des_api_secret).await?)
+        }
+        crate::config::GatewayMode::Forward => None,
+    };
+    serve(endpoint, n0des, listener, config).await
 }
 
 pub async fn serve(
     endpoint: Endpoint,
-    n0des: Arc<iroh_n0des::Client>,
+    n0des: Option<Arc<iroh_n0des::Client>>,
     listener: TcpListener,
+    config: crate::config::GatewayConfig,
 ) -> Result<()> {
     let tcp_bind_addr = listener.local_addr()?;
-    info!(?tcp_bind_addr, endpoint_id = %endpoint.id().fmt_short(),"TCP proxy gateway started");
+    info!(
+        ?tcp_bind_addr,
+        endpoint_id = %endpoint.id().fmt_short(),
+        gateway_mode = ?config.gateway_mode,
+        "TCP proxy gateway started"
+    );
 
     let proxy = DownstreamProxy::new(endpoint, Default::default());
-    let tickets = TicketClient::new(n0des);
-    let resolver = Resolver { tickets };
-    let opts = HttpProxyOpts::default()
-        // Right now the gatewy functions as a reverse proxy, i.e. incoming requests are regular origin-form HTTP
-        // requests, and we resolve the destination from the host header's subdomain.
-        // Once envoy takes over this part, we will use [`HttpProxyOpts::forward`] instead, i.e. accept CONNECT
-        // requests only.
-        .reverse(resolver)
-        .error_response_writer(ErrorResponseWriter);
-    let mode = ProxyMode::Http(opts);
+    let mode = match config.gateway_mode {
+        crate::config::GatewayMode::Reverse => {
+            let n0des = n0des.ok_or_else(|| {
+                n0_error::anyerr!("n0des client is required for reverse gateway mode")
+            })?;
+            let tickets = TicketClient::new(n0des);
+            let resolver = Resolver { tickets };
+            let opts = HttpProxyOpts::default()
+                // Right now the gateway functions as a reverse proxy, i.e. incoming requests are regular origin-form HTTP
+                // requests, and we resolve the destination from the host header's subdomain.
+                .reverse(resolver)
+                .error_response_writer(ErrorResponseWriter);
+            ProxyMode::Http(opts)
+        }
+        crate::config::GatewayMode::Forward => {
+            let resolver = ForwardResolver;
+            let opts = HttpProxyOpts::default()
+                // Forward proxy mode accepts CONNECT authority-form requests.
+                .forward(resolver)
+                .error_response_writer(ErrorResponseWriter);
+            ProxyMode::Http(opts)
+        }
+    };
 
     proxy.forward_tcp_listener(listener, mode).await
 }
@@ -70,8 +94,7 @@ impl ReverseProxyResolver for Resolver {
         &'a self,
         req: &'a HttpOriginRequest,
     ) -> Result<EndpointAuthority, ExtractError> {
-        let host = req.headers.get("host").ok_or(ExtractError::BadRequest)?;
-        let host = host.to_str().map_err(|_| ExtractError::BadRequest)?;
+        let host = req.host().ok_or(ExtractError::BadRequest)?;
         let codename = extract_subdomain(host).ok_or(ExtractError::NotFound)?;
 
         debug!(%codename, "extracted codename, resolving ticket...");
@@ -90,17 +113,28 @@ impl ReverseProxyResolver for Resolver {
     }
 }
 
-// /// When operating in forward-proxy mode, i.e. when accepting CONNECT requests or requests
-// /// with absolute-form targets, we only need to resolve an endpoint id from the request,
-// /// because the upstream authority is already part of the original request.
-// impl ForwardProxyResolver for Resolver {
-//     async fn destination<'a>(
-//         &'a self,
-//         req: &'a HttpProxyRequest,
-//     ) -> Result<EndpointId, ExtractError> {
-//         todo!()
-//     }
-// }
+const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
+
+/// When operating in forward-proxy mode we accept CONNECT requests and resolve the target
+/// endpoint ID from headers injected by Envoy.
+struct ForwardResolver;
+
+impl ForwardProxyResolver for ForwardResolver {
+    async fn destination<'a>(
+        &'a self,
+        req: &'a HttpProxyRequest,
+    ) -> Result<EndpointId, ExtractError> {
+        if !matches!(req.kind, HttpProxyRequestKind::Tunnel { .. }) {
+            return Err(ExtractError::BadRequest);
+        }
+        let node_id = header_value(req, HEADER_NODE_ID).ok_or(ExtractError::BadRequest)?;
+        EndpointId::from_str(node_id).map_err(|_| ExtractError::BadRequest)
+    }
+}
+
+fn header_value<'a>(req: &'a HttpProxyRequest, name: &str) -> Option<&'a str> {
+    req.headers.get(name).and_then(|value| value.to_str().ok())
+}
 
 pub(super) fn extract_subdomain(host: &str) -> Option<&str> {
     let host = host
