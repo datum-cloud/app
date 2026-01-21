@@ -22,7 +22,10 @@ impl AppState {
         }?;
         let app_state = AppState { node, datum };
         if app_state.datum.login_state() != LoginState::Missing {
-            app_state.validate_selected_context().await?;
+            app_state
+                .listen_node()
+                .validate_selected_context(app_state.datum())
+                .await?;
         }
         Ok(app_state)
     }
@@ -57,27 +60,4 @@ impl AppState {
         self.listen_node().set_selected_context(selected_context).await
     }
 
-    pub async fn validate_selected_context(&self) -> n0_error::Result<Option<SelectedContext>> {
-        let selected = self.selected_context();
-        let Some(selected) = selected else {
-            return Ok(None);
-        };
-
-        let orgs = self.datum.orgs_and_projects().await?;
-        let is_valid = orgs.iter().any(|org| {
-            if org.org.resource_id != selected.org_id {
-                return false;
-            }
-            org.projects
-                .iter()
-                .any(|project| project.resource_id == selected.project_id)
-        });
-
-        if is_valid {
-            Ok(Some(selected))
-        } else {
-            self.set_selected_context(None).await?;
-            Ok(None)
-        }
-    }
 }

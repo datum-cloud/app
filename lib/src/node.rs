@@ -25,7 +25,7 @@ use ttl_cache::TtlCache;
 
 use crate::{
     Advertisment, ProxyState, Repo, SelectedContext, StateWrapper, TcpProxyData, config::Config,
-    state::AdvertismentTicket,
+    datum_cloud::DatumCloudClient, state::AdvertismentTicket,
 };
 
 const TICKET_TTL: Duration = Duration::from_secs(30);
@@ -155,6 +155,33 @@ impl ListenNode {
             })
             .await?;
         Ok(())
+    }
+
+    pub async fn validate_selected_context(
+        &self,
+        datum: &DatumCloudClient,
+    ) -> Result<Option<SelectedContext>> {
+        let selected = self.selected_context();
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+
+        let orgs = datum.orgs_and_projects().await?;
+        let is_valid = orgs.iter().any(|org| {
+            if org.org.resource_id != selected.org_id {
+                return false;
+            }
+            org.projects
+                .iter()
+                .any(|project| project.resource_id == selected.project_id)
+        });
+
+        if is_valid {
+            Ok(Some(selected))
+        } else {
+            self.set_selected_context(None).await?;
+            Ok(None)
+        }
     }
 
     pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {

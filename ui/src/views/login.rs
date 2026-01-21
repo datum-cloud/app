@@ -29,7 +29,10 @@ pub fn Login() -> Element {
             LoginState::NeedsRefresh => datum.auth().refresh().await?,
             LoginState::Valid => {}
         }
-        state.validate_selected_context().await?;
+        state
+            .listen_node()
+            .validate_selected_context(state.datum())
+            .await?;
         if state.selected_context().is_some() {
             nav.push(Route::ProxiesList {});
         } else {
