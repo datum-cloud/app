@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryMode {
     #[default]
+    /// Use the built-in n0des discovery defaults.
     Default,
+    /// Use only DNS discovery (_iroh.<z32-endpoint-id>.<origin>).
     Dns,
+    /// Use both n0des defaults and DNS discovery.
     Hybrid,
 }
 
