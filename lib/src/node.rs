@@ -6,7 +6,11 @@ use std::{
     time::Duration,
 };
 
-use iroh::{Endpoint, EndpointId, SecretKey, protocol::Router};
+use iroh::{
+    Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
+    protocol::Router,
+};
+use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_n0des::ApiSecret;
 use iroh_proxy_utils::{ALPN as IROH_HTTP_CONNECT_ALPN, HttpProxyRequest, HttpProxyRequestKind};
 use iroh_proxy_utils::{
@@ -424,12 +428,36 @@ impl OutboundProxyHandle {
 /// Build a new iroh endpoint, applying all relevant details from Configuration
 /// to the base endpoint setup
 pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder().secret_key(secret_key);
+    let mut builder = match common.discovery_mode {
+        crate::config::DiscoveryMode::Dns => {
+            Endpoint::empty_builder(default_relay_mode()).secret_key(secret_key)
+        }
+        crate::config::DiscoveryMode::Default
+        | crate::config::DiscoveryMode::Hybrid => Endpoint::builder().secret_key(secret_key),
+    };
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
+    }
+    match common.discovery_mode {
+        crate::config::DiscoveryMode::Default => {}
+        crate::config::DiscoveryMode::Dns | crate::config::DiscoveryMode::Hybrid => {
+            let origin = match &common.dns_origin {
+                Some(origin) => origin.clone(),
+                None => n0_error::bail_any!(
+                    "dns_origin is required when discovery_mode is set to dns or hybrid"
+                ),
+            };
+            if let Some(resolver_addr) = common.dns_resolver {
+                let resolver = DnsResolver::builder()
+                    .with_nameserver(resolver_addr, DnsProtocol::Udp)
+                    .build();
+                builder = builder.dns_resolver(resolver);
+            }
+            builder = builder.discovery(DnsDiscovery::builder(origin));
+        }
     }
     let endpoint = builder.bind().await?;
     info!(id = %endpoint.id(), "iroh endpoint bound");

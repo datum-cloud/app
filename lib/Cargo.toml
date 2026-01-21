@@ -17,6 +17,7 @@ iroh-n0des.workspace = true
 iroh-proxy-utils.workspace = true
 iroh-tickets.workspace = true
 iroh.workspace = true
+iroh-relay.workspace = true
 log.workspace = true
 n0-error.workspace = true
 n0-future.workspace = true

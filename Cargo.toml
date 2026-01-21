@@ -24,6 +24,7 @@ iroh-base = { version = "0.95" }
 iroh-tickets = "0.2"
 iroh-metrics = "0.38"
 iroh-n0des = { version = "0.8", features = ["tickets"] }
+iroh-relay = { version = "0.95" }
 log = "0.4"
 open = "5"
 openidconnect = "4.0.1"
