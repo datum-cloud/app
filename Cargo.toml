@@ -39,6 +39,7 @@ tokio-util = "0.7.10"
 tower = "0.5"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-appender = "0.2"
 data-encoding = "2.9.0"
 n0-error = { version = "0.1", features = ["anyhow"] }
 n0-future = "0.3"

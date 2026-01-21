@@ -24,7 +24,7 @@ use tracing::{Instrument, debug, error, error_span, info, instrument, warn};
 use ttl_cache::TtlCache;
 
 use crate::{
-    Advertisment, ProxyState, Repo, StateWrapper, TcpProxyData, config::Config,
+    Advertisment, ProxyState, Repo, SelectedContext, StateWrapper, TcpProxyData, config::Config,
     state::AdvertismentTicket,
 };
 
@@ -133,6 +133,28 @@ impl ListenNode {
 
     pub fn proxies(&self) -> Vec<ProxyState> {
         self.state.get().proxies.iter().cloned().collect()
+    }
+
+    pub fn selected_context(&self) -> Option<SelectedContext> {
+        self.state.get().selected_context.clone()
+    }
+
+    pub async fn set_selected_context(
+        &self,
+        selected_context: Option<SelectedContext>,
+    ) -> Result<()> {
+        info!(
+            selected = %selected_context
+                .as_ref()
+                .map_or("<none>".to_string(), SelectedContext::label),
+            "node: updating selected context"
+        );
+        self.state
+            .update(&self.repo, |state| {
+                state.selected_context = selected_context;
+            })
+            .await?;
+        Ok(())
     }
 
     pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {

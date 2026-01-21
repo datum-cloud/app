@@ -170,6 +170,7 @@ pub struct Organization {
     pub r#type: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct OrganizationWithProjects {
     pub org: Organization,
     pub projects: Vec<Project>,
