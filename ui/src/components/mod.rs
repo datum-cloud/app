@@ -7,12 +7,14 @@ mod hero;
 mod bandwidth_timeseries_chart;
 mod button;
 mod head;
+mod select_dropdown;
 mod splash;
 mod typography;
 
 pub use button::Button;
 pub use button::ButtonKind;
 pub use head::Head;
+pub use select_dropdown::{SelectDropdown, SelectItem};
 pub use splash::Splash;
 #[allow(unused)]
 pub use typography::Subhead;

@@ -13,7 +13,11 @@ pub fn Login() -> Element {
     let state = consume_context::<AppState>();
     use_effect(move || {
         if state.datum().login_state() == LoginState::Valid {
-            nav.push(Route::ProxiesList {});
+            if state.selected_context().is_some() {
+                nav.push(Route::ProxiesList {});
+            } else {
+                nav.push(Route::SelectProject {});
+            }
         }
     });
 
@@ -25,7 +29,15 @@ pub fn Login() -> Element {
             LoginState::NeedsRefresh => datum.auth().refresh().await?,
             LoginState::Valid => {}
         }
-        nav.push(Route::ProxiesList {});
+        state
+            .listen_node()
+            .validate_selected_context(state.datum())
+            .await?;
+        if state.selected_context().is_some() {
+            nav.push(Route::ProxiesList {});
+        } else {
+            nav.push(Route::SelectProject {});
+        }
         n0_error::Ok(())
     });
 

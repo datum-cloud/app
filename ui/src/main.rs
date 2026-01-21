@@ -1,11 +1,16 @@
 use dioxus::prelude::*;
+use std::sync::OnceLock;
+use tracing::info;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[cfg(feature = "desktop")]
 use n0_error::Result;
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, CreateProxy, EditProxy, JoinProxy, Login, ProxiesList, Sidebar, Signup, TunnelBandwidth,
+    Chrome, CreateProxy, EditProxy, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    TunnelBandwidth,
 };
 
 #[cfg(feature = "desktop")]
@@ -22,6 +27,8 @@ mod state;
 mod util;
 mod views;
 
+static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
 /// The Route enum is used to define the structure of internal routes in our app. All route enums need to derive
 /// the [`Routable`] trait, which provides the necessary methods for the router to work.
 ///
@@ -33,6 +40,8 @@ enum Route {
     #[layout(Chrome)]
     #[route("/")]
     Login{},
+    #[route("/select")]
+    SelectProject{},
     #[route("/signup")]
     Signup{},
     // The layout attribute defines a wrapper for all routes under the layout. Layouts are great for wrapping
@@ -53,7 +62,7 @@ enum Route {
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    init_tracing();
     if let Some(path) = dotenv::dotenv().ok() {
         info!("Loaded environment variables from {}", path.display());
     }
@@ -88,6 +97,24 @@ fn main() {
 
     #[cfg(not(feature = "desktop"))]
     dioxus::launch(App);
+}
+
+fn init_tracing() {
+    let repo_path = lib::Repo::default_location();
+    if let Err(err) = std::fs::create_dir_all(&repo_path) {
+        eprintln!("ui: failed to create repo dir {}: {err}", repo_path.display());
+    }
+    let file_appender = tracing_appender::rolling::never(&repo_path, "ui.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let _ = LOG_GUARD.set(guard);
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(fmt::layer().with_writer(non_blocking))
+        .init();
 }
 
 #[component]

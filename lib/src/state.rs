@@ -15,6 +15,8 @@ use crate::{DATUM_CONNECT_GATEWAY_DOMAIN_NAME, Repo};
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct State {
     pub proxies: Vec<ProxyState>,
+    #[serde(default)]
+    pub selected_context: Option<SelectedContext>,
 }
 
 impl State {
@@ -40,6 +42,20 @@ impl State {
         } else {
             None
         }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+pub struct SelectedContext {
+    pub org_id: String,
+    pub org_name: String,
+    pub project_id: String,
+    pub project_name: String,
+}
+
+impl SelectedContext {
+    pub fn label(&self) -> String {
+        format!("{} / {}", self.org_name, self.project_name)
     }
 }
 
