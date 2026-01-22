@@ -39,6 +39,70 @@
 
       in
       {
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "datum-connect";
+          version = "0.1.0";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "iroh-proxy-utils-0.1.0" = "sha256-DRFxQusoBIh3IaYS2AlIbsKszNQuph5Xsm2h8n4Fkw8=";
+            };
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+          ] ++ lib.optionals stdenv.isDarwin [
+            libiconv
+          ];
+
+          cargoBuildFlags = [ "--workspace" ];
+
+          meta = with pkgs.lib; {
+            description = "Datum Connect - A tunneling solution built on iroh";
+            homepage = "https://github.com/datum-cloud/datum-connect";
+            license = licenses.agpl3Only;
+            maintainers = [ ];
+          };
+        };
+
+        packages.cli = pkgs.rustPlatform.buildRustPackage {
+          pname = "datum-connect-cli";
+          version = "0.1.0";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "iroh-proxy-utils-0.1.0" = "sha256-DRFxQusoBIh3IaYS2AlIbsKszNQuph5Xsm2h8n4Fkw8=";
+            };
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+          ] ++ lib.optionals stdenv.isDarwin [
+            libiconv
+          ];
+
+          cargoBuildFlags = [ "-p" "datum-connect" ];
+
+          meta = with pkgs.lib; {
+            description = "Datum Connect CLI";
+            mainProgram = "datum-connect";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Rust toolchain with WASM support
@@ -77,6 +141,8 @@
             echo "  dx build --release # Build for production"
           '';
         };
+
+        formatter = pkgs.nixpkgs-fmt;
       }
     );
 }
