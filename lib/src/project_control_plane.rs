@@ -12,7 +12,7 @@ pub struct ProjectControlPlaneClient {
     project_id: String,
     server_url: String,
     access_token: String,
-    client: Client,
+    client: Arc<Client>,
 }
 
 impl ProjectControlPlaneClient {
@@ -29,7 +29,7 @@ impl ProjectControlPlaneClient {
     }
 
     pub fn client(&self) -> &Client {
-        &self.client
+        self.client.as_ref()
     }
 }
 
@@ -51,6 +51,8 @@ impl ProjectControlPlaneManager {
         self.current.load_full().as_ref().clone()
     }
 
+    /// Returns the current project client, refreshing the auth token if needed.
+    /// The client is rebuilt when the token changes ("refresh on access").
     pub async fn client(&self) -> Result<Option<ProjectControlPlaneClient>> {
         let current = self.current.load_full();
         let Some(current) = current.as_ref().as_ref() else {
@@ -133,7 +135,7 @@ impl DatumCloudClient {
             project_id: project_id.to_string(),
             server_url,
             access_token: access_token.to_string(),
-            client,
+            client: Arc::new(client),
         })
     }
 }
