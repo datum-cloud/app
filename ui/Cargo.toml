@@ -1,5 +1,5 @@
 [package]
-name = "datum_proxy"
+name = "datum-connect-gui"
 version = "0.1.0"
 authors = ["b5 <sparkle_pony_2000@qri.io>"]
 edition = "2021"
@@ -7,29 +7,42 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dioxus = { version = "0.7.2", features = ["router"] }
+dioxus = { version = "=0.7.2", features = ["router"] }
+dioxus-desktop = { version = "=0.7.2", optional = true }
+image = "0.25"
 
-anyhow.workspace = true
+chrono.workspace = true
+dotenv.workspace = true
 snafu.workspace = true
 hex.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
+iroh-metrics.workspace = true
 lib.workspace = true
+n0-future.workspace = true
+open.workspace = true
 quinn.workspace = true
 rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 data-encoding.workspace = true
-n0-snafu.workspace = true
 uuid.workspace = true
+n0-error.workspace = true
 
 [features]
 default = ["desktop"]
 # The feature that are only required for the web = ["dioxus/web"] build target should be optional and only enabled in the web = ["dioxus/web"] feature
 web = ["dioxus/web"]
 # The feature that are only required for the desktop = ["dioxus/desktop"] build target should be optional and only enabled in the desktop = ["dioxus/desktop"] feature
-desktop = ["dioxus/desktop"]
+desktop = [
+    "dioxus/desktop",
+    "dep:dioxus-desktop"
+]
 # The feature that are only required for the mobile = ["dioxus/mobile"] build target should be optional and only enabled in the mobile = ["dioxus/mobile"] feature
 mobile = ["dioxus/mobile"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"

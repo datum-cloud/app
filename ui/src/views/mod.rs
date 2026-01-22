@@ -1,27 +1,25 @@
 //! The views module contains the components for all Layouts and Routes for our app. Each layout and route in our [`Route`]
 //! enum will render one of these components.
 //!
-//!
-//! The [`Home`] and [`Blog`] components will be rendered when the current route is [`Route::Home`] or [`Route::Blog`] respectively.
-//!
-//!
 //! The [`Navbar`] component will be rendered on all pages of our app since every page is under the layout. The layout defines
 //! a common wrapper around all child routes.
 
-mod create_domain;
 mod create_proxy;
-mod domains_list;
+mod edit_proxy;
 mod join_proxy;
 mod login;
 mod navbar;
 mod proxies_list;
+mod select_project;
 mod signup;
+mod tunnel_bandwidth;
 
-pub use create_domain::CreateDomain;
 pub use create_proxy::CreateProxy;
-pub use domains_list::DomainsList;
+pub use edit_proxy::EditProxy;
 pub use join_proxy::JoinProxy;
 pub use login::Login;
-pub use navbar::Navbar;
-pub use proxies_list::TempProxies;
+pub use navbar::*;
+pub use proxies_list::ProxiesList;
+pub use select_project::SelectProject;
 pub use signup::Signup;
+pub use tunnel_bandwidth::TunnelBandwidth;

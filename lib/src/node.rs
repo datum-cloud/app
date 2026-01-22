@@ -1,475 +1,493 @@
-use anyhow::anyhow;
-use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey, endpoint::Connecting};
-use iroh_tickets::endpoint::EndpointTicket;
-use n0_snafu::{Result, ResultExt};
-use snafu::whatever;
 use std::{
-    io,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::Arc,
+    fmt::Debug,
+    net::SocketAddr,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
+
+use iroh::{
+    Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
+    protocol::Router,
+};
+use iroh_relay::dns::{DnsProtocol, DnsResolver};
+use iroh_n0des::ApiSecret;
+use iroh_proxy_utils::{ALPN as IROH_HTTP_CONNECT_ALPN, HttpProxyRequest, HttpProxyRequestKind};
+use iroh_proxy_utils::{
+    downstream::{DownstreamProxy, EndpointAuthority, ProxyMode},
+    upstream::{AuthError, AuthHandler, UpstreamProxy},
+};
+use n0_error::{AnyError, Result, StackResultExt, StdResultExt, stack_error};
+use n0_future::{IterExt, StreamExt, task::AbortOnDropHandle};
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    select,
-    sync::Mutex,
+    net::TcpListener,
+    sync::{broadcast, futures::Notified},
+    task::JoinHandle,
 };
-use tokio_util::sync::CancellationToken;
-use tracing::debug;
-use uuid::Uuid;
+use tracing::{Instrument, debug, error, error_span, info, instrument, warn};
+use ttl_cache::TtlCache;
 
-use crate::config::Config;
+use crate::{
+    Advertisment, ProxyState, Repo, SelectedContext, StateWrapper, TcpProxyData, config::Config,
+    datum_cloud::DatumCloudClient, state::AdvertismentTicket,
+};
 
-/// The ALPN for dumbpipe.
-///
-/// It is basically just passing data through 1:1, except that the connecting
-/// side will send a fixed size handshake to make sure the stream is created.
-pub const ALPN: &[u8] = b"DUMBPIPEV0";
-
-/// The handshake to send when connecting.
-///
-/// The side that calls open_bi() first must send this handshake, the side that
-/// calls accept_bi() must consume it.
-pub const HANDSHAKE: [u8; 5] = *b"hello";
+const TICKET_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    inner: Arc<NodeInner>,
+    pub listen: ListenNode,
+    pub connect: ConnectNode,
 }
 
 impl Node {
-    pub async fn new(secret_key: SecretKey, config: &Config) -> Result<Self> {
-        let endpoint = create_endpoint(secret_key, config, vec![ALPN.to_vec()]).await?;
+    pub async fn new(repo: Repo) -> Result<Self> {
+        let listen = ListenNode::new(repo.clone()).await?;
+        let connect = ConnectNode::new(repo).await?;
+        Ok(Self { listen, connect })
+    }
+}
 
-        // wait for the endpoint to figure out its address before making a ticket
-        endpoint.online().await;
-        let node_addr = endpoint.addr();
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetricsUpdate {
+    pub send: u64,
+    pub recv: u64,
+}
 
-        Ok(Self {
-            inner: Arc::new(NodeInner {
-                ep_id: node_addr.id,
-                endpoint,
-                tcp_listeners: Mutex::new(Vec::new()),
-                tcp_connections: Mutex::new(Vec::new()),
-            }),
-        })
+#[derive(Debug, Clone)]
+pub struct ListenNode {
+    router: Router,
+    state: StateWrapper,
+    repo: Repo,
+    n0des: Arc<iroh_n0des::Client>,
+    metrics_tx: broadcast::Sender<MetricsUpdate>,
+    _metrics_task: Arc<AbortOnDropHandle<()>>,
+}
+
+impl ListenNode {
+    pub async fn new(repo: Repo) -> Result<Self> {
+        let n0des_api_secret = n0des_api_secret_from_env()?;
+        Self::with_n0des_api_secret(repo, n0des_api_secret).await
     }
 
-    pub fn endpoint_id(&self) -> String {
-        self.inner.ep_id.to_string()
-    }
+    #[instrument("listen-node", skip_all)]
+    pub async fn with_n0des_api_secret(repo: Repo, n0des_api_secret: ApiSecret) -> Result<Self> {
+        let config = repo.config().await?;
+        let secret_key = repo.listen_key().await?;
+        let endpoint = build_endpoint(secret_key, &config).await?;
+        let n0des = build_n0des_client(&endpoint, n0des_api_secret).await?;
 
-    pub async fn listeners(&self) -> Vec<TcpListener> {
-        self.inner
-            .tcp_listeners
-            .lock()
-            .await
-            .iter()
-            .map(TcpListener::from)
-            .collect()
-    }
+        let state = repo.load_state().await?;
 
-    pub async fn connections(&self) -> Vec<TcpConnection> {
-        self.inner
-            .tcp_connections
-            .lock()
-            .await
-            .iter()
-            .map(TcpConnection::from)
-            .collect()
-    }
+        let upstream_proxy = UpstreamProxy::new(state.clone())?;
 
-    pub async fn listen_tcp(&self, label: String, host: String) -> Result<EndpointTicket> {
-        let listener = listen_tcp(&self.inner.endpoint, label, host).await?;
-        let ticket = listener.ticket.clone();
-        let mut tcp_listeners = self.inner.tcp_listeners.lock().await;
-        tcp_listeners.push(listener);
-        Ok(ticket)
-    }
+        let router = Router::builder(endpoint)
+            .accept(IROH_HTTP_CONNECT_ALPN, upstream_proxy)
+            .spawn();
 
-    pub async fn unlisten_tcp(&self, lstn: &TcpListener) -> anyhow::Result<()> {
-        let mut lstrs = self.inner.tcp_listeners.lock().await;
-        let mut found = false;
-        debug!("unlisten tcp. id: {:?}", lstn.id);
-        lstrs.retain(|h| {
-            if h.id == lstn.id {
-                h.handle.abort();
-                found = true;
-                false
-            } else {
-                true
+        let (metrics_tx, _) = broadcast::channel(1);
+
+        let metrics_update_interval = Duration::from_millis(100);
+        let metrics_task = tokio::spawn(
+            {
+                let endpoint = router.endpoint().clone();
+                let metrics_tx = metrics_tx.clone();
+                async move {
+                    loop {
+                        let metrics = endpoint.metrics();
+                        let recv_total = metrics.magicsock.recv_data_ipv4.get()
+                            + metrics.magicsock.recv_data_ipv6.get()
+                            + metrics.magicsock.recv_data_relay.get();
+                        let send_total = metrics.magicsock.send_data.get();
+                        let update = MetricsUpdate {
+                            send: send_total,
+                            recv: recv_total,
+                        };
+                        metrics_tx.send(update).ok();
+                        n0_future::time::sleep(metrics_update_interval).await;
+                    }
+                }
             }
-        });
-        match found {
-            true => Ok(()),
-            false => Err(anyhow!("TCP listener not found")),
-        }
+            .instrument(error_span!("metrics")),
+        );
+
+        let this = Self {
+            n0des,
+            repo,
+            router,
+            state,
+            metrics_tx,
+            _metrics_task: Arc::new(AbortOnDropHandle::new(metrics_task)),
+        };
+        this.announce_all().await;
+        Ok(this)
     }
 
-    pub async fn connect_tcp(
+    pub fn state_updated(&self) -> Notified<'_> {
+        self.state.updated()
+    }
+
+    pub fn state(&self) -> &StateWrapper {
+        &self.state
+    }
+
+    pub fn metrics(&self) -> broadcast::Receiver<MetricsUpdate> {
+        self.metrics_tx.subscribe()
+    }
+
+    pub fn proxies(&self) -> Vec<ProxyState> {
+        self.state.get().proxies.iter().cloned().collect()
+    }
+
+    pub fn selected_context(&self) -> Option<SelectedContext> {
+        self.state.get().selected_context.clone()
+    }
+
+    pub async fn set_selected_context(
         &self,
-        label: String,
-        addr: String,
-        ticket: EndpointTicket,
+        selected_context: Option<SelectedContext>,
     ) -> Result<()> {
-        let conn = connect_tcp(&self.inner.endpoint, label, addr, ticket).await?;
-        let mut tcp_connections = self.inner.tcp_connections.lock().await;
-        tcp_connections.push(conn);
+        info!(
+            selected = %selected_context
+                .as_ref()
+                .map_or("<none>".to_string(), SelectedContext::label),
+            "node: updating selected context"
+        );
+        self.state
+            .update(&self.repo, |state| {
+                state.selected_context = selected_context;
+            })
+            .await?;
         Ok(())
     }
 
-    pub async fn disconnect_tcp(&self, conn: &TcpConnection) -> anyhow::Result<()> {
-        let mut conns = self.inner.tcp_connections.lock().await;
-        let mut found = false;
-        debug!("disconnect tcp. id: {:?}", conn.id);
-        conns.retain(|h| {
-            if h.id == conn.id {
-                h.handle.abort();
-                found = true;
-                false
-            } else {
-                true
+    pub async fn validate_selected_context(
+        &self,
+        datum: &DatumCloudClient,
+    ) -> Result<Option<SelectedContext>> {
+        let selected = self.selected_context();
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+
+        let orgs = datum.orgs_and_projects().await?;
+        let is_valid = orgs.iter().any(|org| {
+            if org.org.resource_id != selected.org_id {
+                return false;
             }
+            org.projects
+                .iter()
+                .any(|project| project.resource_id == selected.project_id)
         });
-        match found {
-            true => Ok(()),
-            false => Err(anyhow!("TCP connection not found")),
+
+        if is_valid {
+            Ok(Some(selected))
+        } else {
+            self.set_selected_context(None).await?;
+            Ok(None)
+        }
+    }
+
+    pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {
+        self.state
+            .get()
+            .proxies
+            .iter()
+            .find(|p| p.id() == id)
+            .cloned()
+    }
+
+    pub async fn set_proxy(&self, proxy: ProxyState) -> Result<()> {
+        self.state
+            .update(&self.repo, |state| state.set_proxy(proxy.clone()))
+            .await?;
+        if proxy.enabled {
+            self.announce_proxy(&proxy.info).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn remove_proxy(&self, resource_id: &str) -> Result<Option<ProxyState>> {
+        debug!(%resource_id, "removing proxy {resource_id}");
+        let res = self
+            .state
+            .update(&self.repo, move |state| state.remove_proxy(resource_id))
+            .await;
+        debug!(%resource_id, "removed {res:?}");
+        if let Err(err) = self
+            .n0des
+            .unpublish_ticket::<AdvertismentTicket>(resource_id.to_string())
+            .await
+        {
+            warn!(%resource_id, "Failed to unpublish ticket from n0des: {err:#}");
+        }
+        res
+    }
+
+    async fn announce_proxy(&self, proxy: &Advertisment) -> Result<()> {
+        let ticket = proxy.ticket(self.endpoint_id());
+        let name = ticket.data.resource_id.clone();
+        debug!(%name, ?proxy, "announce");
+        if let Err(err) = self.n0des.publish_ticket(name, ticket).await {
+            error!(?proxy, "Failed to publish ticket: {err:#}");
+            Err(err).anyerr()
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn announce_all(&self) {
+        let state = self.state.get();
+        let count = state
+            .proxies
+            .iter()
+            .filter(|proxy| proxy.enabled)
+            .map(async |proxy| self.announce_proxy(&proxy.info).await)
+            .into_unordered_stream()
+            .count()
+            .await;
+        debug!("announced {count} proxies");
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        self.router.endpoint()
+    }
+
+    pub fn endpoint_id(&self) -> EndpointId {
+        self.router.endpoint().id()
+    }
+}
+
+impl StateWrapper {
+    fn tcp_proxy_exists(&self, host: &str, port: u16) -> bool {
+        self.get()
+            .proxies
+            .iter()
+            .any(|a| a.enabled && a.info.service().host == host && a.info.service().port == port)
+    }
+}
+
+impl AuthHandler for StateWrapper {
+    async fn authorize<'a>(
+        &'a self,
+        _remote_id: EndpointId,
+        req: &'a HttpProxyRequest,
+    ) -> Result<(), AuthError> {
+        match &req.kind {
+            HttpProxyRequestKind::Tunnel { target } => {
+                if self.tcp_proxy_exists(&target.host, target.port) {
+                    Ok(())
+                } else {
+                    Err(AuthError::Forbidden)
+                }
+            }
+            HttpProxyRequestKind::Absolute { .. } => Err(AuthError::Forbidden),
         }
     }
 }
 
-#[derive(Debug)]
-struct NodeInner {
-    ep_id: PublicKey,
-    endpoint: Endpoint,
-    tcp_listeners: Mutex<Vec<TcpListenerHandle>>,
-    tcp_connections: Mutex<Vec<TcpConnectionHandle>>,
+#[derive(derive_more::Debug, Clone)]
+pub struct TicketClient {
+    n0des: Arc<iroh_n0des::Client>,
+    #[debug(skip)]
+    cache: Arc<Mutex<TtlCache<String, AdvertismentTicket>>>,
 }
 
-/// Copy from a reader to a quinn stream.
-///
-/// Will send a reset to the other side if the operation is cancelled, and fail
-/// with an error.
-///
-/// Returns the number of bytes copied in case of success.
-async fn copy_to_quinn(
-    mut from: impl AsyncRead + Unpin,
-    mut send: quinn::SendStream,
-    token: CancellationToken,
-) -> io::Result<u64> {
-    tracing::trace!("copying to quinn");
-    tokio::select! {
-        res = tokio::io::copy(&mut from, &mut send) => {
-            let size = res?;
-            send.finish()?;
-            Ok(size)
+#[stack_error(derive)]
+pub enum FetchTicketError {
+    NotFound,
+    FailedToFetch(#[error(source)] AnyError),
+}
+
+impl TicketClient {
+    pub(crate) fn new(n0des: Arc<iroh_n0des::Client>) -> Self {
+        Self {
+            n0des,
+            cache: Arc::new(Mutex::new(TtlCache::new(1024))),
         }
-        _ = token.cancelled() => {
-            // send a reset to the other side immediately
-            send.reset(0u8.into()).ok();
-            Err(io::Error::other("cancelled"))
+    }
+
+    pub async fn get(&self, codename: &str) -> Result<AdvertismentTicket, FetchTicketError> {
+        if let Some(ticket) = self.cache.lock().expect("poisoned").get(codename) {
+            debug!(%codename, "ticket is cached");
+            Ok(ticket.clone())
+        } else {
+            debug!(%codename, "fetch ticket from n0des");
+            let ticket = self
+                .n0des
+                .fetch_ticket::<AdvertismentTicket>(codename.to_string())
+                .await
+                .map_err(|err| FetchTicketError::FailedToFetch(AnyError::from_std(err)))?
+                .map(|ticket| ticket.ticket)
+                .ok_or(FetchTicketError::NotFound)?;
+            self.cache.lock().expect("poisoned").insert(
+                codename.to_string(),
+                ticket.clone(),
+                TICKET_TTL,
+            );
+            Ok(ticket)
         }
     }
 }
 
-/// Copy from a quinn stream to a writer.
-///
-/// Will send stop to the other side if the operation is cancelled, and fail
-/// with an error.
-///
-/// Returns the number of bytes copied in case of success.
-async fn copy_from_quinn(
-    mut recv: quinn::RecvStream,
-    mut to: impl AsyncWrite + Unpin,
-    token: CancellationToken,
-) -> io::Result<u64> {
-    tokio::select! {
-        res = tokio::io::copy(&mut recv, &mut to) => {
-            Ok(res?)
-        },
-        _ = token.cancelled() => {
-            recv.stop(0u8.into()).ok();
-            Err(io::Error::other("cancelled"))
-        }
+#[derive(Debug, Clone)]
+pub struct ConnectNode {
+    pub(crate) endpoint: Endpoint,
+    pub(crate) proxy: DownstreamProxy,
+    pub tickets: TicketClient,
+}
+
+impl ConnectNode {
+    pub async fn new(repo: Repo) -> Result<Self> {
+        let n0des_api_secret = n0des_api_secret_from_env()?;
+        Self::with_n0des_api_secret(repo, n0des_api_secret).await
+    }
+
+    #[instrument("connect-node", skip_all)]
+    pub async fn with_n0des_api_secret(repo: Repo, n0des_api_secret: ApiSecret) -> Result<Self> {
+        let config = repo.config().await?;
+        let secret_key = repo.connect_key().await?;
+        let endpoint = build_endpoint(secret_key, &config).await?;
+        let n0des = build_n0des_client(&endpoint, n0des_api_secret).await?;
+        let tickets = TicketClient::new(n0des);
+        let pool = DownstreamProxy::new(endpoint.clone(), Default::default());
+        Ok(Self {
+            endpoint,
+            tickets,
+            proxy: pool,
+        })
+    }
+
+    pub fn endpoint_id(&self) -> EndpointId {
+        self.endpoint.id()
+    }
+
+    pub async fn connect_codename_and_bind_local(
+        &self,
+        codename: &str,
+        bind_addr: SocketAddr,
+    ) -> Result<OutboundProxyHandle> {
+        let ticket = self.tickets.get(codename).await?;
+        self.connect_and_bind_local(ticket.endpoint, ticket.service(), bind_addr)
+            .await
+    }
+
+    pub async fn connect_and_bind_local(
+        &self,
+        remote_id: EndpointId,
+        advertisment: &TcpProxyData,
+        bind_addr: SocketAddr,
+    ) -> Result<OutboundProxyHandle> {
+        let local_socket = TcpListener::bind(bind_addr).await?;
+        let bound_addr = local_socket.local_addr()?;
+
+        let upstream = EndpointAuthority::new(remote_id, advertisment.clone().into());
+        let mode = ProxyMode::Tcp(upstream);
+
+        let proxy = self.proxy.clone();
+        let task = tokio::spawn(async move {
+            info!("bound local socket on {bound_addr}");
+            if let Err(err) = proxy.forward_tcp_listener(local_socket, mode).await {
+                warn!("Forwarding local socket failed: {err:#}");
+            }
+        }.instrument(error_span!("forward-tcp", remote_id=%remote_id.fmt_short(), authority=%advertisment.address())));
+        Ok(OutboundProxyHandle {
+            remote_id,
+            task,
+            bound_addr: bind_addr,
+            advertisment: advertisment.clone(),
+        })
     }
 }
 
-/// Create a new iroh endpoint.
-async fn create_endpoint(
-    secret_key: SecretKey,
-    common: &Config,
-    alpns: Vec<Vec<u8>>,
-) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(alpns);
+pub struct OutboundProxyHandle {
+    task: JoinHandle<()>,
+    bound_addr: SocketAddr,
+    remote_id: EndpointId,
+    advertisment: TcpProxyData,
+}
+
+impl OutboundProxyHandle {
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+
+    pub fn remote_id(&self) -> EndpointId {
+        self.remote_id
+    }
+
+    pub fn bound_addr(&self) -> SocketAddr {
+        self.bound_addr
+    }
+
+    pub fn advertisment(&self) -> &TcpProxyData {
+        &self.advertisment
+    }
+}
+
+/// Build a new iroh endpoint, applying all relevant details from Configuration
+/// to the base endpoint setup
+pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Result<Endpoint> {
+    let mut builder = match common.discovery_mode {
+        crate::config::DiscoveryMode::Dns => {
+            Endpoint::empty_builder(default_relay_mode()).secret_key(secret_key)
+        }
+        crate::config::DiscoveryMode::Default
+        | crate::config::DiscoveryMode::Hybrid => Endpoint::builder().secret_key(secret_key),
+    };
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
+    match common.discovery_mode {
+        crate::config::DiscoveryMode::Default => {}
+        crate::config::DiscoveryMode::Dns | crate::config::DiscoveryMode::Hybrid => {
+            let origin = match &common.dns_origin {
+                Some(origin) => origin.clone(),
+                None => n0_error::bail_any!(
+                    "dns_origin is required when discovery_mode is set to dns or hybrid"
+                ),
+            };
+            if let Some(resolver_addr) = common.dns_resolver {
+                let resolver = DnsResolver::builder()
+                    .with_nameserver(resolver_addr, DnsProtocol::Udp)
+                    .build();
+                builder = builder.dns_resolver(resolver);
+            }
+            builder = builder.discovery(DnsDiscovery::builder(origin));
+        }
+    }
     let endpoint = builder.bind().await?;
+    info!(id = %endpoint.id(), "iroh endpoint bound");
     Ok(endpoint)
 }
 
-fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
-    move |x| {
-        token.cancel();
-        x
-    }
+pub(crate) fn n0des_api_secret_from_env() -> Result<ApiSecret> {
+    let api_secret_str = match std::env::var("N0DES_API_SECRET") {
+        Ok(s) => s,
+        Err(_) => match option_env!("BUILD_N0DES_API_SECRET") {
+            None => n0_error::bail_any!("Missing env varable N0DES_API_SECRET"),
+            Some(s) => s.to_string(),
+        },
+    };
+    let api_secret = ApiSecret::from_str(&api_secret_str)
+        .context("Failed to parse n0des API secret from env variable N0DES_API_SECRET")?;
+    Ok(api_secret)
 }
 
-/// Bidirectionally forward data from a quinn stream and an arbitrary tokio
-/// reader/writer pair, aborting both sides when either one forwarder is done,
-/// or when control-c is pressed.
-async fn forward_bidi(
-    from1: impl AsyncRead + Send + Sync + Unpin + 'static,
-    to1: impl AsyncWrite + Send + Sync + Unpin + 'static,
-    from2: quinn::RecvStream,
-    to2: quinn::SendStream,
-) -> Result<()> {
-    let token1 = CancellationToken::new();
-    let token2 = token1.clone();
-    let token3 = token1.clone();
-    let forward_from_stdin = tokio::spawn(async move {
-        copy_to_quinn(from1, to2, token1.clone())
-            .await
-            .map_err(cancel_token(token1))
-    });
-    let forward_to_stdout = tokio::spawn(async move {
-        copy_from_quinn(from2, to1, token2.clone())
-            .await
-            .map_err(cancel_token(token2))
-    });
-    let _control_c = tokio::spawn(async move {
-        tokio::signal::ctrl_c().await?;
-        token3.cancel();
-        io::Result::Ok(())
-    });
-    forward_to_stdout.await.e()?.e()?;
-    forward_from_stdin.await.e()?.e()?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TcpConnection {
-    pub id: Uuid,
-    pub label: String,
-    pub addr: String,
-    pub ticket: EndpointTicket,
-}
-
-impl From<&TcpConnectionHandle> for TcpConnection {
-    fn from(handle: &TcpConnectionHandle) -> Self {
-        TcpConnection {
-            id: handle.id.clone(),
-            label: handle.label.clone(),
-            addr: handle.addr.clone(),
-            ticket: handle.ticket.clone(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TcpConnectionHandle {
-    id: Uuid,
-    label: String,
-    addr: String,
-    ticket: EndpointTicket,
-    handle: tokio::task::JoinHandle<()>,
-}
-
-/// Listen on a tcp port and forward incoming connections to an endpoint.
-/// The addresses to listen on for incoming tcp connections.
-///
-/// To listen on all network interfaces, use 0.0.0.0:12345
-/// The node to connect to
-async fn connect_tcp(
+pub(crate) async fn build_n0des_client(
     endpoint: &Endpoint,
-    label: String,
-    addr: String,
-    ticket: EndpointTicket,
-) -> Result<TcpConnectionHandle> {
-    let addr_string = addr.clone();
-    let addrs = addr
-        .to_socket_addrs()
-        .context(format!("invalid host string {}", addr))?;
-    tracing::info!("tcp listening on {:?}", addrs);
-
-    let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
-        Ok(tcp_listener) => tcp_listener,
-        Err(cause) => {
-            tracing::error!("error binding tcp socket to {:?}: {}", addrs, cause);
-            whatever!("error binding tcp socket to {:?}: {}", addrs, cause);
-        }
-    };
-    async fn handle_tcp_accept(
-        next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
-        addr: EndpointAddr,
-        endpoint: Endpoint,
-        handshake: bool,
-        alpn: &[u8],
-    ) -> Result<()> {
-        let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
-        let (tcp_recv, tcp_send) = tcp_stream.into_split();
-        tracing::info!("got tcp connection from {}", tcp_addr);
-        let remote_ep_id = addr.id;
-        let connection = endpoint
-            .connect(addr, alpn)
-            .await
-            .context(format!("error connecting to {remote_ep_id}"))?;
-        let (mut endpoint_send, endpoint_recv) = connection
-            .open_bi()
-            .await
-            .context(format!("error opening bidi stream to {remote_ep_id}"))?;
-        // send the handshake unless we are using a custom alpn
-        // when using a custom alpn, evertyhing is up to the user
-        if handshake {
-            // the connecting side must write first. we don't know if there will be something
-            // on stdin, so just write a handshake.
-            endpoint_send.write_all(&HANDSHAKE).await.e()?;
-        }
-        forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
-        Ok::<_, n0_snafu::Error>(())
-    }
-    let ticket2 = ticket.clone();
-    let addr = ticket2.endpoint_addr().clone();
-    let endpoint = endpoint.clone();
-    let handle = tokio::spawn(async move {
-        loop {
-            // also wait for ctrl-c here so we can use it before accepting a connection
-            let next = tokio::select! {
-                stream = tcp_listener.accept() => stream,
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("got ctrl-c, exiting");
-                    break;
-                }
-            };
-            let endpoint = endpoint.clone();
-            let addr = addr.clone();
-            let handshake = true;
-            let alpn = ALPN;
-            tokio::spawn(async move {
-                if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake, &alpn).await
-                {
-                    // log error at warn level
-                    //
-                    // we should know about it, but it's not fatal
-                    tracing::warn!("error handling connection: {}", cause);
-                }
-            });
-        }
-    });
-    Ok(TcpConnectionHandle {
-        id: Uuid::new_v4(),
-        label,
-        addr: addr_string,
-        ticket,
-        handle,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TcpListener {
-    pub id: Uuid,
-    pub label: String,
-    pub addr: String,
-    pub ticket: EndpointTicket,
-}
-
-impl From<&TcpListenerHandle> for TcpListener {
-    fn from(handle: &TcpListenerHandle) -> Self {
-        TcpListener {
-            id: handle.id.clone(),
-            label: handle.label.clone(),
-            addr: handle.addr.clone(),
-            ticket: handle.ticket.clone(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TcpListenerHandle {
-    id: Uuid,
-    pub label: String,
-    pub addr: String,
-    pub ticket: EndpointTicket,
-    pub handle: tokio::task::JoinHandle<()>,
-}
-
-/// Listen on an endpoint and forward incoming connections to a tcp socket.
-async fn listen_tcp(endpoint: &Endpoint, label: String, host: String) -> Result<TcpListenerHandle> {
-    let addrs = match host.to_socket_addrs() {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(e) => snafu::whatever!("invalid host string {}: {}", host, e),
-    };
-
-    endpoint.online().await;
-    let endpoint_addr = endpoint.addr();
-    let mut short = endpoint_addr.clone();
-    short.addrs.clear();
-    let ticket = EndpointTicket::new(short);
-
-    // handle a new incoming connection on the endpoint
-    async fn handle_endpoint_accept(
-        connecting: Connecting,
-        addrs: Vec<std::net::SocketAddr>,
-        handshake: bool,
-    ) -> Result<()> {
-        let connection = connecting.await.context("error accepting connection")?;
-        let remote_node_id = &connection.remote_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
-        let (s, mut r) = connection
-            .accept_bi()
-            .await
-            .context("error accepting stream")?;
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
-        if handshake {
-            // read the handshake and verify it
-            let mut buf = [0u8; HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.e()?;
-            snafu::ensure_whatever!(buf == HANDSHAKE, "invalid handshake");
-        }
-        let connection = tokio::net::TcpStream::connect(addrs.as_slice())
-            .await
-            .context(format!("error connecting to {addrs:?}"))?;
-        let (read, write) = connection.into_split();
-        forward_bidi(read, write, r, s).await?;
-        Ok(())
-    }
-
-    let endpoint = endpoint.clone();
-    let handle = tokio::spawn(async move {
-        loop {
-            let incoming = select! {
-                incoming = endpoint.accept() => incoming,
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("got ctrl-c, exiting");
-                    break;
-                }
-            };
-            let Some(incoming) = incoming else {
-                break;
-            };
-            let Ok(connecting) = incoming.accept() else {
-                break;
-            };
-            let addrs = addrs.clone();
-            let handshake = true;
-            tokio::spawn(async move {
-                if let Err(cause) = handle_endpoint_accept(connecting, addrs, handshake).await {
-                    // log error at warn level
-                    //
-                    // we should know about it, but it's not fatal
-                    tracing::warn!("error handling connection: {}", cause);
-                }
-            });
-        }
-    });
-
-    Ok(TcpListenerHandle {
-        id: Uuid::new_v4(),
-        label,
-        addr: host,
-        ticket,
-        handle,
-    })
+    api_secret: ApiSecret,
+) -> Result<Arc<iroh_n0des::Client>> {
+    let remote_id = api_secret.remote.id;
+    debug!(remote=%remote_id.fmt_short(), "connecting to n0des endpoint");
+    let client = iroh_n0des::Client::builder(endpoint)
+        .api_secret(api_secret)?
+        .build()
+        .await
+        .std_context("Failed to connect to n0des endpoint")?;
+    info!(remote=%remote_id.fmt_short(), "connected to n0des endpoint");
+    Ok(Arc::new(client))
 }

@@ -13,8 +13,8 @@ pub fn Signup() -> Element {
             id: "create-domain",
             h1 { "TODO: signup" }
             Link {
-                to: Route::CreateDomain {},
-                "Create Domain"
+                to: Route::ProxiesList {  },
+                "Proxies"
             }
         }
     }

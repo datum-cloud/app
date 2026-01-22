@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        # ui is checked through the bundle command
+        run: cargo test -p lib -p datum-connect --locked
+
+      - name: Cargo test
+        env:
+          RUST_LOG: warn,lib=trace,iroh_proxy_utils=trace
+        run: cargo test -p lib --locked

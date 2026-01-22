@@ -1,0 +1,614 @@
+use std::{sync::Arc, time::Duration};
+
+use arc_swap::ArcSwap;
+use chrono::Utc;
+use n0_error::{Result, StackResultExt, StdResultExt, anyerr, stack_error};
+use openidconnect::{
+    AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
+    CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
+    PkceCodeChallenge, RefreshToken, Scope, TokenResponse,
+    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
+};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
+
+use crate::Repo;
+
+use self::{redirect_server::RedirectServer, types::OidcTokenResponse};
+use super::ApiEnv;
+
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Refresh auth or relogin if access token is valid for less than 30min
+const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
+
+pub struct AuthProvider {
+    pub issuer_url: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum LoginState {
+    Missing,
+    NeedsRefresh,
+    Valid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthState {
+    pub tokens: AuthTokens,
+    pub profile: UserProfile,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthTokens {
+    pub access_token: AccessToken,
+    pub refresh_token: Option<RefreshToken>,
+    pub issued_at: chrono::DateTime<Utc>,
+    pub expires_in: Duration,
+}
+
+impl AuthTokens {
+    pub fn is_expired(&self) -> bool {
+        self.issued_at + self.expires_in < chrono::Utc::now()
+    }
+
+    pub fn expires_at(&self) -> chrono::DateTime<Utc> {
+        self.issued_at + self.expires_in
+    }
+
+    pub fn expires_in_less_than(&self, duration: Duration) -> bool {
+        self.issued_at + self.expires_in < chrono::Utc::now() + duration
+    }
+
+    pub fn login_state(&self) -> LoginState {
+        match self.expires_in_less_than(Duration::from_secs(60 * 5)) {
+            true => LoginState::NeedsRefresh,
+            false => LoginState::Valid,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user_id: String,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+}
+
+impl UserProfile {
+    pub fn display_name(&self) -> String {
+        match (self.first_name.as_ref(), self.last_name.as_ref()) {
+            (Some(x), Some(y)) => format!("{x} {y}"),
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => y.clone(),
+            (None, None) => self.email.clone(),
+        }
+    }
+
+    // fn from_standard_claims<GC>(claims: &StandardClaims<GC>) -> Result<Self>
+    // where
+    //     GC: GenderClaim,
+    // {
+    //     Ok(Self {
+    //         user_id: claims.subject().to_string(),
+    //         email: claims
+    //             .email()
+    //             .map(|x| x.to_string())
+    //             .context("missing email address")?,
+    //         first_name: claims
+    //             .given_name()
+    //             .map(|x| x.iter())
+    //             .into_iter()
+    //             .flatten()
+    //             .next()
+    //             .map(|(_lang, name)| name.to_string()),
+    //         last_name: claims
+    //             .family_name()
+    //             .map(|x| x.iter())
+    //             .into_iter()
+    //             .flatten()
+    //             .next()
+    //             .map(|(_lang, name)| name.to_string()),
+    //     })
+    // }
+
+    // TODO: `IdTokenClaims` contains `StandardClaims` but does not expose it directly.
+    // File PR to openidconnect and then remove this function (which is a literal copy-paste)
+    // of `from_standard_claims`).
+    fn from_id_token_claims<AC, GC>(claims: &IdTokenClaims<AC, GC>) -> Result<Self>
+    where
+        AC: AdditionalClaims,
+        GC: GenderClaim,
+    {
+        Ok(Self {
+            user_id: claims.subject().to_string(),
+            email: claims
+                .email()
+                .map(|x| x.to_string())
+                .context("missing email address")?,
+            first_name: claims
+                .given_name()
+                .map(|x| x.iter())
+                .into_iter()
+                .flatten()
+                .next()
+                .map(|(_lang, name)| name.to_string()),
+            last_name: claims
+                .family_name()
+                .map(|x| x.iter())
+                .into_iter()
+                .flatten()
+                .next()
+                .map(|(_lang, name)| name.to_string()),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StatelessClient {
+    oidc: types::OidcClient,
+    http: reqwest::Client,
+}
+
+impl StatelessClient {
+    pub async fn new(env: ApiEnv) -> Result<Self> {
+        Self::with_provider(env.auth_provider()).await
+    }
+
+    pub async fn with_provider(provider: AuthProvider) -> Result<Self> {
+        let http = reqwest::ClientBuilder::new()
+            // Following redirects opens the client up to SSRF vulnerabilities.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Client should build");
+
+        // Use OpenID Connect Discovery to fetch the provider metadata.
+        let provider_metadata = CoreProviderMetadata::discover_async(
+            IssuerUrl::new(provider.issuer_url).std_context("Invalid OIDC provider issuer URL")?,
+            &http,
+        )
+        .await
+        .std_context("Failed to discover OIDC provider metadata")?;
+
+        // Create an OpenID Connect client
+        let oidc = CoreClient::from_provider_metadata(
+            provider_metadata,
+            ClientId::new(provider.client_id),
+            provider.client_secret.clone().map(ClientSecret::new),
+        )
+        .set_redirect_uri(RedirectServer::url());
+
+        Ok(Self { oidc, http })
+    }
+
+    pub async fn login(&self) -> Result<AuthState> {
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+
+        let (auth_url, csrf_token, nonce) = self
+            .oidc
+            .authorize_url(
+                CoreAuthenticationFlow::AuthorizationCode,
+                CsrfToken::new_random,
+                Nonce::new_random,
+            )
+            .add_scope(Scope::new("openid".to_string()))
+            .add_scope(Scope::new("profile".to_string()))
+            .add_scope(Scope::new("email".to_string()))
+            .add_scope(Scope::new("offline_access".to_string()))
+            .set_pkce_challenge(pkce_challenge)
+            .url();
+        debug!(auth_uri=%self.oidc.auth_uri(), "attempting login");
+
+        // Bind a localhost HTTP server to receive the redirect.
+        let mut redirect_server = RedirectServer::bind(csrf_token.clone()).await?;
+
+        // Open the auth URL in the platform's default browser.
+        if let Err(err) = open::that(auth_url.to_string()) {
+            warn!("Failed to auto-open url: {err}");
+            println!("Open this URL in a browser to complete the login:\n{auth_url}")
+        }
+
+        let authorization_code = redirect_server.recv_with_timeout(LOGIN_TIMEOUT).await?;
+        debug!("received redirect with authorization code");
+
+        // Exchange auth code for ID and access tokens.
+        let tokens = self
+            .oidc
+            .exchange_code(AuthorizationCode::new(authorization_code))
+            .std_context("Missing OIDC provider metadata")?
+            .set_pkce_verifier(pkce_verifier)
+            .request_async(&self.http)
+            .await
+            .std_context("Failed to exchange auth code to access token")
+            .inspect_err(|e| error!("{e:#}"))?;
+
+        let state = self.parse_token_response(tokens, &nonce)?;
+        info!(email=%state.profile.email, expires_at=%state.tokens.expires_at(), "login succesfull");
+        Ok(state)
+    }
+
+    // pub async fn fetch_profile(&self, tokens: &AuthTokens) -> Result<UserProfile> {
+    //     let userinfo: CoreUserInfoClaims = self
+    //         .oidc
+    //         .user_info(tokens.access_token.clone(), None)
+    //         .std_context("Missing OIDC provider metadata")?
+    //         .request_async(&self.http)
+    //         .await
+    //         .std_context("Failed to fetch user info")?;
+    //     let profile = UserProfile::from_standard_claims(userinfo.standard_claims())?;
+    //     Ok(profile)
+    // }
+
+    pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
+        let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
+        debug!("Refreshing access token");
+        let tokens = self
+            .oidc
+            .exchange_refresh_token(refresh_token)
+            .std_context("Missing OIDC provider metadata")?
+            .request_async(&self.http)
+            .await
+            .std_context("Failed to refresh tokens")?;
+        let state = self.parse_token_response(tokens, refresh_nonce_verifier)?;
+        debug!("Access token refreshed");
+        Ok(state)
+    }
+
+    fn parse_token_response(
+        &self,
+        tokens: OidcTokenResponse,
+        nonce_verifier: impl NonceVerifier,
+    ) -> Result<AuthState> {
+        // Extract the ID token claims after verifying its authenticity and nonce.
+        let id_token = tokens
+            .id_token()
+            .ok_or_else(|| anyerr!("Server did not return an ID token"))?;
+        let id_token_verifier = self
+            .oidc
+            .id_token_verifier()
+            // Datum auth backend includes multiple audiences in the id tokens
+            .set_other_audience_verifier_fn(|_audience| true);
+
+        let claims = id_token
+            .claims(&id_token_verifier, nonce_verifier)
+            .std_context("Failed to verify claims")
+            .inspect_err(|e| error!("{e:#}"))?;
+
+        // Verify the access token hash to ensure that the access token hasn't been substituted for
+        // another user's.
+        if let Some(expected_access_token_hash) = claims.access_token_hash() {
+            let actual_access_token_hash = AccessTokenHash::from_token(
+                tokens.access_token(),
+                id_token
+                    .signing_alg()
+                    .std_context("Invalid id token signing algorithm")?,
+                id_token
+                    .signing_key(&id_token_verifier)
+                    .std_context("Missing id token signing key")?,
+            )
+            .std_context("failed to create access token hash from token")?;
+            if actual_access_token_hash != *expected_access_token_hash {
+                return Err(anyerr!("Invalid access token"));
+            }
+        }
+
+        let profile = UserProfile::from_id_token_claims(claims)?;
+        let tokens = AuthTokens {
+            issued_at: claims.issue_time(),
+            access_token: tokens.access_token().clone(),
+            refresh_token: tokens.refresh_token().cloned(),
+            expires_in: tokens.expires_in().context("Missing expires_in claim")?,
+        };
+
+        Ok(AuthState { tokens, profile })
+    }
+}
+
+#[stack_error(derive)]
+#[error("Not logged in")]
+pub struct NotLoggedIn;
+
+#[derive(Default, Debug)]
+pub struct MaybeAuth(Option<AuthState>);
+
+impl MaybeAuth {
+    pub fn get(&self) -> Result<&AuthState, NotLoggedIn> {
+        self.0.as_ref().ok_or(NotLoggedIn)
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AuthStateWrapper {
+    inner: Arc<ArcSwap<MaybeAuth>>,
+    repo: Option<Repo>,
+}
+
+impl AuthStateWrapper {
+    fn empty() -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::new(Default::default())),
+            repo: None,
+        }
+    }
+
+    async fn from_repo(repo: Repo) -> Result<Self> {
+        let state = repo.read_oauth().await?;
+        Ok(Self {
+            inner: Arc::new(ArcSwap::new(Arc::new(MaybeAuth(state)))),
+            repo: Some(repo),
+        })
+    }
+
+    fn load(&self) -> Arc<MaybeAuth> {
+        self.inner.load_full()
+    }
+
+    async fn set(&self, auth: Option<AuthState>) -> Result<()> {
+        if let Some(repo) = self.repo.as_ref() {
+            repo.write_oauth(auth.as_ref()).await?;
+        }
+        self.inner.store(Arc::new(MaybeAuth(auth)));
+        Ok(())
+    }
+}
+
+#[derive(derive_more::Debug, Clone)]
+pub struct AuthClient {
+    state: AuthStateWrapper,
+    client: StatelessClient,
+}
+
+impl AuthClient {
+    pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
+        let auth = AuthStateWrapper::from_repo(repo).await?;
+        let auth_client = StatelessClient::new(env).await?;
+        Ok(Self {
+            state: auth,
+            client: auth_client,
+        })
+    }
+
+    pub async fn new(env: ApiEnv) -> Result<Self> {
+        let auth = AuthStateWrapper::empty();
+        let auth_client = StatelessClient::new(env).await?;
+        Ok(Self {
+            state: auth,
+            client: auth_client,
+        })
+    }
+
+    pub fn login_state(&self) -> LoginState {
+        match self.state.load().get().ok() {
+            None => LoginState::Missing,
+            Some(state) => state.tokens.login_state(),
+        }
+    }
+
+    pub fn load(&self) -> Arc<MaybeAuth> {
+        self.state.load()
+    }
+
+    pub async fn load_refreshed(&self) -> Result<Arc<MaybeAuth>> {
+        let state = self.state.load();
+        match state.get() {
+            Err(_) => Ok(state),
+            Ok(inner) if inner.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
+                self.refresh().await?;
+                Ok(self.state.load())
+            }
+            Ok(_) => Ok(state),
+        }
+    }
+
+    pub async fn logout(&self) -> Result<()> {
+        self.state.set(None).await?;
+        Ok(())
+    }
+
+    pub async fn login(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = match auth.get() {
+            Err(_) => self.client.login().await?,
+            Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
+                match self.client.refresh(&auth.tokens).await {
+                    Ok(auth) => auth,
+                    Err(err) => {
+                        warn!("Failed to refresh auth token: {err:#}");
+                        self.client.login().await?
+                    }
+                }
+            }
+            Ok(_) => return Ok(()),
+        };
+        self.state.set(Some(auth)).await?;
+        Ok(())
+    }
+
+    pub async fn refresh(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = auth.get()?;
+        let new_auth = match self.client.refresh(&auth.tokens).await {
+            Ok(auth) => auth,
+            Err(err) => Err(err).context("Failed to refresh auth tokens, needs login")?,
+        };
+        self.state.set(Some(new_auth)).await?;
+        Ok(())
+    }
+}
+
+/// Refresh requests don't have nonces.
+fn refresh_nonce_verifier(_: Option<&Nonce>) -> Result<(), String> {
+    Ok(())
+}
+
+mod types {
+    use openidconnect::core::*;
+    use openidconnect::*;
+
+    /// An [`openidconnect::Client`] with all generics filled in.
+    // Yes, this is as long as it looks.
+    pub(super) type OidcClient = Client<
+        EmptyAdditionalClaims,
+        CoreAuthDisplay,
+        CoreGenderClaim,
+        CoreJweContentEncryptionAlgorithm,
+        CoreJsonWebKey,
+        CoreAuthPrompt,
+        StandardErrorResponse<CoreErrorResponseType>,
+        StandardTokenResponse<
+            IdTokenFields<
+                EmptyAdditionalClaims,
+                EmptyExtraTokenFields,
+                CoreGenderClaim,
+                CoreJweContentEncryptionAlgorithm,
+                CoreJwsSigningAlgorithm,
+            >,
+            CoreTokenType,
+        >,
+        StandardTokenIntrospectionResponse<EmptyExtraTokenFields, CoreTokenType>,
+        CoreRevocableToken,
+        StandardErrorResponse<RevocationErrorResponseType>,
+        EndpointSet,
+        EndpointNotSet,
+        EndpointNotSet,
+        EndpointNotSet,
+        EndpointMaybeSet,
+        EndpointMaybeSet,
+    >;
+
+    pub(super) type OidcTokenResponse = StandardTokenResponse<
+        IdTokenFields<
+            EmptyAdditionalClaims,
+            EmptyExtraTokenFields,
+            CoreGenderClaim,
+            CoreJweContentEncryptionAlgorithm,
+            CoreJwsSigningAlgorithm,
+        >,
+        CoreTokenType,
+    >;
+}
+
+mod redirect_server {
+    //! Web server waiting for OAuth redirct requests
+
+    use axum::{
+        Router,
+        extract::{Query, State},
+        routing::get,
+    };
+    use n0_error::StdResultExt;
+    use openidconnect::{CsrfToken, RedirectUrl};
+    use serde::Deserialize;
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        time::Duration,
+    };
+    use tokio::{net::TcpListener, sync::mpsc};
+    use tokio_util::sync::CancellationToken;
+    use tracing::{Instrument, debug, instrument, warn};
+
+    pub const REDIRECT_SERVER_PORT: u16 = 7076;
+
+    #[derive(Deserialize, Debug)]
+    struct OauthRedirectData {
+        pub code: String,
+        pub state: String,
+    }
+
+    pub struct RedirectServer {
+        rx: mpsc::Receiver<n0_error::Result<OauthRedirectData>>,
+        cancel_token: CancellationToken,
+        csrf_token: CsrfToken,
+    }
+
+    impl RedirectServer {
+        #[instrument("oidc-redirect-server")]
+        pub async fn bind(csrf_token: CsrfToken) -> std::io::Result<Self> {
+            let bind_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), REDIRECT_SERVER_PORT);
+            let cancel_token = CancellationToken::new();
+            let (tx, rx) = mpsc::channel(1);
+            let state = AppState { sender: tx.clone() };
+            // Route all paths and all methods to the same handler
+            let app = Router::new()
+                .route("/oauth/redirect", get(oauth_redirect))
+                .with_state(state);
+            let listener = TcpListener::bind(bind_addr).await?;
+            debug!(addr=%bind_addr, "OIDC redirect HTTP server listening");
+
+            tokio::spawn({
+                let cancel_token = cancel_token.clone();
+                async move {
+                    if let Err(err) = axum::serve(listener, app)
+                        .with_graceful_shutdown(cancel_token.cancelled_owned())
+                        .await
+                    {
+                        warn!("OIDC redirect HTTP server failed: {err:#}");
+                        tx.send(Err(err.into())).await.ok();
+                    } else {
+                        debug!("OIDC redirect HTTP server stopped");
+                    }
+                }
+                .instrument(tracing::Span::current())
+            });
+
+            Ok(Self {
+                cancel_token,
+                rx,
+                csrf_token,
+            })
+        }
+
+        pub fn url() -> RedirectUrl {
+            RedirectUrl::new(format!(
+                "http://localhost:{}/oauth/redirect",
+                REDIRECT_SERVER_PORT
+            ))
+            .expect("valid url")
+        }
+
+        pub async fn recv_with_timeout(&mut self, timeout: Duration) -> n0_error::Result<String> {
+            let res = tokio::time::timeout(timeout, self.recv()).await;
+            self.cancel_token.cancel();
+            res.anyerr()?
+        }
+
+        pub async fn recv(&mut self) -> n0_error::Result<String> {
+            let code = loop {
+                let reply = self
+                    .rx
+                    .recv()
+                    .await
+                    .std_context("web server closed")?
+                    .std_context("web server failed")?;
+                if reply.state == *self.csrf_token.secret() {
+                    break reply.code;
+                }
+            };
+            self.cancel_token.cancel();
+            Ok(code)
+        }
+    }
+
+    impl Drop for RedirectServer {
+        fn drop(&mut self) {
+            self.cancel_token.cancel();
+        }
+    }
+
+    #[derive(Clone)]
+    struct AppState {
+        sender: mpsc::Sender<n0_error::Result<OauthRedirectData>>,
+    }
+
+    async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> String {
+        let data = query.0;
+        state.sender.send(Ok(data)).await.ok();
+        "You are now logged in and can close this window.".to_string()
+    }
+}

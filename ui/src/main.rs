@@ -1,20 +1,33 @@
-// The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
-// need dioxus
 use dioxus::prelude::*;
-
-use state::AppState;
-use views::{
-    CreateDomain, CreateProxy, DomainsList, JoinProxy, Login, Navbar, Signup, TempProxies,
-};
+use std::sync::OnceLock;
+use tracing::info;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+#[cfg(feature = "desktop")]
+use n0_error::Result;
 
 use crate::components::{Head, Splash};
+use crate::state::AppState;
+use crate::views::{
+    Chrome, CreateProxy, EditProxy, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    TunnelBandwidth,
+};
 
-/// Define a components module that contains all shared components for our app.
+#[cfg(feature = "desktop")]
+use dioxus_desktop::{
+    trayicon::{
+        menu::{Menu, MenuItem, PredefinedMenuItem},
+        Icon, TrayIcon, TrayIconBuilder,
+    },
+    use_tray_menu_event_handler, use_window,
+};
+
 mod components;
-/// Define a views module that contains the UI for all Layouts and Routes for our app.
-mod views;
-// App-wide state
 mod state;
+mod util;
+mod views;
+
+static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
 /// The Route enum is used to define the structure of internal routes in our app. All route enums need to derive
 /// the [`Routable`] trait, which provides the necessary methods for the router to work.
@@ -24,46 +37,113 @@ mod state;
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 enum Route {
-    #[route("/login")]
+    #[layout(Chrome)]
+    #[route("/")]
     Login{},
+    #[route("/select")]
+    SelectProject{},
     #[route("/signup")]
     Signup{},
     // The layout attribute defines a wrapper for all routes under the layout. Layouts are great for wrapping
     // many routes with a common UI like a navbar.
-    #[layout(Navbar)]
-        #[route("/")]
-        TempProxies{},
+    #[layout(Sidebar)]
+        #[route("/proxies")]
+        ProxiesList {},
         // The route attribute can include dynamic parameters that implement [`std::str::FromStr`] and [`std::fmt::Display`] with the `:` syntax.
         // In this case, id will match any integer like `/blog/123` or `/blog/-456`.
         #[route("/proxy/create")]
         CreateProxy {},
+        #[route("/proxy/edit/:id")]
+        EditProxy { id: String },
+        #[route("/proxy/edit/:id/bandwidth")]
+        TunnelBandwidth { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
-        // The route attribute defines the URL pattern that a specific route matches. If that pattern matches the URL,
-        // the component for that route will be rendered. The component name that is rendered defaults to the variant name.
-        #[route("/domains")]
-        DomainsList {},
-        #[route("/domain/create")]
-        CreateDomain {},
 }
 
 fn main() {
-    // The `launch` function is the main entry point for a dioxus app. It takes a component and renders it with the platform feature
-    // you have enabled
+    init_tracing();
+    if let Some(path) = dotenv::dotenv().ok() {
+        info!("Loaded environment variables from {}", path.display());
+    }
+
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    gtk::init().unwrap();
+
+    #[cfg(feature = "desktop")]
+    let _tray_icon = init_menu_bar().unwrap();
+
+    #[cfg(feature = "desktop")]
+    {
+        // Use a custom titlebar so we can theme the top chrome (height + color).
+        use dioxus_desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
+
+        dioxus::LaunchBuilder::desktop()
+            .with_cfg(desktop! {
+                Config::new()
+                    // Make "close" behave like hide, so the tray icon can restore it.
+                    .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+                    .with_window(
+                        WindowBuilder::new()
+                            .with_title("Datum Connect")
+                            .with_inner_size(LogicalSize::new(740.0, 740.0))
+                            // Required for rounded app chrome: we render our own rounded container inside.
+                            .with_transparent(true)
+                            .with_decorations(false),
+                    )
+            })
+            .launch(App);
+    }
+
+    #[cfg(not(feature = "desktop"))]
     dioxus::launch(App);
 }
 
-/// App is the main component of our app. Components are the building blocks of dioxus apps. Each component is a function
-/// that takes some props and returns an Element. In this case, App takes no props because it is the root of our app.
-///
-/// Components should be annotated with `#[component]` to support props, better error messages, and autocomplete
+fn init_tracing() {
+    let repo_path = lib::Repo::default_location();
+    if let Err(err) = std::fs::create_dir_all(&repo_path) {
+        eprintln!("ui: failed to create repo dir {}: {err}", repo_path.display());
+    }
+    let file_appender = tracing_appender::rolling::never(&repo_path, "ui.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let _ = LOG_GUARD.set(guard);
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(fmt::layer().with_writer(non_blocking))
+        .init();
+}
+
 #[component]
 fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
+        // let nav = navigator();
+        // if state.datum().login_state() == LoginState::Missing {
+        //     nav.push(Route::Login {});
+        // }
         provide_context(state);
         app_state_ready.set(true);
+    });
+
+    #[cfg(feature = "desktop")]
+    use_tray_menu_event_handler(move |event| {
+        // The event ID corresponds to the menu item text
+        match event.id.0.as_str() {
+            "Show Window" => {
+                use_window().set_visible(true);
+            }
+            "Quit" => {
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("Unknown menu event: {}", event.id.0);
+            }
+        }
     });
 
     if !app_state_ready() {
@@ -73,12 +153,50 @@ fn App() -> Element {
         };
     }
 
-    // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {
         Head {  }
-
-        // // The router component renders the route enum we defined above. It will handle synchronization of the URL and render
-        // // the layouts and components for the active route.
         Router::<Route> {}
     }
+}
+
+#[cfg(feature = "desktop")]
+fn init_menu_bar() -> Result<TrayIcon> {
+    // Initialize the tray menu
+
+    use n0_error::StdResultExt;
+    let tray_menu = Menu::new();
+
+    // Create menu items with IDs for event handling
+    let show_item = MenuItem::new("Show Window", true, None);
+    let separator = PredefinedMenuItem::separator();
+    let quit_item = MenuItem::new("Quit", true, None);
+
+    // Build the menu structure
+    tray_menu
+        .append_items(&[&show_item, &separator, &quit_item])
+        .expect("Failed to build tray menu");
+
+    let icon = icon();
+
+    // Build the tray icon
+    TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("Dioxus Tray App")
+        .with_icon(icon)
+        .build()
+        .std_context("building tray icon")
+}
+
+/// Load an icon from a PNG file
+#[cfg(feature = "desktop")]
+fn icon() -> Icon {
+    use image::GenericImageView;
+
+    let icon_bytes = include_bytes!("../assets/images/logo-datum-light.png");
+    let image = image::load_from_memory(icon_bytes).unwrap();
+
+    let (width, height) = image.dimensions();
+    let rgba = image.to_rgba8().into_raw();
+
+    Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
 }
