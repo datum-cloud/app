@@ -2,11 +2,13 @@ mod auth;
 pub mod config;
 pub mod datum_cloud;
 pub mod gateway;
+pub mod project_control_plane;
 mod node;
 mod repo;
 mod state;
 
 pub use node::*;
+pub use project_control_plane::{ProjectControlPlaneClient, ProjectControlPlaneManager};
 pub use repo::Repo;
 pub use state::*;
 pub use config::{Config, DiscoveryMode, GatewayConfig, GatewayMode};
