@@ -5,7 +5,7 @@ use lib::{
 };
 use tracing::info;
 
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct AppState {
     node: Node,
     datum: DatumCloudClient,

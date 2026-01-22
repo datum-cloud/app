@@ -13,6 +13,7 @@ image = "0.25"
 
 chrono.workspace = true
 dotenv.workspace = true
+derive_more.workspace = true
 snafu.workspace = true
 hex.workspace = true
 iroh.workspace = true

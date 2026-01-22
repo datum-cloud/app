@@ -7,11 +7,12 @@ use secrecy::SecretString;
 
 use crate::{SelectedContext, datum_cloud::DatumCloudClient};
 
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct ProjectControlPlaneClient {
     project_id: String,
     server_url: String,
     access_token: String,
+    #[debug("kube::Client")]
     client: Arc<Client>,
 }
 
@@ -33,7 +34,7 @@ impl ProjectControlPlaneClient {
     }
 }
 
-#[derive(Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct ProjectControlPlaneManager {
     datum: DatumCloudClient,
     current: Arc<ArcSwap<Option<ProjectControlPlaneClient>>>,
