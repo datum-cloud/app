@@ -11,7 +11,7 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 pub fn Head() -> Element {
     rsx! {
         document::Link { rel: "icon", href: FAVICON }
-        document::Stylesheet { rel: "stylesheet", href: MAIN_CSS }
         document::Stylesheet { rel: "stylesheet", href: TAILWIND_CSS }
+        document::Stylesheet { rel: "stylesheet", href: MAIN_CSS }
     }
 }

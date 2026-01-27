@@ -26,12 +26,10 @@ pub struct ButtonProps {
 
 fn class_for(kind: ButtonKind) -> &'static str {
     match kind {
-        // Figma-ish: dark slate pill button
-        ButtonKind::Primary => "inline-flex items-center justify-center gap-3 rounded-xl px-8 py-4 bg-[#4b5664] text-white font-medium shadow-sm hover:bg-[#3f4854] transition-colors",
-        // Figma-ish: white pill button with soft border + shadow
-        ButtonKind::Secondary => "inline-flex items-center justify-center gap-3 rounded-xl px-8 py-4 bg-white text-gray-900 font-semibold border border-[#dfe3ea] shadow-sm hover:bg-[#fafafa] transition-colors",
-        ButtonKind::Ghost => "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 bg-transparent text-gray-700 font-medium hover:bg-gray-100 transition-colors",
-    }
+        ButtonKind::Primary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-primary-background/90 text-button-primary-foreground font-semibold hover:opacity-80 transition-all duration-300 border border-1 border-button-primary-background",
+        ButtonKind::Secondary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-secondary-background/90 text-button-secondary-foreground font-semibold border border-1 border-button-secondary-background hover:opacity-80 transition-all duration300 text-xs",
+        ButtonKind::Ghost => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-transparent text-button-outline-foreground border border-1 border-button-outline-background font-semibold hover:opacity-80 transition-all duration-300",
+    }   
 }
 
 #[component]
@@ -45,9 +43,7 @@ pub fn Button(props: ButtonProps) -> Element {
     match (props.to.is_some(), props.onclick.is_some()) {
         (true, false) => {
             rsx! {
-                Link {
-                    to: to_route.unwrap(),
-                    class: "{class}",
+                Link { to: to_route.unwrap(), class: "{class}",
                     if let Some(leading) = props.leading.clone() {
                         span { class: "text-xl leading-none", "{leading}" }
                     }
@@ -69,8 +65,7 @@ pub fn Button(props: ButtonProps) -> Element {
         }
         _ => {
             rsx! {
-                button {
-                    class: "{class}",
+                button { class: "{class}",
                     if let Some(leading) = props.leading.clone() {
                         span { class: "text-xl leading-none", "{leading}" }
                     }

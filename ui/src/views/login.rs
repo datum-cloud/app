@@ -41,24 +41,21 @@ pub fn Login() -> Element {
         n0_error::Ok(())
     });
 
-    const HERO_ILLUSTRATION: Asset = asset!("/assets/images/home_hero_illustration.webp");
+    // const HERO_ILLUSTRATION: Asset = asset!("/assets/images/home_hero_illustration.webp");
 
     rsx! {
-        div {
-            class: "w-full grid h-screen bg-cover place-items-center",
-            style: "background-image: url(\"{HERO_ILLUSTRATION}\");",
-            div { class: "p-6 m-6 bg-white rounded-xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] hover:shadow-[0_14px_34px_rgba(17,24,39,0.14)] transition-shadow cursor-pointer",
-                h1 {  class: "text-xl font-bold mb-6",
-                    "Login to Datum cloud"
-                }
+        div { class: "w-full h-screen bg-cover bg-foreground",
+            // style: "background-image: url(\"{HERO_ILLUSTRATION}\");",
+            div { class: "flex flex-col items-center justify-center w-64 mx-auto gap-8",
+                h1 { class: "text-2xl font-semibold text-center text-background", "Log in to continue" }
                 Button {
-                    kind: ButtonKind::Primary,
+                    kind: ButtonKind::Secondary,
                     class: if login.pending() { Some("opacity-60 pointer-events-none".to_string()) } else { None },
                     onclick: move |_| login.call(()),
-                    text: if login.pending() { "Waiting for login to be confirmed…".to_string() } else { "Login".to_string() }
+                    text: if login.pending() { "Waiting for log in confirmation".to_string() } else { "Take me to datum.net".to_string() },
                 }
-                div { class: "py-6",
-                    "Upon clicking the login button, the Datum Cloud login page will be opened in your default browser. After logging in you can return to the app."
+                div { class: "text-center text-background/70 leading-4 text-xs",
+                    "Once you’ve logged in, return back here to continue to Datum Desktop."
                 }
                 if let Some(Err(err)) = login.value() {
                     div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",

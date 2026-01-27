@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  /* Color Palette */
+  --alert-red-dark: oklch(0.746 0.122 20.4);
+  --alert-red-light: oklch(0.621 0.151 22.5);
+  --app-dark-utility-1: oklch(0.308 0.038 253.5);
+  --app-dark-utility-2: oklch(0.386 0.032 253.8);
+  --app-dark-utility-3: oklch(0.544 0.021 250.7);
+  --app-dark-utility-4: oklch(0.67 0.011 248);
+  --app-dark-utility-5: oklch(0.913 0.004 91.4);
+  --aurora-moss: oklch(0.94 0.11 116.6);
+  --black: oklch(0 0 0);
+  --blush-quartz: oklch(0.881 0.031 17.8);
+  --canyon-clay: oklch(0.709 0.051 18.4);
+  --canyon-clay-links: oklch(0.61 0.044 18.4);
+  --glacier-mist-700: oklch(0.973 0.001 106.4);
+  --glacier-mist-800: rgba(236, 235, 231, 0.6);
+  --glacier-mist-900: oklch(0.928 0.004 91.4);
+  --midnight-fjord: oklch(0.228 0.045 253.7);
+  --pine-forge: oklch(0.478 0.034 158.9);
+  --potted-olive: oklch(0.776 0.02 152.7);
+  --white: oklch(1 0 0);
+}
+
+@theme inline {
+  --font-sans:
+    "Alliance No1", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: "Menlo", "Consolas", "Monaco", "DejaVu Sans Mono", monospace;
+
+  /* Radius */
+  --radius-none: 0rem;
+  --radius-sm: 0.1875rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5625rem;
+  --radius: var(--radius-md);
+
+  /* Spacing */
+  --spacing-scale-0px: 0rem;
+  --spacing-scale-1px: 0.0625rem;
+  --spacing-scale-2px: 0.125rem;
+  --spacing-scale-4px: 0.25rem;
+  --spacing-scale-6px: 0.375rem;
+  --spacing-scale-8px: 0.5rem;
+  --spacing-scale-10px: 0.625rem;
+  --spacing-scale-12px: 0.75rem;
+  --spacing-scale-14px: 0.875rem;
+  --spacing-scale-16px: 1rem;
+  --spacing-scale-20px: 1.25rem;
+  --spacing-scale-22px: 1.375rem;
+  --spacing-scale-24px: 1.5rem;
+  --spacing-scale-28px: 1.75rem;
+  --spacing-scale-32px: 2rem;
+  --spacing-scale-36px: 2.25rem;
+  --spacing-scale-40px: 2.5rem;
+  --spacing-scale-44px: 2.75rem;
+  --spacing-scale-48px: 3rem;
+  --spacing-scale-56px: 3.5rem;
+  --spacing-scale-64px: 4rem;
+  --spacing-scale-80px: 5rem;
+  --spacing-scale-96px: 6rem;
+  --spacing-scale-112px: 7rem;
+  --spacing-scale-128px: 8rem;
+  --spacing-scale-144px: 9rem;
+  --spacing-scale-160px: 10rem;
+  --spacing-scale-176px: 11rem;
+  --spacing-scale-192px: 12rem;
+  --spacing-scale-208px: 13rem;
+  --spacing-scale-224px: 14rem;
+  --spacing-scale-240px: 15rem;
+  --spacing-scale-256px: 16rem;
+  --spacing-scale-288px: 18rem;
+  --spacing-scale-320px: 20rem;
+  --spacing-scale-384px: 24rem;
+
+  /* Base Colors */
+  --color-background: var(--glacier-mist-700);
+  --color-foreground: var(--midnight-fjord);
+
+  /* Button Colors */
+  --color-button-primary-background: var(--app-dark-utility-2);
+  --color-button-primary-foreground: var(--glacier-mist-700);
+  --color-button-secondary-background: var(--aurora-moss);
+  --color-button-secondary-foreground: var(--midnight-fjord);
+  --color-button-outline-background: var(--glacier-mist-700);
+  --color-button-outline-foreground: var(--midnight-fjord);
+}
+
+@layer base {
+  body {
+    @apply font-sans;
+  }
+}
