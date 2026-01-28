@@ -1,6 +1,7 @@
 mod auth;
 pub mod config;
 pub mod datum_cloud;
+pub mod datum_apis;
 pub mod gateway;
 pub mod project_control_plane;
 mod node;
