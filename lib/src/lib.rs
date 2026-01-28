@@ -8,7 +8,7 @@ mod repo;
 mod state;
 
 pub use node::*;
-pub use project_control_plane::{ProjectControlPlaneClient, ProjectControlPlaneManager};
+pub use project_control_plane::ProjectControlPlaneClient;
 pub use repo::Repo;
 pub use state::*;
 pub use config::{Config, DiscoveryMode, GatewayConfig, GatewayMode};

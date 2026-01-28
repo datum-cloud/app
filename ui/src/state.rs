@@ -1,7 +1,7 @@
 use lib::{
     SelectedContext,
-    datum_cloud::{ApiEnv, DatumCloudClient, LoginState},
-    ListenNode, Node, ProjectControlPlaneClient, ProjectControlPlaneManager, Repo,
+    datum_cloud::{ApiEnv, DatumCloudClient},
+    ListenNode, Node, ProjectControlPlaneClient, Repo,
 };
 use tracing::info;
 
@@ -9,7 +9,6 @@ use tracing::info;
 pub struct AppState {
     node: Node,
     datum: DatumCloudClient,
-    project_control_plane: ProjectControlPlaneManager,
 }
 
 impl AppState {
@@ -21,22 +20,10 @@ impl AppState {
             Node::new(repo.clone()),
             DatumCloudClient::with_repo(ApiEnv::Staging, repo)
         }?;
-        let project_control_plane = ProjectControlPlaneManager::new(datum.clone());
         let app_state = AppState {
             node,
             datum,
-            project_control_plane,
         };
-        if app_state.datum.login_state() != LoginState::Missing {
-            let selected = app_state
-                .listen_node()
-                .validate_selected_context(app_state.datum())
-                .await?;
-            app_state
-                .project_control_plane
-                .set_selected_context(selected.as_ref())
-                .await?;
-        }
         Ok(app_state)
     }
 
@@ -51,11 +38,7 @@ impl AppState {
     pub async fn project_control_plane(
         &self,
     ) -> n0_error::Result<Option<ProjectControlPlaneClient>> {
-        self.project_control_plane.client().await
-    }
-
-    pub fn project_control_plane_manager(&self) -> &ProjectControlPlaneManager {
-        &self.project_control_plane
+        self.datum.project_control_plane_client_active().await
     }
 
     pub fn listen_node(&self) -> &ListenNode {
@@ -63,7 +46,7 @@ impl AppState {
     }
 
     pub fn selected_context(&self) -> Option<SelectedContext> {
-        self.listen_node().selected_context()
+        self.datum.selected_context()
     }
 
     pub async fn set_selected_context(
@@ -76,12 +59,7 @@ impl AppState {
                 .map_or("<none>".to_string(), SelectedContext::label),
             "ui: setting selected context"
         );
-        self.listen_node()
-            .set_selected_context(selected_context.clone())
-            .await?;
-        self.project_control_plane
-            .set_selected_context(selected_context.as_ref())
-            .await?;
+        self.datum.set_selected_context(selected_context.clone()).await?;
         Ok(())
     }
 

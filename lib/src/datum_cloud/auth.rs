@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    time::Duration,
+};
 
 use arc_swap::ArcSwap;
 use chrono::Utc;
@@ -10,6 +13,7 @@ use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 use crate::Repo;
@@ -327,21 +331,34 @@ impl MaybeAuth {
 struct AuthStateWrapper {
     inner: Arc<ArcSwap<MaybeAuth>>,
     repo: Option<Repo>,
+    login_state_tx: watch::Sender<LoginState>,
+    auth_update_tx: watch::Sender<u64>,
+    auth_update_counter: Arc<AtomicU64>,
 }
 
 impl AuthStateWrapper {
     fn empty() -> Self {
+        let (login_state_tx, _) = watch::channel(LoginState::Missing);
+        let (auth_update_tx, _) = watch::channel(0);
         Self {
             inner: Arc::new(ArcSwap::new(Default::default())),
             repo: None,
+            login_state_tx,
+            auth_update_tx,
+            auth_update_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
     async fn from_repo(repo: Repo) -> Result<Self> {
         let state = repo.read_oauth().await?;
+        let (login_state_tx, _) = watch::channel(login_state_for(state.as_ref()));
+        let (auth_update_tx, _) = watch::channel(0);
         Ok(Self {
             inner: Arc::new(ArcSwap::new(Arc::new(MaybeAuth(state)))),
             repo: Some(repo),
+            login_state_tx,
+            auth_update_tx,
+            auth_update_counter: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -349,12 +366,30 @@ impl AuthStateWrapper {
         self.inner.load_full()
     }
 
+    fn subscribe_login_state(&self) -> watch::Receiver<LoginState> {
+        self.login_state_tx.subscribe()
+    }
+
+    fn subscribe_auth_updates(&self) -> watch::Receiver<u64> {
+        self.auth_update_tx.subscribe()
+    }
+
     async fn set(&self, auth: Option<AuthState>) -> Result<()> {
         if let Some(repo) = self.repo.as_ref() {
             repo.write_oauth(auth.as_ref()).await?;
         }
         self.inner.store(Arc::new(MaybeAuth(auth)));
+        let _ = self.login_state_tx.send(login_state_for(self.load().get().ok()));
+        let next = self.auth_update_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.auth_update_tx.send(next);
         Ok(())
+    }
+}
+
+fn login_state_for(auth: Option<&AuthState>) -> LoginState {
+    match auth {
+        None => LoginState::Missing,
+        Some(state) => state.tokens.login_state(),
     }
 }
 
@@ -362,25 +397,32 @@ impl AuthStateWrapper {
 pub struct AuthClient {
     state: AuthStateWrapper,
     client: StatelessClient,
+    _refresh_task: Option<Arc<n0_future::task::AbortOnDropHandle<()>>>,
 }
 
 impl AuthClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
         let auth = AuthStateWrapper::from_repo(repo).await?;
         let auth_client = StatelessClient::new(env).await?;
-        Ok(Self {
+        let mut client = Self {
             state: auth,
             client: auth_client,
-        })
+            _refresh_task: None,
+        };
+        client.start_refresh_loop();
+        Ok(client)
     }
 
     pub async fn new(env: ApiEnv) -> Result<Self> {
         let auth = AuthStateWrapper::empty();
         let auth_client = StatelessClient::new(env).await?;
-        Ok(Self {
+        let mut client = Self {
             state: auth,
             client: auth_client,
-        })
+            _refresh_task: None,
+        };
+        client.start_refresh_loop();
+        Ok(client)
     }
 
     pub fn login_state(&self) -> LoginState {
@@ -392,6 +434,65 @@ impl AuthClient {
 
     pub fn load(&self) -> Arc<MaybeAuth> {
         self.state.load()
+    }
+
+    pub fn login_state_watch(&self) -> watch::Receiver<LoginState> {
+        self.state.subscribe_login_state()
+    }
+
+    pub fn auth_update_watch(&self) -> watch::Receiver<u64> {
+        self.state.subscribe_auth_updates()
+    }
+
+    fn start_refresh_loop(&mut self) {
+        if self._refresh_task.is_some() {
+            return;
+        }
+        let client = self.clone();
+        let mut auth_update_rx = self.auth_update_watch();
+        let task = tokio::spawn(async move {
+            loop {
+                if let Err(err) = client.refresh_if_needed().await {
+                    warn!("auth refresh check failed: {err:#}");
+                }
+                let sleep_for = client.next_refresh_delay();
+                tokio::select! {
+                    _ = tokio::time::sleep(sleep_for) => {},
+                    res = auth_update_rx.changed() => {
+                        if res.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        self._refresh_task = Some(Arc::new(n0_future::task::AbortOnDropHandle::new(task)));
+    }
+
+    fn next_refresh_delay(&self) -> Duration {
+        let state = self.state.load();
+        let Ok(auth) = state.get() else {
+            return Duration::from_secs(60);
+        };
+        let expires_at = auth.tokens.expires_at();
+        let now = chrono::Utc::now();
+        let refresh_at = expires_at - REFRESH_AUTH_WHEN;
+        if refresh_at <= now {
+            return Duration::from_secs(1);
+        }
+        let delay = refresh_at - now;
+        Duration::from_secs(delay.num_seconds().max(1) as u64)
+    }
+
+    async fn refresh_if_needed(&self) -> Result<()> {
+        let state = self.state.load();
+        let Ok(auth) = state.get() else {
+            return Ok(());
+        };
+        if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) {
+            self.refresh().await?;
+        }
+        Ok(())
     }
 
     pub async fn load_refreshed(&self) -> Result<Arc<MaybeAuth>> {

@@ -94,9 +94,18 @@ pub fn HeaderBar() -> Element {
     use_future(move || {
         let state_for_watch = state_for_watch.clone();
         async move {
+            let mut ctx_rx = state_for_watch.datum().selected_context_watch();
+            let ctx = ctx_rx.borrow().clone();
+            selected_context.set(ctx.clone());
+            if !pending_org_switch() {
+                selected_org_id.set(ctx.as_ref().map(|c| c.org_id.clone()));
+                selected_project_id.set(ctx.as_ref().map(|c| c.project_id.clone()));
+            }
             loop {
-                state_for_watch.listen_node().state_updated().await;
-                let ctx = state_for_watch.selected_context();
+                if ctx_rx.changed().await.is_err() {
+                    return;
+                }
+                let ctx = ctx_rx.borrow().clone();
                 selected_context.set(ctx.clone());
                 if !pending_org_switch() {
                     selected_org_id.set(ctx.as_ref().map(|c| c.org_id.clone()));
