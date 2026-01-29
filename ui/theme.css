@@ -85,24 +85,42 @@
   --color-background: var(--glacier-mist-800);
   --color-foreground: var(--midnight-fjord);
   --color-content-background: var(--glacier-mist-700);
+  --color-alert-red: var(--alert-red-light);
+  --color-alert-red-dark: var(--alert-red-dark);
 
   /* Button Colors */
   --color-button-primary-background: var(--app-dark-utility-2);
   --color-button-primary-foreground: var(--glacier-mist-700);
   --color-button-secondary-background: var(--aurora-moss);
   --color-button-secondary-foreground: var(--midnight-fjord);
-  --color-button-outline-background: var(--glacier-mist-700);
+  --color-button-outline-background: var(--app-dark-utility-5);
   --color-button-outline-foreground: var(--midnight-fjord);
 
   /* Border Colors */
   --color-app-border: var(--glacier-mist-900);
   --color-card-border: var(--app-dark-utility-5);
+  --color-tunnel-card-border: var(--glacier-mist-800);
 
   /* Select Dropdown Colors */
   --color-select-dropdown-border: var(--app-dark-utility-5);
 
   /* Shadow Colors */
   --shadow-card: 0px 2px 4px 2px rgba(12, 29, 49, 0.03);
+  --shadow-dialog:
+    0px 2px 4px 2px rgba(12, 29, 49, 0.03),
+    0px 10px 15px 0px rgba(12, 29, 49, 0.25);
+
+  /* Forms */
+  --color-form-label: var(--foreground);
+  --color-form-description: var(--app-dark-utility-4);
+
+  /* Switch Colors */
+  --color-switch-thumb: var(--white);
+  --color-switch-checked: #86a182;
+  --color-switch-disabled: var(--alert-red-dark);
+
+  /* Icon Colors */
+  --color-icon-tunnel: var(--canyon-clay);
 }
 
 @layer base {

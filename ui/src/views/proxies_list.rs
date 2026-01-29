@@ -1,8 +1,18 @@
-use dioxus::events::MouseEvent;
+use dioxus::events::FormEvent;
 use dioxus::prelude::*;
 use lib::ProxyState;
+use open::that;
 
-use crate::{components::Button, components::ButtonKind, components::IconSource, state::AppState, Route};
+use crate::{
+    components::{
+        dropdown_menu::{
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+        },
+        input::Input,
+        AddTunnelDialog, Button, ButtonKind, Icon, IconSource, Switch, SwitchThumb,
+    },
+    state::AppState,
+};
 
 
 #[component]
@@ -53,37 +63,75 @@ pub fn ProxiesList() -> Element {
     const EMPTY_MOON: Asset = asset!("/assets/images/empty-card-moon.png");
     const EMPTY_ROCKS: Asset = asset!("/assets/images/empty-card-rocks.png");
 
+    let mut dialog_open = use_signal(|| false);
+    let mut editing_proxy = use_signal(|| None::<ProxyState>);
+    let mut search_query = use_signal(|| String::new());
+
+    let show_search = proxies().len() > 2;
+    let query = search_query().trim().to_lowercase();
+    let filtered_proxies: Vec<ProxyState> = if query.is_empty() {
+        proxies().into_iter().collect()
+    } else {
+        proxies()
+            .into_iter()
+            .filter(|p| {
+                p.info.label().to_lowercase().contains(&query)
+                    || p.info.domain().to_lowercase().contains(&query)
+                    || p.info.local_url().to_lowercase().contains(&query)
+                    || p.info.datum_resource_url().to_lowercase().contains(&query)
+            })
+            .collect()
+    };
+
     let list = if proxies().is_empty() {
         rsx! {
-            div { class: "relative rounded-md border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6",
-                img {
-                    class: "absolute right-4 top-0 h-20 w-auto object-contain pointer-events-none",
-                    src: "{EMPTY_MOON}",
-                    alt: "",
+            div { class: "space-y-5",
+                div { class: "relative rounded-lg border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
+                    img {
+                        class: "absolute right-0 top-0 h-20 w-auto object-contain pointer-events-none",
+                        src: "{EMPTY_MOON}",
+                        alt: "",
+                    }
+                    img {
+                        class: "absolute left-0 bottom-0 h-28 w-auto object-contain pointer-events-none",
+                        src: "{EMPTY_ROCKS}",
+                        alt: "",
+                    }
+                    div { class: "text-sm mt-2", "Hey {first_name}, let's create your first tunnel" }
+                    Button {
+                        kind: ButtonKind::Outline,
+                        class: "w-fit text-foreground",
+                        text: "Add tunnel",
+                        leading_icon: Some(IconSource::Named("plus".into())),
+                        onclick: move |_| dialog_open.set(true),
+                    }
                 }
-                img {
-                    class: "absolute left-0 bottom-0 h-28 w-auto object-contain pointer-events-none",
-                    src: "{EMPTY_ROCKS}",
-                    alt: "",
-                }
-                div { class: "text-sm mt-2", "Hey {first_name}, let's create your first tunnel" }
-                Button {
-                    kind: ButtonKind::Outline,
-                    class: "w-fit text-foreground",
-                    text: "Add tunnel",
-                    leading_icon: Some(IconSource::Named("plus".into())),
-                }
+                div { class: "rounded-lg bg-background h-48" }
+                div { class: "rounded-lg bg-background h-48" }
             }
         }
     } else {
         rsx! {
             div { class: "space-y-5",
-                for proxy in proxies().into_iter() {
-                    // println!("PROXY {proxy:?}");
+                if show_search {
+                    div { class: "mb-4",
+                        Input {
+                            leading_icon: Some(IconSource::Named("search".into())),
+                            placeholder: "Search tunnels...",
+                            value: "{search_query}",
+                            oninput: move |e: FormEvent| search_query.set(e.value()),
+                        }
+                    }
+                }
+                for proxy in filtered_proxies.into_iter() {
                     TunnelCard {
                         key: "{proxy.id()}",
                         proxy,
                         on_delete: on_delete_handler,
+                        on_edit: move |p| {
+                            editing_proxy.set(Some(p));
+                            dialog_open.set(true);
+                        },
                     }
                 }
             }
@@ -92,15 +140,35 @@ pub fn ProxiesList() -> Element {
 
     rsx! {
         div { class: "max-w-5xl mx-auto", {list} }
+        AddTunnelDialog {
+            open: dialog_open,
+            on_open_change: move |open| {
+                dialog_open.set(open);
+                if !open {
+                    editing_proxy.set(None);
+                }
+            },
+            initial_proxy: editing_proxy,
+            on_save_success: move |_| {
+                let state = consume_context::<AppState>();
+                proxies.set(state.listen_node().proxies());
+            },
+        }
     }
 }
 
 #[component]
-fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element {
-    let mut proxy_signal = use_signal(move || proxy);
+fn TunnelCard(
+    proxy: ProxyState,
+    on_delete: EventHandler<ProxyState>,
+    on_edit: EventHandler<ProxyState>,
+) -> Element {
+    let initial = proxy.clone();
+    let mut proxy_signal = use_signal(move || initial);
+    let mut menu_open = use_signal(|| None::<bool>);
 
-    let mut menu_open = use_signal(|| false);
-    let nav = use_navigator();
+    // Sync prop into local state when the list refreshes (e.g. after edit).
+    use_effect(move || proxy_signal.set(proxy.clone()));
 
     let mut toggle_action = use_action(move |state: bool| async move {
         let mut proxy = proxy_signal().clone();
@@ -122,7 +190,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
     rsx! {
         div {
             // darker shadow + hover lift
-            class: "bg-white rounded-xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] hover:shadow-[0_14px_34px_rgba(17,24,39,0.14)] transition-shadow",
+            class: "bg-white rounded-lg border border-app-border shadow-card",
             // onclick: move |_| {
             //     let id = proxy_signal().id().to_string();
             //     // Clicking the card opens details (unless the kebab menu is open)
@@ -133,232 +201,114 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
             // },
             div { class: "",
                 // header row: title + toggle
-                div { class: "p-4 flex items-start justify-between",
-                    h2 { class: "text-md font-semibold tracking-tight text-slate-900",
-                        {proxy.info.label()}
-                    }
-                    Toggle {
-                        enabled,
-                        on_toggle: move |next| toggle_action.call(next),
+                div { class: "px-4 py-2.5 flex items-center justify-between",
+                    h2 { class: "text-md font-medium text-foreground", {proxy.info.label()} }
+                    Switch {
+                        checked: enabled,
+                        on_checked_change: move |next| toggle_action.call(next),
+                        SwitchThumb {}
                     }
                 }
 
                 // divider under the header (Figma-style)
-                div { class: "border-t border-[#eceee9]" }
+                div { class: "border-t border-tunnel-card-border" }
 
                 // body: rows + kebab aligned to the right like Figma
-                div { class: "p-4 flex items-start justify-between",
-                    div { class: "space-y-4",
-                        div { class: "flex items-center gap-5",
-                            GlobeIcon { class: "w-[20] h-[20]" }
+                div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                    div { class: "flex flex-col gap-1.5",
+                        div { class: "flex items-center gap-2.5 text-icon-tunnel",
+                            Icon {
+                                source: IconSource::Named("globe".into()),
+                                size: 14,
+                            }
                             a {
-                                class: "text-base font-medium text-slate-800",
+                                class: "text-xs text-foreground",
                                 href: format!("http://{}", proxy.info.domain()),
                                 {proxy.info.domain()}
                             }
                         }
-                        div { class: "flex items-center gap-5",
-                            ArrowIcon { class: "w-[20] h-[20] " }
+                        div { class: "flex items-center gap-2.5 text-icon-tunnel",
+                            Icon {
+                                source: IconSource::Named("down-right-arrow".into()),
+                                size: 14,
+                            }
                             a {
-                                class: "text-base text-slate-800",
+                                class: "text-xs text-foreground",
                                 href: proxy.info.local_url(),
                                 {proxy.info.local_url()}
                             }
                         }
-                        div { class: "flex items-center gap-5",
-                            PlugIcon { class: "w-[20] h-[20] " }
-                            span { class: "text-base text-slate-700",
-                                {proxy.info.datum_resource_url()}
+                        div { class: "flex items-center gap-2.5 text-icon-tunnel",
+                            Icon {
+                                source: IconSource::Named("power-cable".into()),
+                                size: 14,
                             }
+                            span { class: "text-xs text-foreground", {proxy.info.datum_resource_url()} }
                         }
                     }
                     div { class: "relative",
-                        button {
-                            class: "w-10 h-10 rounded-xl border border-[#dfe3ea] bg-white flex items-center justify-center text-slate-500 hover:text-slate-700 hover:bg-gray-50 shadow-sm cursor-pointer",
-                            onclick: move |evt: MouseEvent| {
-                                evt.stop_propagation();
-                                menu_open.set(!menu_open());
-                            },
-                            "⋯"
-                        }
-
-                        if menu_open() {
-                            // Full-screen click-catcher so any click outside closes the menu.
-                            // This also prevents the card click handler from triggering.
-                            div {
-                                class: "fixed inset-0 z-40",
-                                onclick: move |evt: MouseEvent| {
-                                    evt.stop_propagation();
-                                    menu_open.set(false);
-                                },
+                        DropdownMenu {
+                            open: menu_open,
+                            default_open: false,
+                            on_open_change: move |v| menu_open.set(Some(v)),
+                            disabled: use_signal(|| false),
+                            DropdownMenuTrigger { class: "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent outline-none focus:ring-0 focus:outline-none",
+                                Icon {
+                                    source: IconSource::Named("ellipsis".into()),
+                                    size: 16,
+                                }
                             }
-                            div {
-                                class: "absolute right-0 mt-2 w-44 rounded-xl border border-[#dfe3ea] bg-white shadow-[0_12px_30px_rgba(17,24,39,0.14)] overflow-hidden z-50",
-                                onclick: move |evt: MouseEvent| evt.stop_propagation(),
-                                button {
-                                    class: "w-full text-left px-4 py-3 text-sm text-slate-800 hover:bg-gray-50",
-                                    onclick: move |evt: MouseEvent| {
-                                        evt.stop_propagation();
-                                        menu_open.set(false);
-                                        let id = proxy_signal().id().to_string();
-                                        nav.push(Route::EditProxy { id });
-                                    },
-                                    "Details"
+                            DropdownMenuContent { id: use_signal(|| None::<String>), class: "",
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "edit".to_string()),
+                                    index: use_signal(|| 0),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| on_edit.call(proxy_signal().clone()),
+                                    "Edit"
                                 }
-                                button {
-                                    class: "w-full text-left px-4 py-3 text-sm text-slate-800 hover:bg-gray-50",
-                                    onclick: move |evt: MouseEvent| {
-                                        evt.stop_propagation();
-                                        menu_open.set(false);
-                                        let id = proxy_signal().id().to_string();
-                                        nav.push(Route::TunnelBandwidth { id });
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "dns".to_string()),
+                                    index: use_signal(|| 1),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| {
+                                        let url = proxy_signal().info.datum_url();
+                                        spawn(async move {
+                                            if let Err(e) = that(&url) {
+                                                tracing::warn!("Failed to open URL: {e}");
+                                            }
+                                        });
                                     },
-                                    "Bandwidth"
+                                    icon: Some(IconSource::Named("external-link".into())),
+                                    "DNS Config"
                                 }
-                                button {
-                                    class: "w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50",
-                                    onclick: move |evt: MouseEvent| {
-                                        evt.stop_propagation();
-                                        menu_open.set(false);
-                                        on_delete.call(proxy_signal().clone());
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "proxy".to_string()),
+                                    index: use_signal(|| 2),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| {
+                                        let url = proxy_signal().info.datum_url();
+                                        spawn(async move {
+                                            if let Err(e) = that(&url) {
+                                                tracing::warn!("Failed to open URL: {e}");
+                                            }
+                                        });
                                     },
+                                    icon: Some(IconSource::Named("external-link".into())),
+                                    "Proxy Config"
+                                }
+                                DropdownMenuSeparator {}
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "delete".to_string()),
+                                    index: use_signal(|| 3),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| on_delete.call(proxy_signal().clone()),
+                                    destructive: true,
                                     "Delete"
                                 }
                             }
                         }
                     }
                 }
-            }
-
-            if enabled {
-                div { class: "border-t border-[#eceee9] bg-white", WaveFooter {} }
-            }
-        }
-    }
-}
-
-#[component]
-fn Toggle(enabled: bool, on_toggle: EventHandler<bool>) -> Element {
-    // Figma-ish toggle colors (muted)
-    let bg = if enabled {
-        "bg-[#6f8f70]"
-    } else {
-        "bg-[#d8d8d2]"
-    };
-    let knob = if enabled {
-        "translate-x-5"
-    } else {
-        "translate-x-0"
-    };
-    rsx! {
-        button {
-            class: "relative inline-flex h-6 w-12 items-center rounded-full transition-colors {bg} shadow-sm",
-            onclick: move |evt| {
-                evt.stop_propagation();
-                on_toggle.call(!enabled)
-            },
-            span { class: "inline-block h-5 w-6 transform rounded-full bg-white transition-transform {knob} shadow-sm" }
-        }
-    }
-}
-
-#[component]
-fn IconSvg(#[props(default)] class: String, children: Element) -> Element {
-    rsx! {
-        svg {
-            width: "24",
-            height: "24",
-            view_box: "0 0 24 24",
-            fill: "none",
-            class: "text-[#bf9595] {class}",
-            {children}
-        }
-    }
-}
-
-#[component]
-fn GlobeIcon(#[props(default)] class: String) -> Element {
-    rsx! {
-        IconSvg { class,
-            path {
-                d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-            }
-            path {
-                d: "M3 12h18",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-                stroke_linecap: "round",
-            }
-            path {
-                d: "M12 3c2.5 2.8 3.9 5.9 3.9 9S14.5 18.2 12 21c-2.5-2.8-3.9-5.9-3.9-9S9.5 5.8 12 3Z",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-            }
-        }
-    }
-}
-
-#[component]
-fn ArrowIcon(#[props(default)] class: String) -> Element {
-    rsx! {
-        IconSvg { class,
-            path {
-                d: "M5 5v14h14",
-                stroke: "currentColor",
-                stroke_width: "1.8",
-                stroke_linecap: "round",
-                stroke_linejoin: "round",
-            }
-        }
-    }
-}
-
-#[component]
-fn PlugIcon(#[props(default)] class: String) -> Element {
-    rsx! {
-        IconSvg { class,
-            path {
-                d: "M9 3v6M15 3v6",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-                stroke_linecap: "round",
-            }
-            path {
-                d: "M7 9h10v3a5 5 0 0 1-5 5h0a5 5 0 0 1-5-5V9Z",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-                stroke_linejoin: "round",
-            }
-            path {
-                d: "M12 17v4",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-                stroke_linecap: "round",
-            }
-        }
-    }
-}
-
-#[component]
-fn WaveFooter() -> Element {
-    rsx! {
-        // light wave similar to the Figma footer hint
-        svg {
-            width: "100%",
-            height: "50",
-            view_box: "0 0 800 120",
-            fill: "none",
-            preserve_aspect_ratio: "none",
-            path {
-                d: "M0 80 C 120 30, 220 120, 340 70 C 460 20, 560 120, 680 70 C 740 45, 780 55, 800 60 L 800 120 L 0 120 Z",
-                fill: "#f1f2ee",
-            }
-            path {
-                d: "M0 80 C 120 30, 220 120, 340 70 C 460 20, 560 120, 680 70 C 740 45, 780 55, 800 60",
-                stroke: "#d9dbd5",
-                stroke_width: "2",
             }
         }
     }

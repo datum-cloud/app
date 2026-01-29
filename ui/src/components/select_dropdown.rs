@@ -80,14 +80,14 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
 
     let button_class = if props.disabled {
         if props.dense {
-            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground opacity-50 cursor-not-allowed"
+            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-2 text-foreground opacity-50 cursor-not-allowed"
         } else {
-            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground opacity-50 cursor-not-allowed"
+            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-2 text-foreground opacity-50 cursor-not-allowed"
         }
     } else if props.dense {
-        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground  hover:bg-gray-50"
+        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-2 text-foreground  hover:bg-gray-50"
     } else {
-        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground hover:bg-gray-50"
+        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-2 text-foreground hover:bg-gray-50"
     };
     let button_style = if props.dense {
         props

@@ -38,6 +38,11 @@ fn svg_content_for(name: &str) -> Option<&'static str> {
         "settings" => Some(include_str!("../../assets/icons/settings.svg")),
         "users" => Some(include_str!("../../assets/icons/users.svg")),
         "book-open" => Some(include_str!("../../assets/icons/book-open.svg")),
+        "ellipsis" => Some(include_str!("../../assets/icons/ellipsis.svg")),
+        "globe" => Some(include_str!("../../assets/icons/globe.svg")),
+        "down-right-arrow" => Some(include_str!("../../assets/icons/down-right-arrow.svg")),
+        "power-cable" => Some(include_str!("../../assets/icons/power-cable.svg")),
+        "search" => Some(include_str!("../../assets/icons/search.svg")),
         _ => None,
     }
 }

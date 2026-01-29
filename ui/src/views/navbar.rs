@@ -1,5 +1,5 @@
 use crate::{
-    components::{Button, ButtonKind, IconSource, SelectDropdown, SelectItem, Icon},
+    components::{AddTunnelDialog, Button, ButtonKind, IconSource, SelectDropdown, SelectItem, Icon},
     state::AppState,
     Route,
 };
@@ -22,6 +22,8 @@ pub fn Chrome() -> Element {
 pub fn Sidebar() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
+    let mut add_tunnel_dialog_open = use_signal(|| false);
+    let editing_proxy = use_signal(|| None::<lib::ProxyState>);
     use_effect(move || {
         if state.datum().login_state() == LoginState::Missing {
             nav.push(Route::Login {});
@@ -37,11 +39,11 @@ pub fn Sidebar() -> Element {
             // Full-width content with equal left/right padding
             div { class: "w-full",
                 Button {
-                    to: Some(Route::CreateProxy {}),
                     leading_icon: Some(IconSource::Named("plus".into())),
                     text: "Add tunnel",
                     kind: ButtonKind::Primary,
                     class: "w-full",
+                    onclick: move |_| add_tunnel_dialog_open.set(true),
                 }
             }
 
@@ -71,12 +73,19 @@ pub fn Sidebar() -> Element {
 
     rsx! {
         // Content row
-        div { class: "flex flex-1 min-h-0",
+        div { class: "flex flex-1 min-h-0 relative",
             {sidebar}
 
             // Main content (style background via the class below, e.g. bg-background or bg-white)
             div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
                 Outlet::<Route> {}
+            }
+
+            AddTunnelDialog {
+                open: add_tunnel_dialog_open(),
+                on_open_change: move |open| add_tunnel_dialog_open.set(open),
+                initial_proxy: editing_proxy,
+                on_save_success: move |_| {},
             }
         }
     }
