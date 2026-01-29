@@ -2,7 +2,8 @@ use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
 use lib::ProxyState;
 
-use crate::{state::AppState, Route};
+use crate::{components::Button, components::ButtonKind, components::IconSource, state::AppState, Route};
+
 
 #[component]
 pub fn ProxiesList() -> Element {
@@ -40,14 +41,37 @@ pub fn ProxiesList() -> Element {
 
     let on_delete_handler = move |proxy_state| on_delete.call(proxy_state);
 
+    let state = consume_context::<AppState>();
+    let first_name = state
+        .datum()
+        .auth_state()
+        .get()
+        .ok()
+        .and_then(|a| a.profile.first_name.clone())
+        .unwrap_or_else(|| "there".to_string());
+
+    const EMPTY_MOON: Asset = asset!("/assets/images/empty-card-moon.png");
+    const EMPTY_ROCKS: Asset = asset!("/assets/images/empty-card-rocks.png");
+
     let list = if proxies().is_empty() {
         rsx! {
-            div { class: "rounded-2xl border border-[#e3e7ee] bg-white/70 p-10 text-center",
-                div { class: "text-base font-semibold text-slate-900", "No tunnels yet" }
-                div { class: "text-sm text-slate-600 mt-2",
-                    "Click ",
-                    span { class: "font-medium", "\"Add tunnel\"" },
-                    " in the left sidebar to create one."
+            div { class: "relative rounded-md border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6",
+                img {
+                    class: "absolute right-4 top-0 h-20 w-auto object-contain pointer-events-none",
+                    src: "{EMPTY_MOON}",
+                    alt: "",
+                }
+                img {
+                    class: "absolute left-0 bottom-0 h-28 w-auto object-contain pointer-events-none",
+                    src: "{EMPTY_ROCKS}",
+                    alt: "",
+                }
+                div { class: "text-sm mt-2", "Hey {first_name}, let's create your first tunnel" }
+                Button {
+                    kind: ButtonKind::Outline,
+                    class: "w-fit text-foreground",
+                    text: "Add tunnel",
+                    leading_icon: Some(IconSource::Named("plus".into())),
                 }
             }
         }
@@ -56,16 +80,18 @@ pub fn ProxiesList() -> Element {
             div { class: "space-y-5",
                 for proxy in proxies().into_iter() {
                     // println!("PROXY {proxy:?}");
-                    TunnelCard { key: "{proxy.id()}", proxy, on_delete: on_delete_handler }
+                    TunnelCard {
+                        key: "{proxy.id()}",
+                        proxy,
+                        on_delete: on_delete_handler,
+                    }
                 }
             }
         }
     };
 
     rsx! {
-        div { class: "max-w-5xl mx-auto",
-            {list}
-        }
+        div { class: "max-w-5xl mx-auto", {list} }
     }
 }
 
@@ -108,10 +134,12 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
             div { class: "",
                 // header row: title + toggle
                 div { class: "p-4 flex items-start justify-between",
-                    h2 { class: "text-md font-semibold tracking-tight text-slate-900", {proxy.info.label()} }
+                    h2 { class: "text-md font-semibold tracking-tight text-slate-900",
+                        {proxy.info.label()}
+                    }
                     Toggle {
                         enabled,
-                        on_toggle: move |next| toggle_action.call(next)
+                        on_toggle: move |next| toggle_action.call(next),
                     }
                 }
 
@@ -123,21 +151,25 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                     div { class: "space-y-4",
                         div { class: "flex items-center gap-5",
                             GlobeIcon { class: "w-[20] h-[20]" }
-                            a { class: "text-base font-medium text-slate-800",
+                            a {
+                                class: "text-base font-medium text-slate-800",
                                 href: format!("http://{}", proxy.info.domain()),
                                 {proxy.info.domain()}
                             }
                         }
                         div { class: "flex items-center gap-5",
-                            ArrowIcon { class: "w-[20] h-[20] "}
-                            a { class: "text-base text-slate-800",
+                            ArrowIcon { class: "w-[20] h-[20] " }
+                            a {
+                                class: "text-base text-slate-800",
                                 href: proxy.info.local_url(),
                                 {proxy.info.local_url()}
                             }
                         }
                         div { class: "flex items-center gap-5",
-                            PlugIcon { class: "w-[20] h-[20] "}
-                            span { class: "text-base text-slate-700", {proxy.info.datum_resource_url()} }
+                            PlugIcon { class: "w-[20] h-[20] " }
+                            span { class: "text-base text-slate-700",
+                                {proxy.info.datum_resource_url()}
+                            }
                         }
                     }
                     div { class: "relative",
@@ -158,7 +190,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                                 onclick: move |evt: MouseEvent| {
                                     evt.stop_propagation();
                                     menu_open.set(false);
-                                }
+                                },
                             }
                             div {
                                 class: "absolute right-0 mt-2 w-44 rounded-xl border border-[#dfe3ea] bg-white shadow-[0_12px_30px_rgba(17,24,39,0.14)] overflow-hidden z-50",
@@ -199,9 +231,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
             }
 
             if enabled {
-                div { class: "border-t border-[#eceee9] bg-white",
-                    WaveFooter {}
-                }
+                div { class: "border-t border-[#eceee9] bg-white", WaveFooter {} }
             }
         }
     }
@@ -235,7 +265,12 @@ fn Toggle(enabled: bool, on_toggle: EventHandler<bool>) -> Element {
 #[component]
 fn IconSvg(#[props(default)] class: String, children: Element) -> Element {
     rsx! {
-        svg {  width: "24", height: "24", view_box: "0 0 24 24", fill: "none", class: "text-[#bf9595] {class}",
+        svg {
+            width: "24",
+            height: "24",
+            view_box: "0 0 24 24",
+            fill: "none",
+            class: "text-[#bf9595] {class}",
             {children}
         }
     }
@@ -245,9 +280,22 @@ fn IconSvg(#[props(default)] class: String, children: Element) -> Element {
 fn GlobeIcon(#[props(default)] class: String) -> Element {
     rsx! {
         IconSvg { class,
-            path { d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z", stroke: "currentColor", stroke_width: "1.6" }
-            path { d: "M3 12h18", stroke: "currentColor", stroke_width: "1.6", stroke_linecap: "round" }
-            path { d: "M12 3c2.5 2.8 3.9 5.9 3.9 9S14.5 18.2 12 21c-2.5-2.8-3.9-5.9-3.9-9S9.5 5.8 12 3Z", stroke: "currentColor", stroke_width: "1.6" }
+            path {
+                d: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+            }
+            path {
+                d: "M3 12h18",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+                stroke_linecap: "round",
+            }
+            path {
+                d: "M12 3c2.5 2.8 3.9 5.9 3.9 9S14.5 18.2 12 21c-2.5-2.8-3.9-5.9-3.9-9S9.5 5.8 12 3Z",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+            }
         }
     }
 }
@@ -256,7 +304,13 @@ fn GlobeIcon(#[props(default)] class: String) -> Element {
 fn ArrowIcon(#[props(default)] class: String) -> Element {
     rsx! {
         IconSvg { class,
-            path { d: "M5 5v14h14", stroke: "currentColor", stroke_width: "1.8", stroke_linecap: "round", stroke_linejoin: "round" }
+            path {
+                d: "M5 5v14h14",
+                stroke: "currentColor",
+                stroke_width: "1.8",
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+            }
         }
     }
 }
@@ -265,9 +319,24 @@ fn ArrowIcon(#[props(default)] class: String) -> Element {
 fn PlugIcon(#[props(default)] class: String) -> Element {
     rsx! {
         IconSvg { class,
-            path { d: "M9 3v6M15 3v6", stroke: "currentColor", stroke_width: "1.6", stroke_linecap: "round" }
-            path { d: "M7 9h10v3a5 5 0 0 1-5 5h0a5 5 0 0 1-5-5V9Z", stroke: "currentColor", stroke_width: "1.6", stroke_linejoin: "round" }
-            path { d: "M12 17v4", stroke: "currentColor", stroke_width: "1.6", stroke_linecap: "round" }
+            path {
+                d: "M9 3v6M15 3v6",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+                stroke_linecap: "round",
+            }
+            path {
+                d: "M7 9h10v3a5 5 0 0 1-5 5h0a5 5 0 0 1-5-5V9Z",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+                stroke_linejoin: "round",
+            }
+            path {
+                d: "M12 17v4",
+                stroke: "currentColor",
+                stroke_width: "1.6",
+                stroke_linecap: "round",
+            }
         }
     }
 }
@@ -277,16 +346,19 @@ fn WaveFooter() -> Element {
     rsx! {
         // light wave similar to the Figma footer hint
         svg {
-            width: "100%", height: "50", view_box: "0 0 800 120", fill: "none",
+            width: "100%",
+            height: "50",
+            view_box: "0 0 800 120",
+            fill: "none",
             preserve_aspect_ratio: "none",
             path {
                 d: "M0 80 C 120 30, 220 120, 340 70 C 460 20, 560 120, 680 70 C 740 45, 780 55, 800 60 L 800 120 L 0 120 Z",
-                fill: "#f1f2ee"
+                fill: "#f1f2ee",
             }
             path {
                 d: "M0 80 C 120 30, 220 120, 340 70 C 460 20, 560 120, 680 70 C 740 45, 780 55, 800 60",
                 stroke: "#d9dbd5",
-                stroke_width: "2"
+                stroke_width: "2",
             }
         }
     }

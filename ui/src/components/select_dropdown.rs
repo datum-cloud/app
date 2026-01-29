@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 
+use super::icon::{Icon, IconSource};
+
 #[derive(Clone, PartialEq)]
 pub struct SelectItem {
     pub id: String,
@@ -78,14 +80,14 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
 
     let button_class = if props.disabled {
         if props.dense {
-            "w-full h-9 rounded-xl border border-[#dfe3ea] bg-white px-3 text-left text-sm text-slate-900 shadow-sm opacity-50 cursor-not-allowed"
+            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground opacity-50 cursor-not-allowed"
         } else {
-            "w-full h-12 rounded-xl border border-[#dfe3ea] bg-white px-4 text-left text-sm text-slate-900 shadow-sm opacity-50 cursor-not-allowed"
+            "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground opacity-50 cursor-not-allowed"
         }
     } else if props.dense {
-        "w-full h-9 rounded-xl border border-[#dfe3ea] bg-white px-3 text-left text-sm text-slate-900 shadow-sm hover:bg-gray-50"
+        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground  hover:bg-gray-50"
     } else {
-        "w-full h-12 rounded-xl border border-[#dfe3ea] bg-white px-4 text-left text-sm text-slate-900 shadow-sm hover:bg-gray-50"
+        "w-full h-6 rounded-md border border-select-dropdown-border bg-white px-3 text-foreground hover:bg-gray-50"
     };
     let button_style = if props.dense {
         props
@@ -117,16 +119,8 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                 let item_id = item.id.clone();
                 rsx! {
                     button {
-                        class: if selected {
-                            "w-full text-left px-4 py-3 text-sm border-l-4 border-[#4a6fa1] cursor-pointer"
-                        } else {
-                            "w-full text-left px-4 py-3 text-sm text-slate-900 hover:bg-slate-50 cursor-pointer"
-                        },
-                        style: if selected {
-                            "background-color: #edf3ff; color: #0f172a;"
-                        } else {
-                            ""
-                        },
+                        class: if selected { "w-full text-left px-4 py-3 text-sm border-l-4 border-[#4a6fa1] cursor-pointer" } else { "w-full text-left px-4 py-3 text-sm text-slate-900 hover:bg-slate-50 cursor-pointer" },
+                        style: if selected { "background-color: #edf3ff; color: #0f172a;" } else { "" },
                         onclick: move |_| {
                             open.set(false);
                             query.set(String::new());
@@ -135,21 +129,13 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                         if props.stack_list_items {
                             div { class: "flex flex-col leading-tight",
                                 span {
-                                    class: if selected {
-                                        "text-sm text-slate-900 font-semibold truncate whitespace-nowrap"
-                                    } else {
-                                        "text-sm text-slate-900 truncate whitespace-nowrap"
-                                    },
+                                    class: if selected { "text-sm text-foreground font-semibold truncate whitespace-nowrap" } else { "text-sm text-foreground truncate whitespace-nowrap" },
                                     title: "{item.label}",
                                     "{item.label}"
                                 }
                                 if let Some(subtitle) = &item.subtitle {
                                     span {
-                                        class: if selected {
-                                            "text-xs text-slate-600 truncate whitespace-nowrap"
-                                        } else {
-                                            "text-xs text-slate-500 truncate whitespace-nowrap"
-                                        },
+                                        class: if selected { "text-xs text-foreground/50 truncate whitespace-nowrap" } else { "text-xs text-foreground/50 truncate whitespace-nowrap" },
                                         title: "{subtitle}",
                                         "{subtitle}"
                                     }
@@ -158,21 +144,13 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                         } else {
                             div { class: "flex items-center gap-3 min-w-0",
                                 span {
-                                    class: if selected {
-                                        "text-sm text-slate-900 font-semibold truncate flex-1 min-w-0 whitespace-nowrap"
-                                    } else {
-                                        "text-sm text-slate-900 truncate flex-1 min-w-0 whitespace-nowrap"
-                                    },
+                                    class: if selected { "text-sm text-foreground font-semibold truncate flex-1 min-w-0 whitespace-nowrap" } else { "text-sm text-foreground truncate flex-1 min-w-0 whitespace-nowrap" },
                                     title: "{item.label}",
                                     "{item.label}"
                                 }
                                 if let Some(subtitle) = &item.subtitle {
                                     span {
-                                        class: if selected {
-                                            "text-xs text-slate-600 truncate ml-auto whitespace-nowrap"
-                                        } else {
-                                            "text-xs text-slate-500 truncate ml-auto whitespace-nowrap"
-                                        },
+                                        class: if selected { "text-xs text-foreground/50 truncate ml-auto whitespace-nowrap" } else { "text-xs text-foreground/50 truncate ml-auto whitespace-nowrap" },
                                         title: "{subtitle}",
                                         "{subtitle}"
                                     }
@@ -192,9 +170,9 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
         .unwrap_or_default();
 
     rsx! {
-        div { class: "space-y-2",
+        div { class: "",
             if props.show_label {
-                h2 { class: "text-sm font-semibold text-slate-700", "{props.label}" }
+                h2 { class: "text-[10px] font-semibold text-foreground", "{props.label}" }
             }
             div { class: "relative",
                 if open() {
@@ -203,34 +181,31 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                         onclick: move |_| open.set(false),
                     }
                     div {
-                        class: if props.dense {
-                            if props.align_right {
-                                "absolute right-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden"
-                            } else {
-                                "absolute inset-x-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden"
-                            }
-                        } else if props.align_right {
+                        class: if props.dense { if props.align_right {
                             "absolute right-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden"
                         } else {
                             "absolute inset-x-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden"
-                        },
+                        } } else if props.align_right { "absolute right-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden" } else { "absolute inset-x-0 top-0 z-50 w-full rounded-xl border border-[#dfe3ea] bg-white shadow-[0_14px_34px_rgba(17,24,39,0.12)] overflow-hidden" },
                         style: "{expanded_style}",
                         if props.searchable {
                             button {
-                                class: "w-full h-12 rounded-none border-0 bg-white px-4 text-left text-sm text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/30 cursor-text",
+                                class: "w-full h-12 rounded-none border-0 bg-white px-4 text-left text-xs text-foreground/50 focus:outline-none focus:ring-2 focus:ring-foreground/30 cursor-text",
                                 onclick: move |_| {},
                                 input {
-                                    class: "w-full h-12 bg-transparent text-sm text-slate-800 focus:outline-none cursor-text",
+                                    class: "w-full h-12 bg-transparent text-sm text-foreground focus:outline-none cursor-text",
                                     placeholder: "{props.search_placeholder}",
                                     value: "{query()}",
                                     oninput: move |evt| query.set(evt.value()),
                                 }
                             }
                         }
-                        div { class: "overflow-y-auto",
+                        div {
+                            class: "overflow-y-auto",
                             style: "{list_max_height}",
                             if filtered.is_empty() {
-                                div { class: "px-4 py-3 text-sm text-slate-500", "No results" }
+                                div { class: "px-4 py-3 text-xs text-foreground/50",
+                                    "No results"
+                                }
                             } else {
                                 for item in list_items {
                                     {item}
@@ -240,11 +215,7 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                     }
                 }
                 button {
-                    class: if open() {
-                        format!("{button_class} invisible")
-                    } else {
-                        format!("{button_class} cursor-pointer")
-                    },
+                    class: if open() { format!("{button_class} invisible") } else { format!("{button_class} cursor-pointer") },
                     style: "{button_style}",
                     title: "{selected_title.clone().unwrap_or_default()}",
                     disabled: props.disabled,
@@ -255,28 +226,59 @@ pub fn SelectDropdown(props: SelectDropdownProps) -> Element {
                         open.set(true);
                         query.set(String::new());
                     },
-                    if let Some(item) = selected_item {
-                        if props.show_selected_subtitle {
-                            div { class: "flex h-full items-center gap-3 min-w-0",
-                                span { class: "text-sm text-slate-900 truncate flex-1 min-w-0 whitespace-nowrap", title: "{item.label}", "{item.label}" }
-                                if let Some(subtitle) = &item.subtitle {
-                                    span { class: "text-xs text-slate-500 truncate ml-auto max-w-[45%] whitespace-nowrap", title: "{subtitle}", "{subtitle}" }
+                    div { class: "flex h-full w-full items-center gap-2 min-w-0",
+                        div { class: "flex-1 min-w-0 overflow-hidden",
+                            if let Some(item) = selected_item {
+                                if props.show_selected_subtitle {
+                                    div { class: "flex h-full items-center gap-3 min-w-0",
+                                        span {
+                                            class: "text-[10px] text-foreground truncate flex-1 min-w-0 whitespace-nowrap",
+                                            title: "{item.label}",
+                                            "{item.label}"
+                                        }
+                                        if let Some(subtitle) = &item.subtitle {
+                                            span {
+                                                class: "text-[10px] text-foreground/50 truncate ml-auto max-w-[45%] whitespace-nowrap",
+                                                title: "{subtitle}",
+                                                "{subtitle}"
+                                            }
+                                        }
+                                    }
+                                } else if props.stacked {
+                                    div { class: "flex h-full flex-col justify-center leading-tight min-w-0",
+                                        span {
+                                            class: "text-[10px] text-foreground truncate min-w-0 whitespace-nowrap",
+                                            title: "{item.label}",
+                                            "{item.label}"
+                                        }
+                                        if let Some(subtitle) = &item.subtitle {
+                                            span {
+                                                class: "text-[10px] text-foreground/50 truncate min-w-0 whitespace-nowrap",
+                                                title: "{subtitle}",
+                                                "{subtitle}"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    div { class: "flex h-full items-center gap-2 min-w-0 w-full overflow-hidden",
+                                        span {
+                                            class: "text-[10px] text-foreground truncate flex-1 min-w-0 whitespace-nowrap overflow-hidden",
+                                            title: "{item.label}",
+                                            "{item.label}"
+                                        }
+                                    }
                                 }
-                            }
-                        } else if props.stacked {
-                            div { class: "flex h-full flex-col justify-center leading-tight min-w-0",
-                                span { class: "text-sm text-slate-900 truncate min-w-0 whitespace-nowrap", title: "{item.label}", "{item.label}" }
-                                if let Some(subtitle) = &item.subtitle {
-                                    span { class: "text-xs text-slate-500 truncate min-w-0 whitespace-nowrap", title: "{subtitle}", "{subtitle}" }
+                            } else {
+                                div { class: "flex h-full items-center gap-2 min-w-0 w-full overflow-hidden",
+                                    span { class: "text-[10px] text-foreground", "{props.placeholder}" }
                                 }
-                            }
-                        } else {
-                            div { class: "flex h-full items-center gap-2 min-w-0 w-full overflow-hidden",
-                                span { class: "text-sm text-slate-900 truncate flex-1 min-w-0 whitespace-nowrap overflow-hidden", title: "{item.label}", "{item.label}" }
                             }
                         }
-                    } else {
-                        span { class: "text-sm text-slate-500", "{props.placeholder}" }
+                        Icon {
+                            source: IconSource::Named("chevron-down".into()),
+                            size: if props.dense { 9 } else { 9 },
+                            class: "shrink-0 flex items-center justify-center mb-0.5",
+                        }
                     }
                 }
             }

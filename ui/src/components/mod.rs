@@ -7,6 +7,7 @@ mod hero;
 mod bandwidth_timeseries_chart;
 mod button;
 mod head;
+mod icon;
 mod select_dropdown;
 mod splash;
 mod typography;
@@ -14,6 +15,7 @@ mod typography;
 pub use button::Button;
 pub use button::ButtonKind;
 pub use head::Head;
+pub use icon::{Icon, IconKind, IconSource};
 pub use select_dropdown::{SelectDropdown, SelectItem};
 pub use splash::Splash;
 #[allow(unused)]

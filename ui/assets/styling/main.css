@@ -1,5 +1,3 @@
-@import "./fonts.css";
-
 html,
 body {
   height: 100%;
@@ -8,7 +6,7 @@ body {
   background: transparent;
 }
 
-/* Dioxus uses a root container in some platforms; keep it from creating page scroll. */
+/* Dioxus uses a root container in some platforms; keep it from creating page scroll or showing a background. */
 #main,
 #root {
   height: 100%;

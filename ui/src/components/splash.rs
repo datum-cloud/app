@@ -7,15 +7,10 @@ pub fn Splash() -> Element {
 
     rsx! {
         div {
-            class: "w-full grid h-screen bg-cover place-items-center",
+            class: "w-full grid h-screen bg-cover place-items-center rounded-[12px]",
             style: "background-image: url(\"{HERO_ILLUSTRATION}\");",
-            div {
-                class: "text-center pb-48",
-                img {
-                    class: "w-12 h-12 mx-auto",
-                    src: "{LOGO}"
-                }
-                h3 { "proxy service" }
+            div { class: "text-center pb-48",
+                img { class: "w-12 h-12 mx-auto", src: "{LOGO}" }
             }
         }
     }

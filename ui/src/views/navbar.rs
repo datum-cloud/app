@@ -1,5 +1,5 @@
 use crate::{
-    components::{Button, ButtonKind, SelectDropdown, SelectItem},
+    components::{Button, ButtonKind, IconSource, SelectDropdown, SelectItem, Icon},
     state::AppState,
     Route,
 };
@@ -11,7 +11,7 @@ use dioxus_desktop::DesktopContext;
 #[component]
 pub fn Chrome() -> Element {
     rsx! {
-        div { class: "h-screen overflow-hidden flex flex-col bg-[#f4f4f1] text-gray-900 rounded-[12px] border border-black/10 shadow-[0_18px_60px_rgba(0,0,0,0.18)]",
+        div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground rounded-[12px]",
             HeaderBar {}
             Outlet::<Route> {}
         }
@@ -33,32 +33,37 @@ pub fn Sidebar() -> Element {
     });
     let sidebar = rsx! {
         // Sidebar
-        div { class: "w-52 min-w-[208px] max-w-[208px] shrink-0 flex-none bg-[#f2f2ee] border-r border-[#e3e3dc] pt-6 pb-6 px-6 flex flex-col",
+        div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
             // Full-width content with equal left/right padding
             div { class: "w-full",
                 Button {
-                    to: Some(Route::CreateProxy { }),
-                    leading: Some("+".to_string()),
+                    to: Some(Route::CreateProxy {}),
+                    leading_icon: Some(IconSource::Named("plus".into())),
                     text: "Add tunnel",
                     kind: ButtonKind::Primary,
-                    // Keep label on one line in narrower sidebar
-                    class: Some("w-full font-normal whitespace-nowrap px-6 gap-2".to_string()),
+                    class: "w-full",
                 }
             }
 
             // Bottom nav (visual-only for now)
-            div { class: "w-full mt-auto space-y-4 text-gray-600 pl-2",
-                div { class: "flex items-center gap-3 cursor-pointer hover:text-gray-900",
-                    NavIconBook {}
-                    span { class: "text-base font-medium", "Docs" }
+            div { class: "w-full mt-auto space-y-4 pl-2",
+                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                    Icon {
+                        source: IconSource::Named("book-open".into()),
+                        size: 16,
+                    }
+                    span { class: "text-xs leading-4", "Docs" }
                 }
-                div { class: "flex items-center gap-3 cursor-pointer hover:text-gray-900",
-                    NavIconUsers {}
-                    span { class: "text-base font-medium", "Invite" }
+                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                    Icon { source: IconSource::Named("users".into()), size: 16 }
+                    span { class: "text-xs", "Invite" }
                 }
-                div { class: "flex items-center gap-3 cursor-pointer hover:text-gray-900",
-                    NavIconGear {}
-                    span { class: "text-base font-medium", "Settings" }
+                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                    Icon {
+                        source: IconSource::Named("settings".into()),
+                        size: 16,
+                    }
+                    span { class: "text-xs", "Settings" }
                 }
             }
         }
@@ -69,9 +74,8 @@ pub fn Sidebar() -> Element {
         div { class: "flex flex-1 min-h-0",
             {sidebar}
 
-            // Main content
-            // Important: `min-h-0` allows the scroll container to shrink within the flex layout.
-            div { class: "flex-1 min-h-0 overflow-y-auto pt-6 pb-8 px-8",
+            // Main content (style background via the class below, e.g. bg-background or bg-white)
+            div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
                 Outlet::<Route> {}
             }
         }
@@ -82,6 +86,8 @@ pub fn Sidebar() -> Element {
 pub fn HeaderBar() -> Element {
     let window = || consume_context::<DesktopContext>();
     let state = consume_context::<AppState>();
+    let mut auth_changed = consume_context::<Signal<u32>>();
+    let _ = auth_changed();
     let auth_state = state.datum().auth_state();
     let nav = use_navigator();
     let mut menu_open = use_signal(|| false);
@@ -122,11 +128,15 @@ pub fn HeaderBar() -> Element {
         Err(_) => "Not logged in".to_string(),
     };
 
-    let mut logout = use_action(move |_: ()| async move {
-        let state = consume_context::<AppState>();
-        state.datum().auth().logout().await?;
-        nav.push(Route::Login {});
-        n0_error::Ok(())
+    let mut logout = use_action(move |_: ()| {
+        let mut auth_changed = auth_changed.clone();
+        async move {
+            let state = consume_context::<AppState>();
+            state.datum().auth().logout().await?;
+            auth_changed.set(auth_changed() + 1);
+            nav.push(Route::Login {});
+            n0_error::Ok(())
+        }
     });
 
     let orgs_snapshot = orgs.read().clone();
@@ -186,7 +196,7 @@ pub fn HeaderBar() -> Element {
     rsx! {
         // Custom titlebar (color + height)
         div {
-            class: "h-12 shrink-0 bg-[#f2f2ee] border-b border-[#e3e3dc] flex items-center select-none cursor-grab active:cursor-grabbing",
+            class: "h-10 shrink-0 bg-background border-b border-app-border flex items-center select-none cursor-grab active:cursor-grabbing",
             onmousedown: move |_| window().drag(),
             // macOS-ish window controls
             div {
@@ -206,180 +216,145 @@ pub fn HeaderBar() -> Element {
                 }
             }
             div { class: "flex-1" }
-            if auth_state.get().is_ok() && selected_context.read().is_some() {
-                div {
-                    class: "flex items-center gap-2 px-3",
-                    onmousedown: move |evt: MouseEvent| evt.stop_propagation(),
-                    div { class: "min-w-0",
-                        style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
-                        SelectDropdown {
-                            label: "Organization".to_string(),
-                            show_label: false,
-                            placeholder: "Select org".to_string(),
-                            items: org_items.clone(),
-                            selected: selected_org_id.read().clone(),
-                            on_select: move |value: String| {
-                                if selected_org_id.read().as_deref() == Some(&value) {
-                                    return;
-                                }
-                                selected_org_id.set(Some(value));
-                                selected_project_id.set(None);
-                                pending_org_switch.set(true);
-                            },
-                            searchable: true,
-                            search_placeholder: "Search orgs…".to_string(),
-                            show_selected_subtitle: false,
-                            dense: true,
-                            expanded_min_width: Some("28ch".to_string()),
-                            stack_list_items: true,
-                            align_right: false,
-                            dense_height: Some("28px".to_string()),
-                        }
-                    }
-                    span { class: "text-slate-400 text-xs", "/" }
-                    div { class: "min-w-0",
-                        style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
-                        SelectDropdown {
-                            label: "Project".to_string(),
-                            show_label: false,
-                            placeholder: "Select project".to_string(),
-                            items: project_items,
-                            selected: selected_project_id.read().clone(),
-                            disabled: selected_org_id.read().is_none(),
-                            on_select: move |value: String| {
-                                let org_id = match selected_org_id.read().clone() {
-                                    Some(id) => id,
-                                    None => return,
-                                };
-                                let orgs_snapshot = orgs.read().clone();
-                                let org = orgs_snapshot
-                                    .iter()
-                                    .find(|org| org.org.resource_id == org_id);
-                                let project = org.and_then(|org| {
-                                    org.projects.iter().find(|p| p.resource_id == value)
-                                });
-                                if let (Some(org), Some(project)) = (org, project) {
-                                    let ctx = lib::SelectedContext {
-                                        org_id: org.org.resource_id.clone(),
-                                        org_name: org.org.display_name.clone(),
-                                        project_id: project.resource_id.clone(),
-                                        project_name: project.display_name.clone(),
-                                    };
-                                    pending_org_switch.set(false);
-                                    spawn({
-                                        let state = state.clone();
-                                        async move {
-                                            let _ = state.set_selected_context(Some(ctx)).await;
-                                        }
-                                    });
-                                }
-                                selected_project_id.set(Some(value));
-                            },
-                            searchable: true,
-                            search_placeholder: "Search projects…".to_string(),
-                            show_selected_subtitle: false,
-                            dense: true,
-                            expanded_min_width: Some("28ch".to_string()),
-                            stack_list_items: true,
-                            align_right: true,
-                            dense_height: Some("28px".to_string()),
-                        }
-                    }
-                }
-            }
-            // Profile icon (top-right)
             div {
-                class: "px-3",
+                class: "flex items-center justify-center gap-3 pr-3",
                 onmousedown: move |evt: MouseEvent| evt.stop_propagation(),
-                button {
-                    class: "w-8 h-8 rounded-full border border-[#dfe3ea] bg-white flex items-center justify-center text-slate-600 hover:text-slate-800 hover:bg-gray-50 shadow-sm cursor-pointer",
-                    // TODO: wire to profile menu/settings
-                    onclick: move |evt: MouseEvent| {
-                        evt.stop_propagation();
-                        menu_open.set(!menu_open());
-                    },
-                    svg {
-                        width: "18", height: "18", view_box: "0 0 24 24", fill: "none",
-                        path { d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z", stroke: "currentColor", stroke_width: "1.6" }
-                        path { d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5", stroke: "currentColor", stroke_width: "1.6", stroke_linecap: "round" }
+                if auth_state.get().is_ok() && selected_context.read().is_some() {
+                    div { class: "flex items-center justify-center gap-2",
+                        div {
+                            class: "min-w-0",
+                            style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
+                            SelectDropdown {
+                                label: "Organization".to_string(),
+                                show_label: false,
+                                placeholder: "Select org".to_string(),
+                                items: org_items.clone(),
+                                selected: selected_org_id.read().clone(),
+                                on_select: move |value: String| {
+                                    if selected_org_id.read().as_deref() == Some(&value) {
+                                        return;
+                                    }
+                                    selected_org_id.set(Some(value));
+                                    selected_project_id.set(None);
+                                    pending_org_switch.set(true);
+                                },
+                                searchable: true,
+                                search_placeholder: "Search orgs…".to_string(),
+                                show_selected_subtitle: false,
+                                dense: true,
+                                expanded_min_width: Some("28ch".to_string()),
+                                stack_list_items: true,
+                                align_right: false,
+                            }
+                        }
+                        span { class: "text-foreground/10 text-md", "/" }
+                        div {
+                            class: "min-w-0",
+                            style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
+                            SelectDropdown {
+                                label: "Project".to_string(),
+                                show_label: false,
+                                placeholder: "Select project".to_string(),
+                                items: project_items,
+                                selected: selected_project_id.read().clone(),
+                                disabled: selected_org_id.read().is_none(),
+                                on_select: move |value: String| {
+                                    let org_id = match selected_org_id.read().clone() {
+                                        Some(id) => id,
+                                        None => return,
+                                    };
+                                    let orgs_snapshot = orgs.read().clone();
+                                    let org = orgs_snapshot.iter().find(|org| org.org.resource_id == org_id);
+                                    let project = org
+                                        .and_then(|org| { org.projects.iter().find(|p| p.resource_id == value) });
+                                    if let (Some(org), Some(project)) = (org, project) {
+                                        let ctx = lib::SelectedContext {
+                                            org_id: org.org.resource_id.clone(),
+                                            org_name: org.org.display_name.clone(),
+                                            project_id: project.resource_id.clone(),
+                                            project_name: project.display_name.clone(),
+                                        };
+                                        pending_org_switch.set(false);
+                                        spawn({
+                                            let state = state.clone();
+                                            async move {
+                                                let _ = state.set_selected_context(Some(ctx)).await;
+                                            }
+                                        });
+                                    }
+                                    selected_project_id.set(Some(value));
+                                },
+                                searchable: true,
+                                search_placeholder: "Search projects…".to_string(),
+                                show_selected_subtitle: false,
+                                dense: true,
+                                expanded_min_width: Some("28ch".to_string()),
+                                stack_list_items: true,
+                                align_right: true,
+                            }
+                        }
                     }
                 }
-
-                if menu_open() {
-                    // Full-screen click-catcher so any click outside closes the menu.
-                    // This also prevents the card click handler from triggering.
-                    div {
-                        class: "fixed inset-0 z-40",
-                        onclick: move |evt: MouseEvent| {
-                            evt.stop_propagation();
-                            menu_open.set(false);
-                        }
-                    }
-                    div {
-                        class: "absolute right-0 mt-2 w-44 rounded-xl border border-[#dfe3ea] bg-white shadow-[0_12px_30px_rgba(17,24,39,0.14)] overflow-hidden z-50",
-                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                if auth_state.get().is_ok() {
+                    // Profile icon (top-right) – only when logged in; wrapper is relative so dropdown anchors correctly
+                    div { class: "relative",
                         button {
-                            class: "w-full text-left px-4 py-3 text-sm text-slate-800 hover:bg-gray-50",
-                            {user_name}
+                            class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-pointer mt-0.5",
+                            onclick: move |evt: MouseEvent| {
+                                evt.stop_propagation();
+                                menu_open.set(!menu_open());
+                            },
+                            svg {
+                                width: "18",
+                                height: "18",
+                                view_box: "0 0 24 24",
+                                fill: "none",
+                                path {
+                                    d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
+                                    stroke: "currentColor",
+                                    stroke_width: "1.6",
+                                }
+                                path {
+                                    d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
+                                    stroke: "currentColor",
+                                    stroke_width: "1.6",
+                                    stroke_linecap: "round",
+                                }
+                            }
                         }
-                        if auth_state.get().is_ok() {
-                            button {
-                                class: "w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50",
+
+                        if menu_open() {
+                            // Full-screen click-catcher so any click outside closes the menu.
+                            // This also prevents the card click handler from triggering.
+                            div {
+                                class: "fixed inset-0 z-40",
                                 onclick: move |evt: MouseEvent| {
                                     evt.stop_propagation();
                                     menu_open.set(false);
-                                    logout.call(());
                                 },
-                                "Logout"
+                            }
+                            div {
+                                class: "absolute right-0 mt-2 w-44 rounded-xl border border-app-border bg-white overflow-hidden z-50",
+                                onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                button { class: "w-full text-left px-4 py-3 text-sm text-slate-800 hover:bg-gray-50",
+                                    {user_name}
+                                }
+                                button {
+                                    class: "w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50",
+                                    onclick: move |evt: MouseEvent| {
+                                        evt.stop_propagation();
+                                        menu_open.set(false);
+                                        logout.call(());
+                                    },
+                                    "Logout"
+                                }
                             }
                         }
                     }
                 }
             }
         }
-
     }
 }
 
-#[component]
-fn NavIconBook() -> Element {
-    rsx! {
-        svg {
-            width: "20", height: "20", view_box: "0 0 24 24", fill: "none",
-            class: "text-gray-500",
-            path { d: "M4 5.5C4 4.12 5.12 3 6.5 3H20v17.5a2.5 2.5 0 0 1-2.5 2.5H6.5A2.5 2.5 0 0 1 4 20.5v-15Z", stroke: "currentColor", stroke_width: "1.6" }
-            path { d: "M8 3v18", stroke: "currentColor", stroke_width: "1.6" }
-        }
-    }
-}
 
-#[component]
-fn NavIconUsers() -> Element {
-    rsx! {
-        svg {
-            width: "20", height: "20", view_box: "0 0 24 24", fill: "none",
-            class: "text-gray-500",
-            path { d: "M16 11a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z", stroke: "currentColor", stroke_width: "1.6" }
-            path { d: "M4 20c1.2-3.5 4-5 8-5s6.8 1.5 8 5", stroke: "currentColor", stroke_width: "1.6", stroke_linecap: "round" }
-        }
-    }
-}
-
-#[component]
-fn NavIconGear() -> Element {
-    rsx! {
-        svg {
-            width: "20", height: "20", view_box: "0 0 24 24", fill: "none",
-            class: "text-gray-500",
-            // Use a standard "settings" gear path (lucide/feather-style) to avoid skew/squish.
-            circle { cx: "12", cy: "12", r: "3", stroke: "currentColor", stroke_width: "1.6" }
-            path {
-                d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z",
-                stroke: "currentColor",
-                stroke_width: "1.6",
-                stroke_linejoin: "round",
-                stroke_linecap: "round",
-            }
-        }
-    }
-}

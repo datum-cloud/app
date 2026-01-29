@@ -86,7 +86,8 @@ fn main() {
                     .with_window(
                         WindowBuilder::new()
                             .with_title("Datum Connect")
-                            .with_inner_size(LogicalSize::new(740.0, 740.0))
+                            .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
+                            .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
                             // Required for rounded app chrome: we render our own rounded container inside.
                             .with_transparent(true)
                             .with_decorations(false),
@@ -148,13 +149,17 @@ fn App() -> Element {
 
     if !app_state_ready() {
         return rsx! {
-            Head {  }
+            Head {}
             Splash {}
         };
     }
 
+    // Signal bumped on login/logout so title bar and other auth-dependent UI re-render.
+    let mut auth_changed = use_signal(|| 0u32);
+    provide_context(auth_changed);
+
     rsx! {
-        Head {  }
+        Head {}
         Router::<Route> {}
     }
 }
@@ -181,7 +186,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
     // Build the tray icon
     TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("Dioxus Tray App")
+        .with_tooltip("Datum Desktop")
         .with_icon(icon)
         .build()
         .std_context("building tray icon")

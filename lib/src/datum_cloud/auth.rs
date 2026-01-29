@@ -229,18 +229,6 @@ impl StatelessClient {
         Ok(state)
     }
 
-    // pub async fn fetch_profile(&self, tokens: &AuthTokens) -> Result<UserProfile> {
-    //     let userinfo: CoreUserInfoClaims = self
-    //         .oidc
-    //         .user_info(tokens.access_token.clone(), None)
-    //         .std_context("Missing OIDC provider metadata")?
-    //         .request_async(&self.http)
-    //         .await
-    //         .std_context("Failed to fetch user info")?;
-    //     let profile = UserProfile::from_standard_claims(userinfo.standard_claims())?;
-    //     Ok(profile)
-    // }
-
     pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
         let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
         debug!("Refreshing access token");

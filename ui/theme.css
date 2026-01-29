@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 @theme {
   /* Color Palette */
@@ -15,7 +16,7 @@
   --canyon-clay: oklch(0.709 0.051 18.4);
   --canyon-clay-links: oklch(0.61 0.044 18.4);
   --glacier-mist-700: oklch(0.973 0.001 106.4);
-  --glacier-mist-800: rgba(236, 235, 231, 0.6);
+  --glacier-mist-800: #efefed;
   --glacier-mist-900: oklch(0.928 0.004 91.4);
   --midnight-fjord: oklch(0.228 0.045 253.7);
   --pine-forge: oklch(0.478 0.034 158.9);
@@ -28,6 +29,12 @@
     "Alliance No1", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: "Menlo", "Consolas", "Monaco", "DejaVu Sans Mono", monospace;
+
+  /* Font Sizes */
+  --text-sm: 14px;
+  --text-xs: 13px;
+  --text-1xs: 12px;
+  --text-2xs: 9px;
 
   /* Radius */
   --radius-none: 0rem;
@@ -75,8 +82,9 @@
   --spacing-scale-384px: 24rem;
 
   /* Base Colors */
-  --color-background: var(--glacier-mist-700);
+  --color-background: var(--glacier-mist-800);
   --color-foreground: var(--midnight-fjord);
+  --color-content-background: var(--glacier-mist-700);
 
   /* Button Colors */
   --color-button-primary-background: var(--app-dark-utility-2);
@@ -85,6 +93,16 @@
   --color-button-secondary-foreground: var(--midnight-fjord);
   --color-button-outline-background: var(--glacier-mist-700);
   --color-button-outline-foreground: var(--midnight-fjord);
+
+  /* Border Colors */
+  --color-app-border: var(--glacier-mist-900);
+  --color-card-border: var(--app-dark-utility-5);
+
+  /* Select Dropdown Colors */
+  --color-select-dropdown-border: var(--app-dark-utility-5);
+
+  /* Shadow Colors */
+  --shadow-card: 0px 2px 4px 2px rgba(12, 29, 49, 0.03);
 }
 
 @layer base {
