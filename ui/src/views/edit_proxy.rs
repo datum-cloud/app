@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use lib::TcpProxyData;
+use lib::TunnelSummary;
 
 use crate::{
     components::{Button, ButtonKind},
@@ -10,37 +10,46 @@ use crate::{
 #[component]
 pub fn EditProxy(id: String) -> Element {
     let nav = use_navigator();
-    let state = consume_context::<AppState>();
-    let proxy = use_signal(|| state.listen_node().proxy_by_id(&id));
+    let mut proxy = use_signal(|| Option::<TunnelSummary>::None);
 
-    let mut loading = use_signal(|| false);
+    let mut loading = use_signal(|| true);
     let mut label = use_signal(String::new);
     let mut address = use_signal(String::new);
-    let mut enabled = use_signal(|| false);
     let mut proxy_id = use_signal(String::new);
 
-    use_effect(move || {
+    let tunnel_id_for_load = id.clone();
+    use_future(move || {
+        let tunnel_id = tunnel_id_for_load.clone();
+        async move {
+        let state = consume_context::<AppState>();
+        let tunnel = state.tunnel_service().get_active(&tunnel_id).await?;
+        proxy.set(tunnel);
         if let Some(proxy) = proxy() {
-            address.set(proxy.info.data.address());
-            label.set(proxy.info.label().to_string());
-            enabled.set(proxy.enabled);
-            proxy_id.set(proxy.id().to_owned());
+            address.set(proxy.endpoint);
+            label.set(proxy.label);
+            proxy_id.set(proxy.id);
         }
         loading.set(false);
+        n0_error::Ok(())
+        }
     });
 
-    let mut save = use_action(move |_state| async move {
+    let tunnel_id_for_save = id.clone();
+    let mut save = use_action(move |_state| {
+        let tunnel_id = tunnel_id_for_save.clone();
+        async move {
         let state = consume_context::<AppState>();
-        let proxy = proxy().context("Proxy does not exist")?;
-        let mut proxy = proxy.clone();
-        proxy.info.data = TcpProxyData::from_host_port_str(&address())?;
-        proxy.enabled = enabled();
         let label = label();
-        proxy.info.label = (!label.is_empty()).then(|| label.clone());
-        state.node().listen.set_proxy(proxy).await?;
+        let updated = state
+            .tunnel_service()
+            .update_active(&tunnel_id, &label, &address())
+            .await?;
+        state.upsert_tunnel(updated);
+        state.bump_tunnel_refresh();
         let nav = use_navigator();
         nav.push(Route::ProxiesList {});
         n0_error::Ok(())
+        }
     });
 
     let Some(proxy) = proxy() else {
@@ -68,7 +77,7 @@ pub fn EditProxy(id: String) -> Element {
                     }
                     div { class: "flex flex-col",
                         div { class: "text-2xl font-semibold text-slate-900", "Tunnel details" }
-                        div { class: "text-sm text-slate-600", {proxy.id()} }
+                        div { class: "text-sm text-slate-600", {proxy.id.clone()} }
                     }
                 }
 
@@ -121,11 +130,13 @@ pub fn EditProxy(id: String) -> Element {
                     div { class: "grid grid-cols-1 gap-3",
                         div { class: "text-sm text-slate-600",
                             span { class: "font-medium text-slate-700", "Domain: " }
-                            span { class: "font-mono text-slate-800", {proxy.info.domain()} }
+                            span { class: "font-mono text-slate-800",
+                                {proxy.hostnames.first().cloned().unwrap_or_else(|| proxy.id.clone())}
+                            }
                         }
                         div { class: "text-sm text-slate-600",
                             span { class: "font-medium text-slate-700", "datum:// " }
-                            span { class: "font-mono text-slate-800", {proxy.info.datum_resource_url()} }
+                            span { class: "font-mono text-slate-800", {format!("datum://{}", proxy.id)} }
                         }
                     }
 
