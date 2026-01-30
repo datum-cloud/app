@@ -22,28 +22,25 @@ pub fn Login() -> Element {
         }
     });
 
-    let mut login = use_action(move |_: ()| {
-        let mut auth_changed = auth_changed.clone();
-        async move {
-            let state = consume_context::<AppState>();
-            let datum = state.datum();
-            match datum.login_state() {
-                LoginState::Missing => datum.auth().login().await?,
-                LoginState::NeedsRefresh => datum.auth().refresh().await?,
-                LoginState::Valid => {}
+    let mut login = use_action(move |_: ()| async move {
+        let state = consume_context::<AppState>();
+        let datum = state.datum();
+        match datum.login_state() {
+            LoginState::Missing => datum.auth().login().await?,
+            LoginState::NeedsRefresh => {
+                if datum.auth().refresh().await.is_err() {
+                    datum.auth().login().await?;
+                }
             }
-            state
-                .listen_node()
-                .validate_selected_context(state.datum())
-                .await?;
-            auth_changed.set(auth_changed() + 1);
-            if state.selected_context().is_some() {
-                nav.push(Route::ProxiesList {});
-            } else {
-                nav.push(Route::SelectProject {});
-            }
-            n0_error::Ok(())
+            LoginState::Valid => {}
         }
+        datum.refresh_orgs_projects_and_validate_context().await?;
+        if state.selected_context().is_some() {
+            nav.push(Route::ProxiesList {});
+        } else {
+            nav.push(Route::SelectProject {});
+        }
+        n0_error::Ok(())
     });
 
     const HERO_ILLUSTRATION: Asset = asset!("/assets/images/login-hero.png");

@@ -21,6 +21,7 @@ impl Repo {
     const OAUTH_FILE: &str = "oauth.yml";
     const AUTH_FILE: &str = "auth.yml";
     const STATE_FILE: &str = "state.yml";
+    const SELECTED_CONTEXT_FILE: &str = "selected_context.yml";
 
     pub fn default_location() -> PathBuf {
         match std::env::var("DATUM_CONNECT_REPO") {
@@ -80,6 +81,29 @@ impl Repo {
 
     pub async fn write_state(&self, state: &State) -> Result<()> {
         state.write_to_file(self.0.join(Self::STATE_FILE)).await
+    }
+
+    pub async fn write_selected_context(
+        &self,
+        selected: Option<&crate::SelectedContext>,
+    ) -> Result<()> {
+        let path = self.0.join(Self::SELECTED_CONTEXT_FILE);
+        let data = serde_yml::to_string(&selected).anyerr()?;
+        tokio::fs::write(path, data).await?;
+        Ok(())
+    }
+
+    pub async fn read_selected_context(&self) -> Result<Option<crate::SelectedContext>> {
+        let path = self.0.join(Self::SELECTED_CONTEXT_FILE);
+        if path.exists() {
+            let data = tokio::fs::read_to_string(path)
+                .await
+                .context("failed to read selected context file")?;
+            let selected: Option<crate::SelectedContext> =
+                serde_yml::from_str(&data).std_context("failed to parse selected context file")?;
+            return Ok(selected);
+        }
+        Ok(None)
     }
 
     pub async fn auth(&self) -> Result<Auth> {
