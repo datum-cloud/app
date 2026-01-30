@@ -15,8 +15,6 @@ use crate::{DATUM_CONNECT_GATEWAY_DOMAIN_NAME, Repo};
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct State {
     pub proxies: Vec<ProxyState>,
-    #[serde(default)]
-    pub selected_context: Option<SelectedContext>,
 }
 
 impl State {
