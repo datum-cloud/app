@@ -117,6 +117,9 @@
             pkg-config
             openssl
             
+            # npm
+            nodejs
+
             # For serving web apps locally
             simple-http-server
             
