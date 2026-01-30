@@ -35,10 +35,10 @@ pub struct ButtonProps {
 fn class_for(kind: ButtonKind) -> &'static str {
     // [transform:translateZ(0)] keeps the button on its own compositing layer so opacity hover doesn't cause subpixel shift
     match kind {
-        ButtonKind::Primary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-primary-background/90 text-button-primary-foreground hover:opacity-80 transition-opacity duration-300 border border-1 border-button-primary-background [transform:translateZ(0)] text-xs",
-        ButtonKind::Secondary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-secondary-background/90 text-button-secondary-foreground border border-1 border-button-secondary-background hover:opacity-80 transition-opacity duration-300 text-xs [transform:translateZ(0)]",
-        ButtonKind::Ghost => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-transparent text-button-outline-foreground border border-1 border-button-outline-background hover:opacity-80 transition-opacity duration-300 [transform:translateZ(0)] text-xs",
-        ButtonKind::Outline => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-transparent text-foreground border border-1 border-foreground hover:opacity-80 transition-opacity duration-300 [transform:translateZ(0)] text-xs",
+        ButtonKind::Primary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-primary-background/90 text-button-primary-foreground hover:opacity-80 transition-opacity duration-300 border border-1 border-button-primary-background [transform:translateZ(0)] text-xs focus:outline-2 focus:outline-button-primary-background/50",
+        ButtonKind::Secondary => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-button-secondary-background/90 text-button-secondary-foreground border border-1 border-button-secondary-background hover:opacity-80 transition-opacity duration-300 text-xs [transform:translateZ(0)] focus:outline-2 focus:outline-button-secondary-background/50",
+        ButtonKind::Ghost => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-transparent text-button-outline-foreground border border-1 border-button-outline-background hover:opacity-80 transition-opacity duration-300 [transform:translateZ(0)] text-xs focus:outline-2 focus:outline-button-outline-background/50",
+        ButtonKind::Outline => "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2.5 bg-transparent text-foreground border border-1 border-foreground hover:opacity-80 transition-opacity duration-300 [transform:translateZ(0)] text-xs focus:outline-2 focus:outline-foreground/50",
     }
 }
 

@@ -252,7 +252,7 @@ fn TunnelCard(
                             default_open: false,
                             on_open_change: move |v| menu_open.set(Some(v)),
                             disabled: use_signal(|| false),
-                            DropdownMenuTrigger { class: "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent outline-none focus:ring-0 focus:outline-none",
+                            DropdownMenuTrigger { class: "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent focus:outline-2 focus:outline-app-border/50",
                                 Icon {
                                     source: IconSource::Named("ellipsis".into()),
                                     size: 16,

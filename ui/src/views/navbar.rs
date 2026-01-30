@@ -1,5 +1,8 @@
 use crate::{
-    components::{AddTunnelDialog, Button, ButtonKind, IconSource, SelectDropdown, SelectItem, Icon},
+    components::{
+        AddTunnelDialog, Button, ButtonKind, Icon, IconSource,
+        select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
+    },
     state::AppState,
     Route,
 };
@@ -151,37 +154,21 @@ pub fn HeaderBar() -> Element {
     let orgs_snapshot = orgs.read().clone();
     let selected_org_snapshot = selected_org_id.read().clone();
     let selected_ctx = selected_context.read().clone();
-    let org_items: Vec<SelectItem> = if orgs_snapshot.is_empty() {
+    let org_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
         selected_ctx
             .as_ref()
-            .map(|ctx| {
-                vec![SelectItem {
-                    id: ctx.org_id.clone(),
-                    label: ctx.org_name.clone(),
-                    subtitle: Some(ctx.org_id.clone()),
-                }]
-            })
+            .map(|ctx| vec![(ctx.org_id.clone(), ctx.org_name.clone())])
             .unwrap_or_default()
     } else {
         orgs_snapshot
             .iter()
-            .map(|org| SelectItem {
-                id: org.org.resource_id.clone(),
-                label: org.org.display_name.clone(),
-                subtitle: Some(org.org.resource_id.clone()),
-            })
+            .map(|org| (org.org.resource_id.clone(), org.org.display_name.clone()))
             .collect()
     };
-    let project_items = if orgs_snapshot.is_empty() {
+    let project_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
         selected_ctx
             .as_ref()
-            .map(|ctx| {
-                vec![SelectItem {
-                    id: ctx.project_id.clone(),
-                    label: ctx.project_name.clone(),
-                    subtitle: Some(ctx.project_id.clone()),
-                }]
-            })
+            .map(|ctx| vec![(ctx.project_id.clone(), ctx.project_name.clone())])
             .unwrap_or_default()
     } else {
         selected_org_snapshot
@@ -192,11 +179,7 @@ pub fn HeaderBar() -> Element {
             .map(|org| {
                 org.projects
                     .iter()
-                    .map(|project| SelectItem {
-                        id: project.resource_id.clone(),
-                        label: project.display_name.clone(),
-                        subtitle: Some(project.resource_id.clone()),
-                    })
+                    .map(|p| (p.resource_id.clone(), p.display_name.clone()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -233,13 +216,10 @@ pub fn HeaderBar() -> Element {
                         div {
                             class: "min-w-0",
                             style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
-                            SelectDropdown {
-                                label: "Organization".to_string(),
-                                show_label: false,
-                                placeholder: "Select org".to_string(),
-                                items: org_items.clone(),
-                                selected: selected_org_id.read().clone(),
-                                on_select: move |value: String| {
+                            Select {
+                                value: selected_org_id(),
+                                on_value_change: move |value: Option<String>| {
+                                    let Some(value) = value else { return };
                                     if selected_org_id.read().as_deref() == Some(&value) {
                                         return;
                                     }
@@ -247,27 +227,40 @@ pub fn HeaderBar() -> Element {
                                     selected_project_id.set(None);
                                     pending_org_switch.set(true);
                                 },
-                                searchable: true,
-                                search_placeholder: "Search orgs…".to_string(),
-                                show_selected_subtitle: false,
-                                dense: true,
-                                expanded_min_width: Some("28ch".to_string()),
-                                stack_list_items: true,
-                                align_right: false,
+                                placeholder: "Select org".to_string(),
+                                disabled: false,
+                                SelectTrigger { SelectValue {} }
+                                SelectList {
+                                    if org_options.is_empty() {
+                                        SelectOptionItem {
+                                            value: "".to_string(),
+                                            text_value: "No results".to_string(),
+                                            index: 0,
+                                            disabled: true,
+                                            "No results"
+                                        }
+                                    } else {
+                                        for (i , (id , label)) in org_options.clone().into_iter().enumerate() {
+                                            SelectOptionItem {
+                                                value: id.clone(),
+                                                text_value: label.clone(),
+                                                index: i,
+                                                "{label}"
+                                                SelectItemIndicator {}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         span { class: "text-foreground/10 text-md", "/" }
                         div {
                             class: "min-w-0",
                             style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
-                            SelectDropdown {
-                                label: "Project".to_string(),
-                                show_label: false,
-                                placeholder: "Select project".to_string(),
-                                items: project_items,
-                                selected: selected_project_id.read().clone(),
-                                disabled: selected_org_id.read().is_none(),
-                                on_select: move |value: String| {
+                            Select {
+                                value: selected_project_id(),
+                                on_value_change: move |value: Option<String>| {
+                                    let Some(value) = value else { return };
                                     let org_id = match selected_org_id.read().clone() {
                                         Some(id) => id,
                                         None => return,
@@ -275,7 +268,7 @@ pub fn HeaderBar() -> Element {
                                     let orgs_snapshot = orgs.read().clone();
                                     let org = orgs_snapshot.iter().find(|org| org.org.resource_id == org_id);
                                     let project = org
-                                        .and_then(|org| { org.projects.iter().find(|p| p.resource_id == value) });
+                                        .and_then(|o| o.projects.iter().find(|p| p.resource_id == value));
                                     if let (Some(org), Some(project)) = (org, project) {
                                         let ctx = lib::SelectedContext {
                                             org_id: org.org.resource_id.clone(),
@@ -293,13 +286,31 @@ pub fn HeaderBar() -> Element {
                                     }
                                     selected_project_id.set(Some(value));
                                 },
-                                searchable: true,
-                                search_placeholder: "Search projects…".to_string(),
-                                show_selected_subtitle: false,
-                                dense: true,
-                                expanded_min_width: Some("28ch".to_string()),
-                                stack_list_items: true,
-                                align_right: true,
+                                placeholder: "Select project".to_string(),
+                                disabled: selected_org_id.read().is_none(),
+                                SelectTrigger { SelectValue {} }
+                                SelectList {
+                                    align: Some(SelectAlign::End),
+                                    if project_options.is_empty() {
+                                        SelectOptionItem {
+                                            value: "".to_string(),
+                                            text_value: "No results".to_string(),
+                                            index: 0,
+                                            disabled: true,
+                                            "No results"
+                                        }
+                                    } else {
+                                        for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                            SelectOptionItem {
+                                                value: id.clone(),
+                                                text_value: label.clone(),
+                                                index: i,
+                                                "{label}"
+                                                SelectItemIndicator {}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

@@ -11,6 +11,23 @@ use crate::{
     state::AppState,
 };
 
+/// Validates tunnel address: must be host:port, no http/https scheme.
+/// Returns None when empty (no error shown) or when valid; only shows error when there is input that is invalid.
+fn validate_tunnel_address(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let lower = s.to_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some("Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173).".to_string());
+    }
+    match TcpProxyData::from_host_port_str(s) {
+        Ok(_) => None,
+        Err(e) => Some(format!("Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).", e)),
+    }
+}
+
 #[component]
 pub fn AddTunnelDialog(
     /// Pass a signal so the effect re-runs when open/initial_proxy change and populates the form.
@@ -76,6 +93,9 @@ pub fn AddTunnelDialog(
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
     let error_title = if is_edit { "Couldn't update tunnel" } else { "Couldn't create tunnel" };
 
+    let address_validation = validate_tunnel_address(&address());
+    let address_invalid = address().trim().is_empty() || address_validation.is_some();
+
     rsx! {
         DialogRoot {
             open: open(),
@@ -83,7 +103,7 @@ pub fn AddTunnelDialog(
             is_modal: true,
             DialogContent {
                 DialogTitle { "{title}" }
-                div { class: "space-y-5 mt-5",
+                form { class: "space-y-5 mt-5 w-[452px]", autocomplete: "off",
                     Input {
                         id: Some("tunnel-name".into()),
                         label: Some("Display name".into()),
@@ -96,7 +116,12 @@ pub fn AddTunnelDialog(
                         label: Some("Local address to forward".into()),
                         value: "{address}",
                         placeholder: "e.g. 127.0.0.1:5173",
+                        error: address_validation.clone(),
+                        autocomplete: "off",
+                        autocapitalize: "off",
+                        autocorrect: "off",
                         onchange: move |e: FormEvent| address.set(e.value()),
+                        r#type: "text",
                     }
                     if let Some(Err(err)) = save_proxy.value() {
                         div { class: "rounded-md border border-red-200 bg-red-50 p-4 text-red-800",
@@ -107,8 +132,12 @@ pub fn AddTunnelDialog(
                     div { class: "flex items-center gap-4 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
-                            class: if save_proxy.pending() { Some("opacity-60 pointer-events-none".to_string()) } else { None },
-                            onclick: move |_| save_proxy.call(initial_proxy().clone()),
+                            class: if save_proxy.pending() || address_invalid { Some("opacity-60".to_string()) } else { None },
+                            onclick: move |_| {
+                                if !address_invalid {
+                                    save_proxy.call(initial_proxy().clone());
+                                }
+                            },
                             text: if save_proxy.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
                         }
                         Button {

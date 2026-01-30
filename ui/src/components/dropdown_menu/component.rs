@@ -50,10 +50,14 @@ pub fn DropdownMenuContent(props: DropdownMenuContentProps) -> Element {
 }
 
 /// A 1px horizontal line separator for use inside [`DropdownMenuContent`].
+/// Uses negative margins so the line spans the full width of the dropdown (parent has p-1).
 #[component]
 pub fn DropdownMenuSeparator() -> Element {
     rsx! {
-        div { class: "h-px w-full bg-app-border my-1", role: "separator" }
+        div {
+            class: "h-px w-[calc(100%+0.5rem)] -mx-1 bg-app-border my-1",
+            role: "separator",
+        }
     }
 }
 

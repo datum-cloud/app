@@ -2,14 +2,13 @@
 //! They can be used to defined common UI elements like buttons, forms, and modals. In this template, we define a Hero
 //! component  to be used in our app.
 
-mod hero;
+
 
 mod add_tunnel_dialog;
 mod bandwidth_timeseries_chart;
 mod button;
 mod head;
 mod icon;
-mod select_dropdown;
 mod splash;
 mod typography;
 
@@ -18,7 +17,6 @@ pub use button::Button;
 pub use button::ButtonKind;
 pub use head::Head;
 pub use icon::{Icon, IconKind, IconSource};
-pub use select_dropdown::{SelectDropdown, SelectItem};
 pub use splash::Splash;
 #[allow(unused)]
 pub use typography::Subhead;
@@ -27,3 +25,4 @@ pub mod input;
 pub mod switch;
 pub use switch::{Switch, SwitchThumb};
 pub mod dropdown_menu;
+pub mod select;
