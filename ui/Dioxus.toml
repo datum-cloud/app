@@ -41,6 +41,13 @@ Datum Datum Datum
 [bundle.macos]
 bundle_name = "Datum Desktop"
 icon = "assets/bundle/macos/Assets.xcassets/AppIcon.appiconset"
+# Code signing - uses APPLE_SIGNING_IDENTITY env var if set, otherwise this value
+# For local dev: "Developer ID Application: Your Name (TEAMID)"
+# For CI: Set via APPLE_SIGNING_IDENTITY secret
+signing_identity = "-"
+entitlements = "entitlements.plist"
+# Minimum macOS version
+minimum_system_version = "11.0"
 
 [bundle.windows]
 icon = "assets/bundle/windows/Datum Icon.ico"
