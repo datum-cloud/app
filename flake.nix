@@ -49,6 +49,7 @@
             lockFile = ./Cargo.lock;
             outputHashes = {
               "iroh-proxy-utils-0.1.0" = "sha256-DRFxQusoBIh3IaYS2AlIbsKszNQuph5Xsm2h8n4Fkw8=";
+              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
             };
           };
 
@@ -82,6 +83,7 @@
             lockFile = ./Cargo.lock;
             outputHashes = {
               "iroh-proxy-utils-0.1.0" = "sha256-DRFxQusoBIh3IaYS2AlIbsKszNQuph5Xsm2h8n4Fkw8=";
+              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
             };
           };
 
