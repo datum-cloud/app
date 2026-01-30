@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use n0_error::{Result, StackResultExt, StdResultExt};
-use n0_future::{BufferedStreamExt, TryStreamExt};
+use n0_future::{BufferedStreamExt, TryStreamExt, task::AbortOnDropHandle};
+use tokio::sync::watch;
 use tracing::warn;
 
-use crate::Repo;
+use crate::{ProjectControlPlaneClient, Repo, SelectedContext};
 
 pub use self::{
     auth::{AuthClient, AuthState, LoginState, MaybeAuth, UserProfile},
@@ -19,31 +21,113 @@ pub struct DatumCloudClient {
     env: ApiEnv,
     auth: AuthClient,
     http: reqwest::Client,
+    session: SessionStateWrapper,
+    _session_task: Option<Arc<AbortOnDropHandle<()>>>,
 }
 
 impl DatumCloudClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
-        let auth = AuthClient::with_repo(env, repo).await?;
+        let auth = AuthClient::with_repo(env, repo.clone()).await?;
+        let session = SessionStateWrapper::from_repo(Some(repo)).await?;
         let http = reqwest::Client::builder().build().anyerr()?;
-        Ok(Self { env, auth, http })
+        let mut client = Self {
+            env,
+            auth,
+            http,
+            session,
+            _session_task: None,
+        };
+        client.start_session_sync();
+        Ok(client)
     }
 
     pub async fn new(env: ApiEnv) -> Result<Self> {
         let auth = AuthClient::new(env).await?;
+        let session = SessionStateWrapper::empty();
         let http = reqwest::Client::builder().build().anyerr()?;
-        Ok(Self { env, auth, http })
+        let mut client = Self {
+            env,
+            auth,
+            http,
+            session,
+            _session_task: None,
+        };
+        client.start_session_sync();
+        Ok(client)
     }
 
     pub fn login_state(&self) -> LoginState {
         self.auth.login_state()
     }
 
+    pub fn api_url(&self) -> &'static str {
+        self.env.api_url()
+    }
+
     pub fn auth(&self) -> &AuthClient {
         &self.auth
     }
 
+    pub fn auth_update_watch(&self) -> watch::Receiver<u64> {
+        self.auth.auth_update_watch()
+    }
+
     pub fn auth_state(&self) -> Arc<MaybeAuth> {
         self.auth.load()
+    }
+
+    pub fn selected_context(&self) -> Option<SelectedContext> {
+        self.session.selected_context()
+    }
+
+    pub fn selected_context_watch(&self) -> watch::Receiver<Option<SelectedContext>> {
+        self.session.selected_context_watch()
+    }
+
+    pub async fn set_selected_context(
+        &self,
+        selected_context: Option<SelectedContext>,
+    ) -> Result<()> {
+        self.session.set_selected_context(selected_context).await
+    }
+
+    fn project_control_plane_url(&self, project_id: &str) -> String {
+        format!(
+            "{}/apis/resourcemanager.miloapis.com/v1alpha1/projects/{project_id}/control-plane",
+            self.api_url()
+        )
+    }
+
+    pub async fn project_control_plane_client(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectControlPlaneClient> {
+        let auth_state = self.auth().load_refreshed().await?;
+        let auth = auth_state.get()?;
+        self.project_control_plane_client_with_token(
+            project_id,
+            auth.tokens.access_token.secret(),
+        )
+    }
+
+    pub async fn project_control_plane_client_active(
+        &self,
+    ) -> Result<Option<ProjectControlPlaneClient>> {
+        let Some(selected) = self.selected_context() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.project_control_plane_client(&selected.project_id)
+                .await?,
+        ))
+    }
+
+    pub fn orgs_projects_cache(&self) -> Vec<OrganizationWithProjects> {
+        self.session.orgs_projects()
+    }
+
+    pub fn orgs_projects_watch(&self) -> watch::Receiver<Vec<OrganizationWithProjects>> {
+        self.session.orgs_projects_watch()
     }
 
     pub async fn orgs_and_projects(&self) -> Result<Vec<OrganizationWithProjects>> {
@@ -52,7 +136,10 @@ impl DatumCloudClient {
             let projects = self.projects(&org.resource_id).await?;
             n0_error::Ok(OrganizationWithProjects { org, projects })
         }));
-        stream.buffered_unordered(16).try_collect().await
+        let list: Vec<OrganizationWithProjects> =
+            stream.buffered_unordered(16).try_collect().await?;
+        self.session.set_orgs_projects(list.clone());
+        Ok(list)
     }
 
     pub async fn orgs(&self) -> Result<Vec<Organization>> {
@@ -160,6 +247,152 @@ impl DatumCloudClient {
             .await
             .std_context("Failed to parse response text as JSON")?;
         Ok(json)
+    }
+
+    fn project_control_plane_client_with_token(
+        &self,
+        project_id: &str,
+        access_token: &str,
+    ) -> Result<ProjectControlPlaneClient> {
+        let server_url = self.project_control_plane_url(project_id);
+        ProjectControlPlaneClient::new(
+            project_id.to_string(),
+            server_url,
+            access_token.to_string(),
+            self.clone(),
+        )
+    }
+
+    pub async fn refresh_orgs_projects_and_validate_context(&self) -> Result<()> {
+        let list = self.orgs_and_projects().await?;
+        let selected = self.selected_context();
+        let Some(selected) = selected else {
+            return Ok(());
+        };
+
+        let is_valid = list.iter().any(|org| {
+            if org.org.resource_id != selected.org_id {
+                return false;
+            }
+            org.projects
+                .iter()
+                .any(|project| project.resource_id == selected.project_id)
+        });
+
+        if !is_valid {
+            self.set_selected_context(None).await?;
+        } else {
+            self.set_selected_context(Some(selected)).await?;
+        }
+        Ok(())
+    }
+
+    fn start_session_sync(&mut self) {
+        if self._session_task.is_some() {
+            return;
+        }
+        let client = self.clone();
+        let mut login_rx = self.auth.login_state_watch();
+        let mut auth_update_rx = self.auth.auth_update_watch();
+        let task = tokio::spawn(async move {
+            if *login_rx.borrow() != LoginState::Missing {
+                let _ = client.refresh_orgs_projects_and_validate_context().await;
+            }
+            loop {
+                tokio::select! {
+                    res = login_rx.changed() => {
+                        if res.is_err() {
+                            return;
+                        }
+                    }
+                    res = auth_update_rx.changed() => {
+                        if res.is_err() {
+                            return;
+                        }
+                    }
+                }
+                if *login_rx.borrow() != LoginState::Missing {
+                    let _ = client.refresh_orgs_projects_and_validate_context().await;
+                }
+            }
+        });
+        self._session_task = Some(Arc::new(AbortOnDropHandle::new(task)));
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionStateWrapper {
+    selected_context: Arc<ArcSwap<Option<SelectedContext>>>,
+    selected_context_tx: watch::Sender<Option<SelectedContext>>,
+    orgs_projects: Arc<ArcSwap<Vec<OrganizationWithProjects>>>,
+    orgs_projects_tx: watch::Sender<Vec<OrganizationWithProjects>>,
+    repo: Option<Repo>,
+}
+
+impl SessionStateWrapper {
+    fn empty() -> Self {
+        let (selected_context_tx, _) = watch::channel(None);
+        let (orgs_projects_tx, _) = watch::channel(Vec::new());
+        Self {
+            selected_context: Arc::new(ArcSwap::from_pointee(None)),
+            selected_context_tx,
+            orgs_projects: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            orgs_projects_tx,
+            repo: None,
+        }
+    }
+
+    async fn from_repo(repo: Option<Repo>) -> Result<Self> {
+        let selected = if let Some(repo) = repo.as_ref() {
+            repo.read_selected_context().await?
+        } else {
+            None
+        };
+        let (selected_context_tx, _) = watch::channel(selected.clone());
+        let (orgs_projects_tx, _) = watch::channel(Vec::new());
+        Ok(Self {
+            selected_context: Arc::new(ArcSwap::from_pointee(selected)),
+            selected_context_tx,
+            orgs_projects: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            orgs_projects_tx,
+            repo,
+        })
+    }
+
+    fn selected_context(&self) -> Option<SelectedContext> {
+        self.selected_context.load_full().as_ref().clone()
+    }
+
+    fn selected_context_watch(&self) -> watch::Receiver<Option<SelectedContext>> {
+        self.selected_context_tx.subscribe()
+    }
+
+    async fn set_selected_context(
+        &self,
+        selected_context: Option<SelectedContext>,
+    ) -> Result<()> {
+        let current = self.selected_context.load_full();
+        if current.as_ref().as_ref() != selected_context.as_ref() {
+            if let Some(repo) = self.repo.as_ref() {
+                repo.write_selected_context(selected_context.as_ref()).await?;
+            }
+            self.selected_context.store(Arc::new(selected_context.clone()));
+        }
+        let _ = self.selected_context_tx.send(selected_context);
+        Ok(())
+    }
+
+    fn orgs_projects(&self) -> Vec<OrganizationWithProjects> {
+        self.orgs_projects.load_full().as_ref().clone()
+    }
+
+    fn orgs_projects_watch(&self) -> watch::Receiver<Vec<OrganizationWithProjects>> {
+        self.orgs_projects_tx.subscribe()
+    }
+
+    fn set_orgs_projects(&self, orgs_projects: Vec<OrganizationWithProjects>) {
+        self.orgs_projects.store(Arc::new(orgs_projects.clone()));
+        let _ = self.orgs_projects_tx.send(orgs_projects);
     }
 }
 

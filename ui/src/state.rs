@@ -1,11 +1,11 @@
 use lib::{
     SelectedContext,
-    datum_cloud::{ApiEnv, DatumCloudClient, LoginState},
-    ListenNode, Node, Repo,
+    datum_cloud::{ApiEnv, DatumCloudClient},
+    ListenNode, Node, ProjectControlPlaneClient, Repo,
 };
 use tracing::info;
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct AppState {
     node: Node,
     datum: DatumCloudClient,
@@ -20,13 +20,10 @@ impl AppState {
             Node::new(repo.clone()),
             DatumCloudClient::with_repo(ApiEnv::Staging, repo)
         }?;
-        let app_state = AppState { node, datum };
-        if app_state.datum.login_state() != LoginState::Missing {
-            app_state
-                .listen_node()
-                .validate_selected_context(app_state.datum())
-                .await?;
-        }
+        let app_state = AppState {
+            node,
+            datum,
+        };
         Ok(app_state)
     }
 
@@ -38,12 +35,18 @@ impl AppState {
         &self.node
     }
 
+    pub async fn project_control_plane(
+        &self,
+    ) -> n0_error::Result<Option<ProjectControlPlaneClient>> {
+        self.datum.project_control_plane_client_active().await
+    }
+
     pub fn listen_node(&self) -> &ListenNode {
         &self.node().listen
     }
 
     pub fn selected_context(&self) -> Option<SelectedContext> {
-        self.listen_node().selected_context()
+        self.datum.selected_context()
     }
 
     pub async fn set_selected_context(
@@ -56,8 +59,8 @@ impl AppState {
                 .map_or("<none>".to_string(), SelectedContext::label),
             "ui: setting selected context"
         );
-        // TODO: scope control-plane clients to the selected project.
-        self.listen_node().set_selected_context(selected_context).await
+        self.datum.set_selected_context(selected_context.clone()).await?;
+        Ok(())
     }
 
 }
