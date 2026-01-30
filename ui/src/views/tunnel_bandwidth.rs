@@ -1,7 +1,9 @@
 use chrono::{DateTime, Local};
 use dioxus::prelude::*;
+use lib::ProxyState;
 
 use crate::{state::AppState, util::humanize_bytes, Route};
+use super::{OpenEditTunnelDialog, TunnelCard};
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -13,10 +15,10 @@ struct RatePoint {
 #[component]
 pub fn TunnelBandwidth(id: String) -> Element {
     let nav = use_navigator();
-    let id_for_back = id.clone();
 
     let mut loading = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
+    let mut proxy_loaded = use_signal(|| None::<ProxyState>);
 
     let mut title = use_signal(|| "".to_string());
     let mut codename = use_signal(|| "".to_string());
@@ -46,6 +48,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
 
                 title.set(proxy.info.label().to_owned());
                 codename.set(proxy.id().to_owned());
+                proxy_loaded.set(Some(proxy.clone()));
                 loading.set(false);
             }
         }
@@ -149,21 +152,48 @@ pub fn TunnelBandwidth(id: String) -> Element {
         };
     }
 
+    let mut on_delete = use_action(move |proxy: ProxyState| async move {
+        let state = consume_context::<AppState>();
+        debug!("on delete called: {}", proxy.id());
+        state
+            .listen_node()
+            .remove_proxy(proxy.id())
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("delete tunnel failed: {err:#}");
+            })?;
+        n0_error::Ok(())
+    });
+    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
+    let proxy = proxy_loaded().expect("proxy loaded when not loading and no error");
+
     rsx! {
-        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto px-1",
-            // Header
-            div { class: "flex items-center gap-4 mb-6",
-                button {
-                    class: "w-10 h-10 rounded-xl border border-[#dfe3ea] bg-white flex items-center justify-center text-slate-600 hover:text-slate-800 hover:bg-gray-50 shadow-sm cursor-pointer",
-                    onclick: move |_| {
-                        let _ = nav.push(Route::EditProxy { id: id_for_back.clone() });
-                    },
-                    "←"
-                }
-                div { class: "flex flex-col",
-                    div { class: "text-2xl font-semibold text-slate-900", "Bandwidth" }
-                    div { class: "text-sm text-slate-600", "{title()} · {codename()}" }
-                }
+        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto px-1 space-y-5",
+            // Back link
+            button {
+                class: "text-xs text-foreground flex items-center gap-1.5 underline",
+                onclick: move |_| {
+                    let _ = nav.push(Route::ProxiesList {});
+                },
+                "← Back to Tunnels List"
+            }
+
+            TunnelCard {
+                key: "{proxy.id()}",
+                proxy: proxy.clone(),
+                show_view_item: false,
+                on_delete: move |proxy_to_delete: ProxyState| {
+                    let nav = nav.clone();
+                    let fut = on_delete.call(proxy_to_delete);
+                    spawn(async move {
+                        let _ = fut.await;
+                        let _ = nav.push(Route::ProxiesList {});
+                    });
+                },
+                on_edit: move |proxy_to_edit: ProxyState| {
+                    open_edit_dialog.editing_proxy.set(Some(proxy_to_edit.clone()));
+                    open_edit_dialog.dialog_open.set(true);
+                },
             }
 
             // Panel
@@ -180,9 +210,6 @@ pub fn TunnelBandwidth(id: String) -> Element {
                         div { class: "text-2xl font-semibold text-slate-900 whitespace-nowrap tabular-nums leading-none",
                             "{humanize_bytes(latest_recv())}/s"
                         }
-                    }
-                    div { class: "text-xs text-slate-500 min-w-0",
-                        "Note: this currently shows device-level iroh bandwidth (all tunnels + n0des), not strictly per-tunnel."
                     }
                 }
 
@@ -316,21 +343,61 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                 height: "{height}",
                 view_box: "0 0 {width} {height}",
                 defs {
-                    linearGradient { id: "sendFill", x1: "0", y1: "0", x2: "0", y2: "1",
-                        stop { offset: "0%", stop_color: "{send_color}", stop_opacity: "0.22" }
-                        stop { offset: "100%", stop_color: "{send_color}", stop_opacity: "0.0" }
+                    linearGradient {
+                        id: "sendFill",
+                        x1: "0",
+                        y1: "0",
+                        x2: "0",
+                        y2: "1",
+                        stop {
+                            offset: "0%",
+                            stop_color: "{send_color}",
+                            stop_opacity: "0.22",
+                        }
+                        stop {
+                            offset: "100%",
+                            stop_color: "{send_color}",
+                            stop_opacity: "0.0",
+                        }
                     }
-                    linearGradient { id: "recvFill", x1: "0", y1: "0", x2: "0", y2: "1",
-                        stop { offset: "0%", stop_color: "{recv_color}", stop_opacity: "0.24" }
-                        stop { offset: "100%", stop_color: "{recv_color}", stop_opacity: "0.0" }
+                    linearGradient {
+                        id: "recvFill",
+                        x1: "0",
+                        y1: "0",
+                        x2: "0",
+                        y2: "1",
+                        stop {
+                            offset: "0%",
+                            stop_color: "{recv_color}",
+                            stop_opacity: "0.24",
+                        }
+                        stop {
+                            offset: "100%",
+                            stop_color: "{recv_color}",
+                            stop_opacity: "0.0",
+                        }
                     }
                 }
                 // chart bg
-                rect { x: "0", y: "0", width: "{width}", height: "{height}", rx: "14", fill: "#fbfbf9", stroke: "#eceee9" }
+                rect {
+                    x: "0",
+                    y: "0",
+                    width: "{width}",
+                    height: "{height}",
+                    rx: "14",
+                    fill: "#fbfbf9",
+                    stroke: "#eceee9",
+                }
 
                 // grid + y labels
-                for (label, y) in y_labels {
-                    line { x1: "{padding_x}", y1: "{y}", x2: "{width - padding_x}", y2: "{y}", stroke: "#eceee9" }
+                for (label , y) in y_labels {
+                    line {
+                        x1: "{padding_x}",
+                        y1: "{y}",
+                        x2: "{width - padding_x}",
+                        y2: "{y}",
+                        stroke: "#eceee9",
+                    }
                     text {
                         x: "{padding_x - 12.0}",
                         y: "{y + 4.0}",
@@ -343,8 +410,16 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
 
                 g { transform: "translate({padding_x}, {padding_y})",
                     // area fills (draw first, then lines on top)
-                    path { d: "{recv_area}", fill: "url(#recvFill)", stroke: "none" }
-                    path { d: "{send_area}", fill: "url(#sendFill)", stroke: "none" }
+                    path {
+                        d: "{recv_area}",
+                        fill: "url(#recvFill)",
+                        stroke: "none",
+                    }
+                    path {
+                        d: "{send_area}",
+                        fill: "url(#sendFill)",
+                        stroke: "none",
+                    }
                     // receive (green)
                     path {
                         d: "{recv_path}",
@@ -371,14 +446,20 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                 div {
                     class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
                     style: "border-color: {send_color}33; background-color: {send_color}12; color: {send_color};",
-                    span { class: "inline-block w-3 h-0.5 rounded-full", style: "background-color: {send_color};" }
+                    span {
+                        class: "inline-block w-3 h-0.5 rounded-full",
+                        style: "background-color: {send_color};",
+                    }
                     span { class: "font-medium leading-none text-center", "Send" }
                 }
                 // Receive pill
                 div {
                     class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
                     style: "border-color: {recv_color}33; background-color: {recv_color}12; color: {recv_color};",
-                    span { class: "inline-block w-3 h-0.5 rounded-full", style: "background-color: {recv_color};" }
+                    span {
+                        class: "inline-block w-3 h-0.5 rounded-full",
+                        style: "background-color: {recv_color};",
+                    }
                     span { class: "font-medium leading-none text-center", "Receive" }
                 }
             }

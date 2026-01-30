@@ -11,6 +11,13 @@ use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
 use dioxus_desktop::DesktopContext;
 
+/// Provided by Sidebar so child routes (e.g. TunnelBandwidth) can open the Add/Edit tunnel dialog.
+#[derive(Clone)]
+pub struct OpenEditTunnelDialog {
+    pub editing_proxy: Signal<Option<lib::ProxyState>>,
+    pub dialog_open: Signal<bool>,
+}
+
 #[component]
 pub fn Chrome() -> Element {
     rsx! {
@@ -27,6 +34,12 @@ pub fn Sidebar() -> Element {
     let state = consume_context::<AppState>();
     let mut add_tunnel_dialog_open = use_signal(|| false);
     let editing_proxy = use_signal(|| None::<lib::ProxyState>);
+
+    provide_context(OpenEditTunnelDialog {
+        editing_proxy,
+        dialog_open: add_tunnel_dialog_open,
+    });
+
     use_effect(move || {
         if state.datum().login_state() == LoginState::Missing {
             nav.push(Route::Login {});
@@ -36,9 +49,18 @@ pub fn Sidebar() -> Element {
             nav.push(Route::SelectProject {});
         }
     });
+
+    let route = use_route::<Route>();
+    let sidebar_hidden = matches!(route, Route::TunnelBandwidth { .. });
+    let sidebar_class = if sidebar_hidden {
+        "sidebar-wrapper min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col transition-transform duration-250 ease-out absolute left-0 -translate-x-[190px] z-10"
+    } else {
+        "sidebar-wrapper min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col transition-transform duration-250 ease-out"
+    };
+
     let sidebar = rsx! {
         // Sidebar
-        div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
+        div { class: "{sidebar_class}",
             // Full-width content with equal left/right padding
             div { class: "w-full",
                 Button {

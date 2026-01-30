@@ -12,6 +12,7 @@ use crate::{
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource, Switch, SwitchThumb,
     },
     state::AppState,
+    Route,
 };
 
 
@@ -33,9 +34,6 @@ pub fn ProxiesList() -> Element {
         }
     });
 
-    // Important: do async mutations from this parent component scope.
-    // If we spawn from inside `TunnelCard` and then optimistically remove the card,
-    // Dioxus will drop that scope and cancel the task before it runs.
     let mut on_delete = use_action(move |proxy: ProxyState| async move {
         let state = consume_context::<AppState>();
         debug!("on delete called: {}", proxy.id());
@@ -48,8 +46,9 @@ pub fn ProxiesList() -> Element {
             })?;
         n0_error::Ok(())
     });
-
-    let on_delete_handler = move |proxy_state| on_delete.call(proxy_state);
+    let on_delete_handler = move |proxy_state: ProxyState| {
+        on_delete.call(proxy_state);
+    };
 
     let state = consume_context::<AppState>();
     let first_name = state
@@ -127,6 +126,7 @@ pub fn ProxiesList() -> Element {
                     TunnelCard {
                         key: "{proxy.id()}",
                         proxy,
+                        show_view_item: true,
                         on_delete: on_delete_handler,
                         on_edit: move |p| {
                             editing_proxy.set(Some(p));
@@ -158,15 +158,16 @@ pub fn ProxiesList() -> Element {
 }
 
 #[component]
-fn TunnelCard(
+pub fn TunnelCard(
     proxy: ProxyState,
+    show_view_item: bool,
     on_delete: EventHandler<ProxyState>,
     on_edit: EventHandler<ProxyState>,
 ) -> Element {
     let initial = proxy.clone();
     let mut proxy_signal = use_signal(move || initial);
     let mut menu_open = use_signal(|| None::<bool>);
-
+    let nav = use_navigator();
     // Sync prop into local state when the list refreshes (e.g. after edit).
     use_effect(move || proxy_signal.set(proxy.clone()));
 
@@ -191,14 +192,7 @@ fn TunnelCard(
         div {
             // darker shadow + hover lift
             class: "bg-white rounded-lg border border-app-border shadow-card",
-            // onclick: move |_| {
-            //     let id = proxy_signal().id().to_string();
-            //     // Clicking the card opens details (unless the kebab menu is open)
-            //     if menu_open() {
-            //         return;
-            //     }
-            //     nav.push(Route::EditProxy { id });
-            // },
+
             div { class: "",
                 // header row: title + toggle
                 div { class: "px-4 py-2.5 flex items-center justify-between",
@@ -259,6 +253,22 @@ fn TunnelCard(
                                 }
                             }
                             DropdownMenuContent { id: use_signal(|| None::<String>), class: "",
+                                {if show_view_item {
+                                    rsx! {
+                                        DropdownMenuItem::<String> {
+                                            value: use_signal(|| "view".to_string()),
+                                            index: use_signal(|| 0),
+                                            disabled: use_signal(|| false),
+                                            on_select: move |_| {
+                                                let id = proxy_signal().id().to_string();
+                                                nav.push(Route::TunnelBandwidth { id });
+                                            },
+                                            "View"
+                                        }
+                                    }
+                                } else {
+                                    rsx! { }
+                                }}
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "edit".to_string()),
                                     index: use_signal(|| 0),
