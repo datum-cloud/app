@@ -73,6 +73,10 @@ fn main() {
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
 
+    // Set macOS dock icon programmatically (needed for dx serve / development mode)
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    set_macos_dock_icon();
+
     #[cfg(feature = "desktop")]
     {
         // Use a custom titlebar so we can theme the top chrome (height + color).
@@ -85,11 +89,12 @@ fn main() {
                     .with_close_behaviour(WindowCloseBehaviour::WindowHides)
                     .with_window(
                         WindowBuilder::new()
-                            .with_title("Datum Connect")
+                            .with_title("Datum Desktop")
                             .with_inner_size(LogicalSize::new(740.0, 740.0))
                             // Required for rounded app chrome: we render our own rounded container inside.
                             .with_transparent(true)
-                            .with_decorations(false),
+                            .with_decorations(false)
+                            .with_window_icon(Some(window_icon())),
                     )
             })
             .launch(App);
@@ -129,6 +134,14 @@ fn App() -> Element {
         provide_context(state);
         app_state_ready.set(true);
     });
+
+    // Set the macOS menu bar app name after the app launches (menu now exists)
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    {
+        use_effect(|| {
+            set_macos_menu_name();
+        });
+    }
 
     #[cfg(feature = "desktop")]
     use_tray_menu_event_handler(move |event| {
@@ -181,22 +194,86 @@ fn init_menu_bar() -> Result<TrayIcon> {
     // Build the tray icon
     TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("Dioxus Tray App")
+        .with_tooltip("Datum Desktop")
         .with_icon(icon)
         .build()
         .std_context("building tray icon")
 }
 
-/// Load an icon from a PNG file
+/// Load an icon from a PNG file for the tray
 #[cfg(feature = "desktop")]
 fn icon() -> Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/images/logo-datum-light.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
     let rgba = image.to_rgba8().into_raw();
 
     Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
+}
+
+/// Load an icon from a PNG file for the window
+#[cfg(feature = "desktop")]
+fn window_icon() -> dioxus_desktop::tao::window::Icon {
+    use image::GenericImageView;
+
+    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let image = image::load_from_memory(icon_bytes).unwrap();
+
+    let (width, height) = image.dimensions();
+    let rgba = image.to_rgba8().into_raw();
+
+    dioxus_desktop::tao::window::Icon::from_rgba(rgba, width, height)
+        .expect("Failed to create window icon from image")
+}
+
+/// Set the macOS dock icon programmatically (for development mode without a bundle)
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn set_macos_dock_icon() {
+    use objc2::AllocAnyThread;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+
+    // SAFETY: We're on the main thread when this is called during app initialization
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+    let app = NSApplication::sharedApplication(mtm);
+
+    // Set the dock icon
+    let ns_data = NSData::with_bytes(icon_bytes);
+    if let Some(ns_image) = NSImage::initWithData(NSImage::alloc(), &ns_data) {
+        // SAFETY: We're setting a valid NSImage on the main thread
+        unsafe { app.setApplicationIconImage(Some(&ns_image)) };
+    }
+}
+
+/// Set the macOS menu bar app name (called after app launches when menu exists)
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn set_macos_menu_name() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSString;
+
+    // SAFETY: We're on the main thread (called from use_effect in the UI)
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+    let app = NSApplication::sharedApplication(mtm);
+    let app_name = NSString::from_str("Datum Desktop");
+
+    // Set the menu bar app name by modifying the main menu's first item (app menu)
+    if let Some(main_menu) = app.mainMenu() {
+        if let Some(app_menu_item) = main_menu.itemAtIndex(0) {
+            app_menu_item.setTitle(&app_name);
+
+            // Also update the submenu title if present
+            if let Some(app_submenu) = app_menu_item.submenu() {
+                app_submenu.setTitle(&app_name);
+            }
+        }
+    }
 }
