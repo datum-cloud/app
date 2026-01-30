@@ -1,5 +1,8 @@
 use crate::{
     components::{
+        dropdown_menu::{
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+        },
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource,
         select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
     },
@@ -53,9 +56,9 @@ pub fn Sidebar() -> Element {
     let route = use_route::<Route>();
     let sidebar_hidden = matches!(route, Route::TunnelBandwidth { .. });
     let sidebar_class = if sidebar_hidden {
-        "sidebar-wrapper min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col transition-transform duration-250 ease-out absolute left-0 -translate-x-[190px] z-10"
+        "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col absolute left-0 -translate-x-[190px] z-10"
     } else {
-        "sidebar-wrapper min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col transition-transform duration-250 ease-out"
+        "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col"
     };
 
     let sidebar = rsx! {
@@ -78,17 +81,23 @@ pub fn Sidebar() -> Element {
                     Icon {
                         source: IconSource::Named("book-open".into()),
                         size: 16,
+                        class: "text-icon-select",
                     }
                     span { class: "text-xs leading-4", "Docs" }
                 }
                 div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
-                    Icon { source: IconSource::Named("users".into()), size: 16 }
+                    Icon {
+                        source: IconSource::Named("users".into()),
+                        size: 16,
+                        class: "text-icon-select",
+                    }
                     span { class: "text-xs", "Invite" }
                 }
                 div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
                     Icon {
                         source: IconSource::Named("settings".into()),
                         size: 16,
+                        class: "text-icon-select",
                     }
                     span { class: "text-xs", "Settings" }
                 }
@@ -124,7 +133,7 @@ pub fn HeaderBar() -> Element {
     let _ = auth_changed();
     let auth_state = state.datum().auth_state();
     let nav = use_navigator();
-    let mut menu_open = use_signal(|| false);
+    let mut profile_menu_open = use_signal(|| None::<bool>);
     let mut selected_context = use_signal(|| state.selected_context());
     let mut orgs = use_signal(Vec::<OrganizationWithProjects>::new);
     let mut selected_org_id = use_signal(|| state.selected_context().map(|c| c.org_id));
@@ -161,7 +170,10 @@ pub fn HeaderBar() -> Element {
         Ok(auth) => auth.profile.display_name(),
         Err(_) => "Not logged in".to_string(),
     };
-
+    let user_email = match auth_state.get() {
+        Ok(auth) => auth.profile.email.clone(),
+        Err(_) => "Not logged in".to_string(),
+    };
     let mut logout = use_action(move |_: ()| {
         let mut auth_changed = auth_changed.clone();
         async move {
@@ -311,8 +323,7 @@ pub fn HeaderBar() -> Element {
                                 placeholder: "Select project".to_string(),
                                 disabled: selected_org_id.read().is_none(),
                                 SelectTrigger { SelectValue {} }
-                                SelectList {
-                                    align: Some(SelectAlign::End),
+                                SelectList { align: Some(SelectAlign::End),
                                     if project_options.is_empty() {
                                         SelectOptionItem {
                                             value: "".to_string(),
@@ -338,56 +349,48 @@ pub fn HeaderBar() -> Element {
                     }
                 }
                 if auth_state.get().is_ok() {
-                    // Profile icon (top-right) – only when logged in; wrapper is relative so dropdown anchors correctly
                     div { class: "relative",
-                        button {
-                            class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-pointer mt-0.5",
-                            onclick: move |evt: MouseEvent| {
-                                evt.stop_propagation();
-                                menu_open.set(!menu_open());
-                            },
-                            svg {
-                                width: "18",
-                                height: "18",
-                                view_box: "0 0 24 24",
-                                fill: "none",
-                                path {
-                                    d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
-                                    stroke: "currentColor",
-                                    stroke_width: "1.6",
-                                }
-                                path {
-                                    d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
-                                    stroke: "currentColor",
-                                    stroke_width: "1.6",
-                                    stroke_linecap: "round",
+                        DropdownMenu {
+                            open: profile_menu_open,
+                            default_open: false,
+                            on_open_change: move |v| profile_menu_open.set(Some(v)),
+                            disabled: use_signal(|| false),
+                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-pointer mt-0.5 focus:outline-2 focus:outline-app-border/50",
+                                svg {
+                                    width: "18",
+                                    height: "18",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    path {
+                                        d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
+                                        stroke: "currentColor",
+                                        stroke_width: "1.6",
+                                    }
+                                    path {
+                                        d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
+                                        stroke: "currentColor",
+                                        stroke_width: "1.6",
+                                        stroke_linecap: "round",
+                                    }
                                 }
                             }
-                        }
-
-                        if menu_open() {
-                            // Full-screen click-catcher so any click outside closes the menu.
-                            // This also prevents the card click handler from triggering.
-                            div {
-                                class: "fixed inset-0 z-40",
-                                onclick: move |evt: MouseEvent| {
-                                    evt.stop_propagation();
-                                    menu_open.set(false);
-                                },
-                            }
-                            div {
-                                class: "absolute right-0 mt-2 w-44 rounded-xl border border-app-border bg-white overflow-hidden z-50",
-                                onclick: move |evt: MouseEvent| evt.stop_propagation(),
-                                button { class: "w-full text-left px-4 py-3 text-sm text-slate-800 hover:bg-gray-50",
-                                    {user_name}
+                            DropdownMenuContent {
+                                id: use_signal(|| None::<String>),
+                                class: "min-w-44",
+                                div { class: "flex items-start flex-col gap-1 p-2 cursor-default",
+                                    span { class: "text-xs", "{user_name}" }
+                                    span { class: "text-1xs text-foreground/50", "{user_email}" }
                                 }
-                                button {
-                                    class: "w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50",
-                                    onclick: move |evt: MouseEvent| {
-                                        evt.stop_propagation();
-                                        menu_open.set(false);
+                                DropdownMenuSeparator {}
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "logout".to_string()),
+                                    index: use_signal(|| 1),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| {
+                                        profile_menu_open.set(Some(false));
                                         logout.call(());
                                     },
+                                    destructive: true,
                                     "Logout"
                                 }
                             }

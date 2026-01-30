@@ -127,6 +127,7 @@ pub fn ProxiesList() -> Element {
                         key: "{proxy.id()}",
                         proxy,
                         show_view_item: true,
+                        show_bandwidth: false,
                         on_delete: on_delete_handler,
                         on_edit: move |p| {
                             editing_proxy.set(Some(p));
@@ -161,6 +162,7 @@ pub fn ProxiesList() -> Element {
 pub fn TunnelCard(
     proxy: ProxyState,
     show_view_item: bool,
+    show_bandwidth: bool,
     on_delete: EventHandler<ProxyState>,
     on_edit: EventHandler<ProxyState>,
 ) -> Element {
@@ -188,15 +190,19 @@ pub fn TunnelCard(
     let proxy = proxy_signal();
     let enabled = proxy.enabled;
 
+    let wrapper_class = if show_bandwidth {
+        "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
+    } else {
+        "bg-white rounded-lg border border-app-border shadow-card"
+    };
+
     rsx! {
-        div {
-            // darker shadow + hover lift
-            class: "bg-white rounded-lg border border-app-border shadow-card",
+        div { class: "{wrapper_class}",
 
             div { class: "",
                 // header row: title + toggle
                 div { class: "px-4 py-2.5 flex items-center justify-between",
-                    h2 { class: "text-md font-medium text-foreground", {proxy.info.label()} }
+                    h2 { class: "text-md font-normal text-foreground", {proxy.info.label()} }
                     Switch {
                         checked: enabled,
                         on_checked_change: move |next| toggle_action.call(next),
@@ -253,22 +259,24 @@ pub fn TunnelCard(
                                 }
                             }
                             DropdownMenuContent { id: use_signal(|| None::<String>), class: "",
-                                {if show_view_item {
-                                    rsx! {
-                                        DropdownMenuItem::<String> {
-                                            value: use_signal(|| "view".to_string()),
-                                            index: use_signal(|| 0),
-                                            disabled: use_signal(|| false),
-                                            on_select: move |_| {
-                                                let id = proxy_signal().id().to_string();
-                                                nav.push(Route::TunnelBandwidth { id });
-                                            },
-                                            "View"
+                                {
+                                    if show_view_item {
+                                        rsx! {
+                                            DropdownMenuItem::<String> {
+                                                value: use_signal(|| "view".to_string()),
+                                                index: use_signal(|| 0),
+                                                disabled: use_signal(|| false),
+                                                on_select: move |_| {
+                                                    let id = proxy_signal().id().to_string();
+                                                    nav.push(Route::TunnelBandwidth { id });
+                                                },
+                                                "View"
+                                            }
                                         }
+                                    } else {
+                                        rsx! {}
                                     }
-                                } else {
-                                    rsx! { }
-                                }}
+                                }
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "edit".to_string()),
                                     index: use_signal(|| 0),

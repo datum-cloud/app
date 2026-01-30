@@ -122,13 +122,6 @@
   --color-icon-select: var(--app-dark-utility-3);
 }
 
-/* Sidebar slide-off animation (TunnelBandwidth full-width view) */
-.sidebar-wrapper {
-  transition-property: transform;
-  transition-timing-function: ease-out;
-  transition-duration: 300ms;
-}
-
 @layer base {
   body {
     @apply font-sans;

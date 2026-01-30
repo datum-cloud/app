@@ -2,7 +2,12 @@ use chrono::{DateTime, Local};
 use dioxus::prelude::*;
 use lib::ProxyState;
 
-use crate::{state::AppState, util::humanize_bytes, Route};
+use crate::{
+    components::{Icon, IconSource},
+    state::AppState,
+    util::humanize_bytes,
+    Route,
+};
 use super::{OpenEditTunnelDialog, TunnelCard};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -168,20 +173,26 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let proxy = proxy_loaded().expect("proxy loaded when not loading and no error");
 
     rsx! {
-        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto px-1 space-y-5",
+        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
             // Back link
             button {
-                class: "text-xs text-foreground flex items-center gap-1.5 underline",
+                class: "text-xs text-foreground flex items-center gap-1 mt-2 mb-7",
                 onclick: move |_| {
                     let _ = nav.push(Route::ProxiesList {});
                 },
-                "← Back to Tunnels List"
+                Icon {
+                    source: IconSource::Named("chevron-down".into()),
+                    class: "rotate-90 text-icon-select",
+                    size: 10,
+                }
+                span { class: "underline", "Back to Tunnels List" }
             }
 
             TunnelCard {
                 key: "{proxy.id()}",
                 proxy: proxy.clone(),
                 show_view_item: false,
+                show_bandwidth: true,
                 on_delete: move |proxy_to_delete: ProxyState| {
                     let nav = nav.clone();
                     let fut = on_delete.call(proxy_to_delete);
@@ -197,24 +208,26 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
 
             // Panel
-            div { class: "bg-white rounded-2xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] p-8 sm:p-10",
-                div { class: "grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-6 items-start",
-                    div { class: "space-y-2 min-w-0",
-                        div { class: "text-sm font-medium text-slate-700", "Send" }
-                        div { class: "text-2xl font-semibold text-slate-900 whitespace-nowrap tabular-nums leading-none",
-                            "{humanize_bytes(latest_send())}/s"
+            div { class: "bg-white rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
+                div { class: "border border-app-border rounded-lg p-6",
+                    div { class: "flex items-center justify-start gap-5 mb-4",
+                        div { class: "space-y-1.5 min-w-22",
+                            div { class: "text-xs text-icon-select font-normal", "Send" }
+                            div { class: "text-md font-medium text-foreground whitespace-nowrap leading-none ",
+                                "{humanize_bytes(latest_send())}/s"
+                            }
+                        }
+                        div { class: "space-y-1.5 min-w-22",
+                            div { class: "text-xs text-icon-select font-normal", "Receive" }
+                            div { class: "text-md font-medium text-foreground whitespace-nowrap leading-none ",
+                                "{humanize_bytes(latest_recv())}/s"
+                            }
                         }
                     }
-                    div { class: "space-y-2 min-w-0",
-                        div { class: "text-sm font-medium text-slate-700", "Receive" }
-                        div { class: "text-2xl font-semibold text-slate-900 whitespace-nowrap tabular-nums leading-none",
-                            "{humanize_bytes(latest_recv())}/s"
-                        }
-                    }
-                }
 
-                div { class: "mt-8",
-                    BandwidthChart { points: points() }
+                    div { class: "",
+                        BandwidthChart { points: points() }
+                    }
                 }
             }
         }
@@ -226,7 +239,7 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     // Render with a fixed viewBox but scale to the container width to avoid overflow.
     // Give the left axis more room so labels don't get clipped.
     let width = 860.0;
-    let height = 260.0;
+    let height = 400.0;
     let padding_x = 52.0;
     let padding_y = 22.0;
     let w = width - padding_x * 2.0;
@@ -323,11 +336,10 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     let (recv_path, recv_area) = mk_paths(|p| p.recv_per_s);
 
     // Higher-contrast palette (still muted/brand-friendly).
-    // Send: deep slate. Receive: saturated teal.
-    let send_color = "#334155"; // slate-700
-    let recv_color = "#0f766e"; // teal-700
+    let send_color = "#BF9595";
+    let recv_color = "#4D6356";
 
-    let y_ticks = 4;
+    let y_ticks = 2;
     let mut y_labels = Vec::new();
     for i in 0..=y_ticks {
         let frac = i as f64 / y_ticks as f64;
@@ -337,10 +349,10 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     }
 
     rsx! {
-        div { class: "w-full overflow-hidden",
+        div { class: "w-full overflow-hidden h-[45vh] min-h-[200px] sm:h-[400px]",
             svg {
                 width: "100%",
-                height: "{height}",
+                height: "100%",
                 view_box: "0 0 {width} {height}",
                 defs {
                     linearGradient {
@@ -385,8 +397,8 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                     width: "{width}",
                     height: "{height}",
                     rx: "14",
-                    fill: "#fbfbf9",
-                    stroke: "#eceee9",
+                    fill: "transparent",
+                    stroke: "none",
                 }
 
                 // grid + y labels
@@ -397,12 +409,14 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                         x2: "{width - padding_x}",
                         y2: "{y}",
                         stroke: "#eceee9",
+                        stroke_width: "1.5",
+                        stroke_dasharray: "10 10",
                     }
                     text {
                         x: "{padding_x - 12.0}",
                         y: "{y + 4.0}",
                         text_anchor: "end",
-                        font_size: "11",
+                        font_size: "17",
                         fill: "#94a3b8",
                         "{label}"
                     }
@@ -438,29 +452,6 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                         stroke_linecap: "round",
                         stroke_linejoin: "round",
                     }
-                }
-            }
-            // legend
-            div { class: "mt-4 flex items-center gap-3 text-xs",
-                // Send pill
-                div {
-                    class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
-                    style: "border-color: {send_color}33; background-color: {send_color}12; color: {send_color};",
-                    span {
-                        class: "inline-block w-3 h-0.5 rounded-full",
-                        style: "background-color: {send_color};",
-                    }
-                    span { class: "font-medium leading-none text-center", "Send" }
-                }
-                // Receive pill
-                div {
-                    class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
-                    style: "border-color: {recv_color}33; background-color: {recv_color}12; color: {recv_color};",
-                    span {
-                        class: "inline-block w-3 h-0.5 rounded-full",
-                        style: "background-color: {recv_color};",
-                    }
-                    span { class: "font-medium leading-none text-center", "Receive" }
                 }
             }
         }
