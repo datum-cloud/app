@@ -75,6 +75,15 @@ pub fn Sidebar() -> Element {
                 }
             }
 
+            Button {
+                text: "Select project",
+                kind: ButtonKind::Secondary,
+                class: "w-full mt-4",
+                onclick: move |_| {
+                    let _ = nav.push(Route::SelectProject {});
+                },
+            }
+
             // Bottom nav (visual-only for now)
             div { class: "w-full mt-auto space-y-4 pl-2",
                 div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
@@ -229,15 +238,15 @@ pub fn HeaderBar() -> Element {
                 class: "flex items-center gap-2 px-4 cursor-default",
                 onmousedown: move |evt: MouseEvent| evt.stop_propagation(),
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#ff5f57] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#ff5f57] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().set_visible(false),
                 }
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#febc2e] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#febc2e] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().set_minimized(true),
                 }
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#28c840] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#28c840] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().toggle_maximized(),
                 }
             }

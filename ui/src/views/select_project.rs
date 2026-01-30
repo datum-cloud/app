@@ -23,7 +23,6 @@ pub fn SelectProject() -> Element {
     let mut load_error = use_signal(|| None::<String>);
     let mut selected_org = use_signal(|| None::<String>);
     let mut selected_project = use_signal(|| None::<String>);
-    let mut auto_saved = use_signal(|| false);
     let saving = use_signal(|| false);
     let save_error = use_signal(|| None::<String>);
 
@@ -136,42 +135,18 @@ pub fn SelectProject() -> Element {
         })
     };
 
-    let save_and_nav_for_auto = save_and_nav.clone();
-    use_effect(move || {
-        if *auto_saved.read() {
-            return;
-        }
-        let selected_org_id = selected_org.read().clone();
-        let selected_project_id = selected_project.read().clone();
-        let list = orgs.read().clone();
-        if selected_org_id.is_none() {
-            return;
-        }
-        let org_id = selected_org_id.clone().unwrap_or_default();
-        let org = list.iter().find(|org| org.org.resource_id == org_id);
-        if let Some(org) = org {
-            if org.projects.len() == 1 && selected_project_id.is_some() {
-                auto_saved.set(true);
-                if let Some(project_id) = selected_project_id.clone() {
-                    let save_and_nav = save_and_nav_for_auto.clone();
-                    save_and_nav(selected_org_id.clone().unwrap_or_default(), project_id);
-                }
-            }
-        }
-    });
-
     let content = if let Some(err) = load_error.read().clone() {
         rsx! {
-            div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",
+            div { class: "rounded-lg border border-red-200 bg-red-50 p-4 text-red-800",
                 div { class: "text-sm font-semibold", "Failed to load orgs/projects" }
                 div { class: "text-sm mt-1 break-words", "{err}" }
             }
         }
     } else if orgs.read().is_empty() {
         rsx! {
-            div { class: "rounded-xl border border-[#e3e7ee] bg-white/70 p-6 text-center",
+            div { class: "rounded-lg border border-card-border bg-white p-6 text-center",
                 div { class: "text-base font-semibold text-slate-900", "Loading organizations…" }
-                div { class: "text-sm text-slate-600 mt-2", "Fetching your orgs and projects." }
+                div { class: "text-sm text-foreground mt-2", "Fetching your orgs and projects." }
             }
         }
     } else {
@@ -203,7 +178,7 @@ pub fn SelectProject() -> Element {
             "Select a project".to_string()
         };
         rsx! {
-            div { class: "space-y-8",
+            div { class: "space-y-6",
                 div { class: "flex flex-col gap-2",
                     label { class: "text-xs font-semibold text-form-label/80", "Organization" }
                     Select {
@@ -245,7 +220,6 @@ pub fn SelectProject() -> Element {
                         }
                     }
                 }
-                div { class: "h-6" }
                 div { class: "flex flex-col gap-2",
                     label { class: "text-xs font-semibold text-form-label/80", "Project" }
                     Select {
@@ -284,16 +258,16 @@ pub fn SelectProject() -> Element {
     };
 
     rsx! {
-        div { class: "w-full grid h-screen bg-[#f4f4f1] place-items-center",
-            div { class: "w-full max-w-xl mx-auto p-8 bg-white rounded-2xl border border-[#e3e7ee] shadow-[0_14px_34px_rgba(17,24,39,0.12)]",
+        div { class: "w-full grid h-screen bg-background place-items-center",
+            div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card -mt-10",
                 div { class: "mb-6",
-                    h1 { class: "text-2xl font-semibold text-slate-900", "Select your org & project" }
-                    p { class: "text-sm text-slate-600 mt-2",
+                    h1 { class: "text-2xl font-semibold text-foreground", "Select your org & project" }
+                    p { class: "text-sm text-foreground mt-2",
                         "Choose where to manage tunnels. You can change this later from the header."
                     }
                 }
                 {content}
-                div { class: "mt-8 flex justify-end",
+                div { class: "mt-6 flex justify-start",
                     Button {
                         text: "Continue".to_string(),
                         class: if saving() { Some("opacity-60 pointer-events-none".to_string()) } else if selected_org.read().is_some() && selected_project.read().is_some() { None } else { Some("opacity-50 cursor-not-allowed".to_string()) },
