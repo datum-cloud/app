@@ -75,6 +75,15 @@ pub fn Sidebar() -> Element {
                 }
             }
 
+            Button {
+                text: "Select project",
+                kind: ButtonKind::Secondary,
+                class: "w-full mt-4",
+                onclick: move |_| {
+                    let _ = nav.push(Route::SelectProject {});
+                },
+            }
+
             // Bottom nav (visual-only for now)
             div { class: "w-full mt-auto space-y-4 pl-2",
                 div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
