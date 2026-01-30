@@ -72,11 +72,20 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
-      - name: Bundle (macOS)
+      - name: Configure macOS Signing Identity
         if: runner.os == 'macOS'
         working-directory: ./ui
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          # Update Dioxus.toml with the actual signing identity
+          sed -i '' "s/signing_identity = \"-\"/signing_identity = \"$APPLE_SIGNING_IDENTITY\"/" Dioxus.toml
+          echo "Updated signing identity in Dioxus.toml"
+          grep signing_identity Dioxus.toml
+
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ./ui
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Notarize macOS App
