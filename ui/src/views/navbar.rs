@@ -229,15 +229,15 @@ pub fn HeaderBar() -> Element {
                 class: "flex items-center gap-2 px-4 cursor-default",
                 onmousedown: move |evt: MouseEvent| evt.stop_propagation(),
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#ff5f57] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#ff5f57] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().set_visible(false),
                 }
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#febc2e] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#febc2e] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().set_minimized(true),
                 }
                 button {
-                    class: "w-3.5 h-3.5 rounded-full bg-[#28c840] border border-black/10 hover:brightness-95 cursor-pointer",
+                    class: "w-3.5 h-3.5 rounded-full bg-[#28c840] border border-black/10 hover:brightness-95 cursor-default",
                     onclick: move |_| window().toggle_maximized(),
                 }
             }
