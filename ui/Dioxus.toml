@@ -1,4 +1,7 @@
 [application]
+# App name (used for the binary and display name)
+name = "Datum Desktop"
+
 # Web `build` & `serve` dist path
 out_dir = "dist"
 
@@ -8,7 +11,7 @@ asset_dir = "assets"
 [web.app]
 
 # HTML title tag content
-title = "Datum Connect"
+title = "Datum Desktop"
 
 # include `assets` in web platform
 [web.resource]
@@ -26,9 +29,9 @@ script = []
 script = []
 
 [bundle]
-identifier = "net.datum"
+identifier = "net.datum.desktop"
 publisher = "Datum"
-icon = ["assets/images/logo-datum-dark.png"]
+icon = ["assets/bundle/linux/128.png"]
 resources = ["assets/*"]
 short_description = "Create Datum tunnels"
 long_description = """
@@ -36,4 +39,8 @@ Datum Datum Datum
 """
 
 [bundle.macos]
-bundle_name = "Datum Connect"
+bundle_name = "Datum Desktop"
+icon = "assets/bundle/macos/Assets.xcassets/AppIcon.appiconset"
+
+[bundle.windows]
+icon = "assets/bundle/windows/Datum Icon.ico"
