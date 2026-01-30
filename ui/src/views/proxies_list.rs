@@ -170,15 +170,22 @@ pub fn TunnelCard(
     let mut proxy_signal = use_signal(move || initial);
     let mut menu_open = use_signal(|| None::<bool>);
     let nav = use_navigator();
-    // Sync prop into local state when the list refreshes (e.g. after edit).
-    use_effect(move || proxy_signal.set(proxy.clone()));
+    // Sync prop into local state when the list refreshes (e.g. after edit). Clone so proxy stays available for display.
+    let proxy_for_effect = proxy.clone();
+    use_effect(move || proxy_signal.set(proxy_for_effect.clone()));
 
     let mut toggle_action = use_action(move |state: bool| async move {
-        let mut proxy = proxy_signal().clone();
+        let id = proxy_signal().id().to_string();
+        let app_state = consume_context::<AppState>();
+        let node = app_state.listen_node();
+        // Use latest proxy from node so we don't overwrite name/other fields with stale proxy_signal.
+        let mut proxy = node
+            .proxies()
+            .into_iter()
+            .find(|p| p.id() == id)
+            .unwrap_or_else(|| proxy_signal().clone());
         proxy.enabled = state;
-        let state = consume_context::<AppState>();
-        if let Err(err) = state.listen_node().set_proxy(proxy.clone()).await {
-            // TODO: Move into UI
+        if let Err(err) = node.set_proxy(proxy.clone()).await {
             warn!("Update proxy state failed: {err:#}");
             Err(err)
         } else {
@@ -187,8 +194,7 @@ pub fn TunnelCard(
         }
     });
 
-    let proxy = proxy_signal();
-    let enabled = proxy.enabled;
+    // Display from prop so the card updates immediately when the list refreshes after edit.
 
     let wrapper_class = if show_bandwidth {
         "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
@@ -204,7 +210,7 @@ pub fn TunnelCard(
                 div { class: "px-4 py-2.5 flex items-center justify-between",
                     h2 { class: "text-md font-normal text-foreground", {proxy.info.label()} }
                     Switch {
-                        checked: enabled,
+                        checked: proxy.enabled,
                         on_checked_change: move |next| toggle_action.call(next),
                         SwitchThumb {}
                     }

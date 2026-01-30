@@ -32,29 +32,37 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let mut latest_send = use_signal(|| 0u64);
     let mut latest_recv = use_signal(|| 0u64);
 
-    // Load proxy metadata (for display)
+    // Load proxy metadata and keep it in sync when state updates (e.g. after edit/save).
     use_future({
         let id = id.clone();
         move || {
-            let state = consume_context::<AppState>();
             let id = id.clone();
             async move {
-                loading.set(true);
-                load_error.set(None);
+                let state = consume_context::<AppState>();
+                let node = state.listen_node();
+                let updated = node.state_updated();
+                tokio::pin!(updated);
 
-                let proxies = state.listen_node().proxies();
-                loading.set(false);
-
-                let Some(proxy) = proxies.iter().find(|p| p.id() == &id) else {
-                    load_error.set(Some("Tunnel not found".to_string()));
+                loop {
+                    if proxy_loaded().is_none() {
+                        loading.set(true);
+                    }
+                    load_error.set(None);
+                    let proxies = node.proxies();
                     loading.set(false);
-                    return;
-                };
-
-                title.set(proxy.info.label().to_owned());
-                codename.set(proxy.id().to_owned());
-                proxy_loaded.set(Some(proxy.clone()));
-                loading.set(false);
+                    match proxies.iter().find(|p| p.id() == &id) {
+                        Some(proxy) => {
+                            proxy_loaded.set(Some(proxy.clone()));
+                            title.set(proxy.info.label().to_owned());
+                            codename.set(proxy.id().to_owned());
+                        }
+                        None => {
+                            load_error.set(Some("Tunnel not found".to_string()));
+                        }
+                    }
+                    (&mut updated).await;
+                    updated.set(node.state().updated());
+                }
             }
         }
     });
