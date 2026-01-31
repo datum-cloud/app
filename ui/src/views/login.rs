@@ -26,7 +26,11 @@ pub fn Login() -> Element {
         let datum = state.datum();
         match datum.login_state() {
             LoginState::Missing => datum.auth().login().await?,
-            LoginState::NeedsRefresh => datum.auth().refresh().await?,
+            LoginState::NeedsRefresh => {
+                if datum.auth().refresh().await.is_err() {
+                    datum.auth().login().await?;
+                }
+            }
             LoginState::Valid => {}
         }
         datum.refresh_orgs_projects_and_validate_context().await?;
