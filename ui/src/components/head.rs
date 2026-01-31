@@ -7,6 +7,9 @@ const FAVICON: Asset = asset!("/assets/favicon.ico");
 const FONT_REGULAR: Asset = asset!("/assets/fonts/AllianceNo1-Regular.ttf");
 const FONT_MEDIUM: Asset = asset!("/assets/fonts/AllianceNo1-Medium.ttf");
 const FONT_SEMIBOLD: Asset = asset!("/assets/fonts/AllianceNo1-SemiBold.ttf");
+const FAVICON_LIGHT: Asset = asset!("/assets/icons/favicon-light-32x32.png");
+const FAVICON_DARK: Asset = asset!("/assets/icons/favicon-dark-32x32.png");
+// The asset macro also minifies some assets like CSS and JS to make bundled smaller
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
