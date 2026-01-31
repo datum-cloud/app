@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 // We can import assets in dioxus with the `asset!` macro. This macro takes a path to an asset relative to the crate root.
 // The macro returns an `Asset` type that will display as the path to the asset in the browser or a local path in desktop bundles.
-const FAVICON: Asset = asset!("/assets/favicon.ico");
+
 // Font files must be referenced via asset!() so they get hashed URLs and are served; CSS url() relative to fonts.css 404s.
 const FONT_REGULAR: Asset = asset!("/assets/fonts/AllianceNo1-Regular.ttf");
 const FONT_MEDIUM: Asset = asset!("/assets/fonts/AllianceNo1-Medium.ttf");
@@ -21,7 +21,14 @@ pub fn Head() -> Element {
 @font-face {{ font-family: "Alliance No1"; src: url("{FONT_SEMIBOLD}") format("truetype"); font-weight: 600; font-style: normal; font-display: swap; }}"#
     );
     rsx! {
-        document::Link { rel: "icon", href: FAVICON }
+        // Light mode favicon (default)
+        document::Link { rel: "icon", href: FAVICON_LIGHT }
+        // Dark mode favicon (prefers-color-scheme: dark)
+        document::Link {
+            rel: "icon",
+            href: FAVICON_DARK,
+            media: "(prefers-color-scheme: dark)"
+        }
         document::Style { "{font_face_css}" }
         document::Stylesheet { rel: "stylesheet", href: TAILWIND_CSS }
         document::Stylesheet { rel: "stylesheet", href: MAIN_CSS }
