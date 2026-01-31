@@ -1,7 +1,14 @@
 use chrono::{DateTime, Local};
 use dioxus::prelude::*;
+use lib::ProxyState;
 
-use crate::{state::AppState, util::humanize_bytes, Route};
+use crate::{
+    components::{Icon, IconSource},
+    state::AppState,
+    util::humanize_bytes,
+    Route,
+};
+use super::{OpenEditTunnelDialog, TunnelCard};
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -13,10 +20,10 @@ struct RatePoint {
 #[component]
 pub fn TunnelBandwidth(id: String) -> Element {
     let nav = use_navigator();
-    let id_for_back = id.clone();
 
     let mut loading = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
+    let mut proxy_loaded = use_signal(|| None::<ProxyState>);
 
     let mut title = use_signal(|| "".to_string());
     let mut codename = use_signal(|| "".to_string());
@@ -25,28 +32,37 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let mut latest_send = use_signal(|| 0u64);
     let mut latest_recv = use_signal(|| 0u64);
 
-    // Load proxy metadata (for display)
+    // Load proxy metadata and keep it in sync when state updates (e.g. after edit/save).
     use_future({
         let id = id.clone();
         move || {
-            let state = consume_context::<AppState>();
             let id = id.clone();
             async move {
-                loading.set(true);
-                load_error.set(None);
+                let state = consume_context::<AppState>();
+                let node = state.listen_node();
+                let updated = node.state_updated();
+                tokio::pin!(updated);
 
-                let proxies = state.listen_node().proxies();
-                loading.set(false);
-
-                let Some(proxy) = proxies.iter().find(|p| p.id() == &id) else {
-                    load_error.set(Some("Tunnel not found".to_string()));
+                loop {
+                    if proxy_loaded().is_none() {
+                        loading.set(true);
+                    }
+                    load_error.set(None);
+                    let proxies = node.proxies();
                     loading.set(false);
-                    return;
-                };
-
-                title.set(proxy.info.label().to_owned());
-                codename.set(proxy.id().to_owned());
-                loading.set(false);
+                    match proxies.iter().find(|p| p.id() == &id) {
+                        Some(proxy) => {
+                            proxy_loaded.set(Some(proxy.clone()));
+                            title.set(proxy.info.label().to_owned());
+                            codename.set(proxy.id().to_owned());
+                        }
+                        None => {
+                            load_error.set(Some("Tunnel not found".to_string()));
+                        }
+                    }
+                    (&mut updated).await;
+                    updated.set(node.state().updated());
+                }
             }
         }
     });
@@ -149,45 +165,77 @@ pub fn TunnelBandwidth(id: String) -> Element {
         };
     }
 
+    let mut on_delete = use_action(move |proxy: ProxyState| async move {
+        let state = consume_context::<AppState>();
+        debug!("on delete called: {}", proxy.id());
+        state
+            .listen_node()
+            .remove_proxy(proxy.id())
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("delete tunnel failed: {err:#}");
+            })?;
+        n0_error::Ok(())
+    });
+    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
+    let proxy = proxy_loaded().expect("proxy loaded when not loading and no error");
+
     rsx! {
-        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto px-1",
-            // Header
-            div { class: "flex items-center gap-4 mb-6",
-                button {
-                    class: "w-10 h-10 rounded-xl border border-[#dfe3ea] bg-white flex items-center justify-center text-slate-600 hover:text-slate-800 hover:bg-gray-50 shadow-sm cursor-pointer",
-                    onclick: move |_| {
-                        let _ = nav.push(Route::EditProxy { id: id_for_back.clone() });
-                    },
-                    "←"
+        div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
+            // Back link
+            button {
+                class: "text-xs text-foreground flex items-center gap-1 mt-2 mb-7",
+                onclick: move |_| {
+                    let _ = nav.push(Route::ProxiesList {});
+                },
+                Icon {
+                    source: IconSource::Named("chevron-down".into()),
+                    class: "rotate-90 text-icon-select",
+                    size: 10,
                 }
-                div { class: "flex flex-col",
-                    div { class: "text-2xl font-semibold text-slate-900", "Bandwidth" }
-                    div { class: "text-sm text-slate-600", "{title()} · {codename()}" }
-                }
+                span { class: "underline", "Back to Tunnels List" }
+            }
+
+            TunnelCard {
+                key: "{proxy.id()}",
+                proxy: proxy.clone(),
+                show_view_item: false,
+                show_bandwidth: true,
+                on_delete: move |proxy_to_delete: ProxyState| {
+                    let nav = nav.clone();
+                    let fut = on_delete.call(proxy_to_delete);
+                    spawn(async move {
+                        let _ = fut.await;
+                        let _ = nav.push(Route::ProxiesList {});
+                    });
+                },
+                on_edit: move |proxy_to_edit: ProxyState| {
+                    open_edit_dialog.editing_proxy.set(Some(proxy_to_edit.clone()));
+                    open_edit_dialog.dialog_open.set(true);
+                },
             }
 
             // Panel
-            div { class: "bg-white rounded-2xl border border-[#e3e7ee] shadow-[0_10px_28px_rgba(17,24,39,0.10)] p-8 sm:p-10",
-                div { class: "grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] gap-6 items-start",
-                    div { class: "space-y-2 min-w-0",
-                        div { class: "text-sm font-medium text-slate-700", "Send" }
-                        div { class: "text-2xl font-semibold text-slate-900 whitespace-nowrap tabular-nums leading-none",
-                            "{humanize_bytes(latest_send())}/s"
+            div { class: "bg-white rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
+                div { class: "border border-app-border rounded-lg p-6",
+                    div { class: "flex items-center justify-start gap-5 mb-4",
+                        div { class: "space-y-1.5 min-w-22",
+                            div { class: "text-xs text-icon-select font-normal", "Send" }
+                            div { class: "text-md font-medium text-foreground whitespace-nowrap leading-none ",
+                                "{humanize_bytes(latest_send())}/s"
+                            }
+                        }
+                        div { class: "space-y-1.5 min-w-22",
+                            div { class: "text-xs text-icon-select font-normal", "Receive" }
+                            div { class: "text-md font-medium text-foreground whitespace-nowrap leading-none ",
+                                "{humanize_bytes(latest_recv())}/s"
+                            }
                         }
                     }
-                    div { class: "space-y-2 min-w-0",
-                        div { class: "text-sm font-medium text-slate-700", "Receive" }
-                        div { class: "text-2xl font-semibold text-slate-900 whitespace-nowrap tabular-nums leading-none",
-                            "{humanize_bytes(latest_recv())}/s"
-                        }
-                    }
-                    div { class: "text-xs text-slate-500 min-w-0",
-                        "Note: this currently shows device-level iroh bandwidth (all tunnels + n0des), not strictly per-tunnel."
-                    }
-                }
 
-                div { class: "mt-8",
-                    BandwidthChart { points: points() }
+                    div { class: "",
+                        BandwidthChart { points: points() }
+                    }
                 }
             }
         }
@@ -199,7 +247,7 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     // Render with a fixed viewBox but scale to the container width to avoid overflow.
     // Give the left axis more room so labels don't get clipped.
     let width = 860.0;
-    let height = 260.0;
+    let height = 400.0;
     let padding_x = 52.0;
     let padding_y = 22.0;
     let w = width - padding_x * 2.0;
@@ -296,11 +344,10 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     let (recv_path, recv_area) = mk_paths(|p| p.recv_per_s);
 
     // Higher-contrast palette (still muted/brand-friendly).
-    // Send: deep slate. Receive: saturated teal.
-    let send_color = "#334155"; // slate-700
-    let recv_color = "#0f766e"; // teal-700
+    let send_color = "#BF9595";
+    let recv_color = "#4D6356";
 
-    let y_ticks = 4;
+    let y_ticks = 2;
     let mut y_labels = Vec::new();
     for i in 0..=y_ticks {
         let frac = i as f64 / y_ticks as f64;
@@ -310,32 +357,74 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     }
 
     rsx! {
-        div { class: "w-full overflow-hidden",
+        div { class: "w-full overflow-hidden h-[45vh] min-h-[200px] sm:h-[400px]",
             svg {
                 width: "100%",
-                height: "{height}",
+                height: "100%",
                 view_box: "0 0 {width} {height}",
                 defs {
-                    linearGradient { id: "sendFill", x1: "0", y1: "0", x2: "0", y2: "1",
-                        stop { offset: "0%", stop_color: "{send_color}", stop_opacity: "0.22" }
-                        stop { offset: "100%", stop_color: "{send_color}", stop_opacity: "0.0" }
+                    linearGradient {
+                        id: "sendFill",
+                        x1: "0",
+                        y1: "0",
+                        x2: "0",
+                        y2: "1",
+                        stop {
+                            offset: "0%",
+                            stop_color: "{send_color}",
+                            stop_opacity: "0.22",
+                        }
+                        stop {
+                            offset: "100%",
+                            stop_color: "{send_color}",
+                            stop_opacity: "0.0",
+                        }
                     }
-                    linearGradient { id: "recvFill", x1: "0", y1: "0", x2: "0", y2: "1",
-                        stop { offset: "0%", stop_color: "{recv_color}", stop_opacity: "0.24" }
-                        stop { offset: "100%", stop_color: "{recv_color}", stop_opacity: "0.0" }
+                    linearGradient {
+                        id: "recvFill",
+                        x1: "0",
+                        y1: "0",
+                        x2: "0",
+                        y2: "1",
+                        stop {
+                            offset: "0%",
+                            stop_color: "{recv_color}",
+                            stop_opacity: "0.24",
+                        }
+                        stop {
+                            offset: "100%",
+                            stop_color: "{recv_color}",
+                            stop_opacity: "0.0",
+                        }
                     }
                 }
                 // chart bg
-                rect { x: "0", y: "0", width: "{width}", height: "{height}", rx: "14", fill: "#fbfbf9", stroke: "#eceee9" }
+                rect {
+                    x: "0",
+                    y: "0",
+                    width: "{width}",
+                    height: "{height}",
+                    rx: "14",
+                    fill: "transparent",
+                    stroke: "none",
+                }
 
                 // grid + y labels
-                for (label, y) in y_labels {
-                    line { x1: "{padding_x}", y1: "{y}", x2: "{width - padding_x}", y2: "{y}", stroke: "#eceee9" }
+                for (label , y) in y_labels {
+                    line {
+                        x1: "{padding_x}",
+                        y1: "{y}",
+                        x2: "{width - padding_x}",
+                        y2: "{y}",
+                        stroke: "#eceee9",
+                        stroke_width: "1.5",
+                        stroke_dasharray: "10 10",
+                    }
                     text {
                         x: "{padding_x - 12.0}",
                         y: "{y + 4.0}",
                         text_anchor: "end",
-                        font_size: "11",
+                        font_size: "17",
                         fill: "#94a3b8",
                         "{label}"
                     }
@@ -343,8 +432,16 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
 
                 g { transform: "translate({padding_x}, {padding_y})",
                     // area fills (draw first, then lines on top)
-                    path { d: "{recv_area}", fill: "url(#recvFill)", stroke: "none" }
-                    path { d: "{send_area}", fill: "url(#sendFill)", stroke: "none" }
+                    path {
+                        d: "{recv_area}",
+                        fill: "url(#recvFill)",
+                        stroke: "none",
+                    }
+                    path {
+                        d: "{send_area}",
+                        fill: "url(#sendFill)",
+                        stroke: "none",
+                    }
                     // receive (green)
                     path {
                         d: "{recv_path}",
@@ -363,23 +460,6 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                         stroke_linecap: "round",
                         stroke_linejoin: "round",
                     }
-                }
-            }
-            // legend
-            div { class: "mt-4 flex items-center gap-3 text-xs",
-                // Send pill
-                div {
-                    class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
-                    style: "border-color: {send_color}33; background-color: {send_color}12; color: {send_color};",
-                    span { class: "inline-block w-3 h-0.5 rounded-full", style: "background-color: {send_color};" }
-                    span { class: "font-medium leading-none text-center", "Send" }
-                }
-                // Receive pill
-                div {
-                    class: "inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 min-w-[96px] select-none",
-                    style: "border-color: {recv_color}33; background-color: {recv_color}12; color: {recv_color};",
-                    span { class: "inline-block w-3 h-0.5 rounded-full", style: "background-color: {recv_color};" }
-                    span { class: "font-medium leading-none text-center", "Receive" }
                 }
             }
         }

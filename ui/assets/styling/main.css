@@ -1,56 +1,13 @@
 html,
 body {
-    height: 100%;
-    overflow: hidden;
-    /* Desktop uses a transparent window so we can render rounded corners ourselves. */
-    background: transparent;
+  height: 100%;
+  overflow: hidden;
+  /* Desktop uses a transparent window so we can render rounded corners ourselves. */
+  background: transparent;
 }
 
-body {
-    /* Figma-like app chrome */
-    color: #111827;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    margin: 0;
-}
-
-/* Dioxus uses a root container in some platforms; keep it from creating page scroll. */
+/* Dioxus uses a root container in some platforms; keep it from creating page scroll or showing a background. */
 #main,
 #root {
-    height: 100%;
-}
-
-#hero {
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-}
-
-#links {
-    width: 400px;
-    text-align: left;
-    font-size: x-large;
-    color: white;
-    display: flex;
-    flex-direction: column;
-}
-
-#links a {
-    color: white;
-    text-decoration: none;
-    margin-top: 20px;
-    margin: 10px 0px;
-    border: white 1px solid;
-    border-radius: 5px;
-    padding: 10px;
-}
-
-#links a:hover {
-    background-color: #1f1f1f;
-    cursor: pointer;
-}
-
-#header {
-    max-width: 1200px;
+  height: 100%;
 }
