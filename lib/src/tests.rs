@@ -7,12 +7,12 @@ use iroh::{Endpoint, discovery::static_provider::StaticProvider};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
-
-use crate::{
-    Advertisment, GatewayConfig, GatewayMode, ListenNode, ProxyState, Repo, TcpProxyData,
-    build_n0des_client, gateway,
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
 };
+
+use crate::{Advertisment, ListenNode, ProxyState, Repo, TcpProxyData, gateway};
 
 #[derive(Default)]
 struct TestDiscovery(StaticProvider);
@@ -55,18 +55,14 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
         let addr = listener.local_addr()?;
         let endpoint = Endpoint::bind().await?;
         discovery.add(&endpoint);
-        let n0des = build_n0des_client(&endpoint, api_secret).await?;
-        let config = GatewayConfig {
-            gateway_mode: GatewayMode::Reverse,
-            ..Default::default()
-        };
-        let task = tokio::task::spawn(gateway::serve(endpoint, Some(n0des), listener, config));
+        let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
     };
 
     let domain = format!("{codename}.localhost");
     let client = reqwest::Client::builder()
         .resolve_to_addrs(&domain, &[(Ipv4Addr::LOCALHOST, 0).into()])
+        .http2_prior_knowledge()
         .build()
         .unwrap();
     let res = client
@@ -74,6 +70,9 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
             "http://{codename}.localhost:{}/hello",
             gateway_addr.port()
         ))
+        .header("x-datum-target-host", origin_addr.ip().to_string())
+        .header("x-datum-target-port", origin_addr.port().to_string())
+        .header("x-iroh-endpoint-id", upstream.endpoint_id().to_string())
         .send()
         .await
         .anyerr()?;
@@ -113,11 +112,7 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
         let addr = listener.local_addr()?;
         let endpoint = Endpoint::bind().await?;
         discovery.add(&endpoint);
-        let config = GatewayConfig {
-            gateway_mode: GatewayMode::Forward,
-            ..Default::default()
-        };
-        let task = tokio::task::spawn(gateway::serve(endpoint, None, listener, config));
+        let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
     };
 
@@ -141,7 +136,10 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
             break;
         }
     }
-    assert!(response.contains("200"), "unexpected CONNECT response: {response}");
+    assert!(
+        response.contains("200"),
+        "unexpected CONNECT response: {response}"
+    );
 
     stream
         .write_all(b"GET /hello HTTP/1.1\r\nHost: origin\r\n\r\n")
@@ -186,11 +184,7 @@ async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
         let addr = listener.local_addr()?;
         let endpoint = Endpoint::bind().await?;
         discovery.add(&endpoint);
-        let config = GatewayConfig {
-            gateway_mode: GatewayMode::Forward,
-            ..Default::default()
-        };
-        let task = tokio::task::spawn(gateway::serve(endpoint, None, listener, config));
+        let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
     };
 
@@ -266,11 +260,7 @@ async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
         let addr = listener.local_addr()?;
         let endpoint = Endpoint::bind().await?;
         discovery.add(&endpoint);
-        let config = GatewayConfig {
-            gateway_mode: GatewayMode::Forward,
-            ..Default::default()
-        };
-        let task = tokio::task::spawn(gateway::serve(endpoint, None, listener, config));
+        let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
     };
 
@@ -324,7 +314,10 @@ mod origin_server {
     use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
     use hyper_util::rt::TokioIo;
     use n0_future::task::AbortOnDropHandle;
-    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use tracing::debug;
 
     /// Spawns a simple HTTP origin server that echoes back "{label} {method} {path}".
