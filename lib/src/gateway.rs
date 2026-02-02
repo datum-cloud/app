@@ -46,6 +46,8 @@ const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
 const HEADER_TARGET_HOST: &str = "x-datum-target-host";
 const HEADER_TARGET_PORT: &str = "x-datum-target-port";
 
+const DATUM_HEADERS: [&str; 3] = [HEADER_NODE_ID, HEADER_TARGET_HOST, HEADER_TARGET_PORT];
+
 struct HeaderResolver;
 
 impl RequestHandler for HeaderResolver {
@@ -59,21 +61,22 @@ impl RequestHandler for HeaderResolver {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
                 // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
                 // If not, just remove the next line.
-                req.set_forwarded_for(src_addr);
+                req.set_forwarded_for(src_addr)
+                    .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
             HttpRequestKind::Origin => {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
                 let host = header_value(&req.headers, HEADER_TARGET_HOST)?;
-                let port = header_value(&req.headers, HEADER_TARGET_PORT)?;
-                let port = port
+                let port = header_value(&req.headers, HEADER_TARGET_PORT)?
                     .parse::<u16>()
                     .map_err(|_| Deny::bad_request("invalid x-datum-target-port header"))?;
                 // Rewrite the request target.
                 req.set_absolute_http_authority(Authority::new(host.to_string(), port))?
                     // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
                     // If not, just remove the next line.
-                    .set_forwarded_for(src_addr);
+                    .set_forwarded_for(src_addr)
+                    .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
             HttpRequestKind::Absolute => {
