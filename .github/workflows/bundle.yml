@@ -165,6 +165,22 @@ jobs:
         with:
           path: artifacts
 
+      - name: Create stable asset aliases
+        run: |
+          mkdir -p artifacts/aliases
+          DMG_FILE=$(find artifacts -name "*.dmg" | head -1)
+          APPIMAGE_FILE=$(find artifacts -name "*.AppImage" | head -1)
+          EXE_FILE=$(find artifacts -name "*-setup.exe" -o -name "*setup*.exe" | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            cp "$DMG_FILE" artifacts/aliases/Datum.dmg
+          fi
+          if [ -n "$APPIMAGE_FILE" ]; then
+            cp "$APPIMAGE_FILE" artifacts/aliases/Datum.AppImage
+          fi
+          if [ -n "$EXE_FILE" ]; then
+            cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
+          fi
+
       - name: Prepare Release Body Data
         id: release_data
         run: |
@@ -186,5 +202,5 @@ jobs:
             Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             See the release assets for SHA256 checksums.
-          files: artifacts/*/*
+          files: artifacts/**/*
           generate_release_notes: false

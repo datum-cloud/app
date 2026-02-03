@@ -160,6 +160,22 @@ jobs:
         with:
           path: artifacts
 
+      - name: Create stable asset aliases
+        run: |
+          mkdir -p artifacts/aliases
+          DMG_FILE=$(find artifacts -name "*.dmg" | head -1)
+          APPIMAGE_FILE=$(find artifacts -name "*.AppImage" | head -1)
+          EXE_FILE=$(find artifacts -name "*-setup.exe" -o -name "*setup*.exe" | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            cp "$DMG_FILE" artifacts/aliases/Datum.dmg
+          fi
+          if [ -n "$APPIMAGE_FILE" ]; then
+            cp "$APPIMAGE_FILE" artifacts/aliases/Datum.AppImage
+          fi
+          if [ -n "$EXE_FILE" ]; then
+            cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -168,7 +184,7 @@ jobs:
           make_latest: false
           prerelease: false
           draft: false
-          files: artifacts/*/*
+          files: artifacts/**/*
 
   publish-docker:
     if: ${{ inputs.publish_docker }}
