@@ -3,8 +3,14 @@ name = "datum-connect-gui"
 version = "0.1.0"
 authors = ["b5 <sparkle_pony_2000@qri.io>"]
 edition = "2021"
+default-run = "Datum"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Rename the binary - underscore becomes space in macOS dock hover
+[[bin]]
+name = "Datum"
+path = "src/main.rs"
 
 [dependencies]
 dioxus = { version = "=0.7.2", features = ["router"] }
@@ -32,6 +38,7 @@ tracing-appender.workspace = true
 data-encoding.workspace = true
 uuid.workspace = true
 n0-error.workspace = true
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 
 [features]
 default = ["desktop"]
@@ -47,3 +54,8 @@ mobile = ["dioxus/mobile"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"

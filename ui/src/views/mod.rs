@@ -19,7 +19,7 @@ pub use edit_proxy::EditProxy;
 pub use join_proxy::JoinProxy;
 pub use login::Login;
 pub use navbar::*;
-pub use proxies_list::ProxiesList;
+pub use proxies_list::{ProxiesList, TunnelCard};
 pub use select_project::SelectProject;
 pub use signup::Signup;
 pub use tunnel_bandwidth::TunnelBandwidth;

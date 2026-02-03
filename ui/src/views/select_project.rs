@@ -6,7 +6,11 @@ use lib::datum_cloud::OrganizationWithProjects;
 use lib::SelectedContext;
 
 use crate::{
-    components::{Button, SelectDropdown, SelectItem},
+    components::{
+        Button,
+        select::{Select, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
+        skeleton::Skeleton,
+    },
     state::AppState,
     Route,
 };
@@ -20,7 +24,6 @@ pub fn SelectProject() -> Element {
     let mut load_error = use_signal(|| None::<String>);
     let mut selected_org = use_signal(|| None::<String>);
     let mut selected_project = use_signal(|| None::<String>);
-    let mut auto_saved = use_signal(|| false);
     let saving = use_signal(|| false);
     let save_error = use_signal(|| None::<String>);
 
@@ -133,151 +136,199 @@ pub fn SelectProject() -> Element {
         })
     };
 
-    let save_and_nav_for_auto = save_and_nav.clone();
-    use_effect(move || {
-        if *auto_saved.read() {
-            return;
-        }
-        let selected_org_id = selected_org.read().clone();
-        let selected_project_id = selected_project.read().clone();
-        let list = orgs.read().clone();
-        if selected_org_id.is_none() {
-            return;
-        }
-        let org_id = selected_org_id.clone().unwrap_or_default();
-        let org = list.iter().find(|org| org.org.resource_id == org_id);
-        if let Some(org) = org {
-            if org.projects.len() == 1 && selected_project_id.is_some() {
-                auto_saved.set(true);
-                if let Some(project_id) = selected_project_id.clone() {
-                    let save_and_nav = save_and_nav_for_auto.clone();
-                    save_and_nav(selected_org_id.clone().unwrap_or_default(), project_id);
-                }
-            }
-        }
-    });
-
     let content = if let Some(err) = load_error.read().clone() {
         rsx! {
-            div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",
-                div { class: "text-sm font-semibold", "Failed to load orgs/projects" }
+            div { class: "rounded-lg border border-red-200 bg-red-50 p-4 text-alert-red",
+                div { class: "text-sm font-semibold", "Failed to load your organizations and projects" }
                 div { class: "text-sm mt-1 break-words", "{err}" }
             }
         }
-    } else if orgs.read().is_empty() {
+    } else if orgs.read().is_empty() { 
         rsx! {
-            div { class: "rounded-xl border border-[#e3e7ee] bg-white/70 p-6 text-center",
-                div { class: "text-base font-semibold text-slate-900", "Loading organizations…" }
-                div { class: "text-sm text-slate-600 mt-2", "Fetching your orgs and projects." }
+            div { class: "flex flex-col gap-4 w-full",
+                div { class: "flex flex-col gap-2",
+                    Skeleton { class: "h-4 w-24" }
+                    Skeleton { class: "h-9 w-full" }
+                }
+                div { class: "flex flex-col gap-2",
+                    Skeleton { class: "h-4 w-20" }
+                    Skeleton { class: "h-9 w-full" }
+                }
             }
         }
     } else {
         let selected_org_id = selected_org.read().clone();
         let selected_project_id = selected_project.read().clone();
-        let org_items: Vec<OrganizationWithProjects> = orgs.read().iter().cloned().collect();
-        let selected_org_snapshot = selected_org_id.as_ref().and_then(|org_id| {
-            orgs.read()
-                .iter()
-                .find(|org| &org.org.resource_id == org_id)
-                .cloned()
-        });
-        let project_items = selected_org_snapshot.as_ref().map(|org| org.projects.clone());
+        let orgs_snapshot = orgs.read().clone();
+        let org_options: Vec<(String, String)> = orgs_snapshot
+            .iter()
+            .map(|org| (org.org.resource_id.clone(), org.org.display_name.clone()))
+            .collect();
+        let project_options: Vec<(String, String)> = selected_org_id
+            .as_ref()
+            .and_then(|org_id| {
+                orgs_snapshot
+                    .iter()
+                    .find(|org| &org.org.resource_id == org_id)
+            })
+            .map(|org| {
+                org.projects
+                    .iter()
+                    .map(|p| (p.resource_id.clone(), p.display_name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let project_disabled = selected_org_id.is_none();
+        let project_placeholder = if selected_org_id.is_none() {
+            "Select an organization first".to_string()
+        } else {
+            "Select a project".to_string()
+        };
         rsx! {
-            div { class: "space-y-8",
-                SelectDropdown {
-                    label: "Organization".to_string(),
-                    placeholder: "Select an organization".to_string(),
-                    items: org_items
-                        .iter()
-                        .map(|org| SelectItem {
-                            id: org.org.resource_id.clone(),
-                            label: org.org.display_name.clone(),
-                            subtitle: Some(org.org.resource_id.clone()),
-                        })
-                        .collect(),
-                    selected: selected_org_id.clone(),
-                    on_select: move |value: String| {
-                        let orgs_snapshot = orgs.read().clone();
-                        let org = orgs_snapshot.iter().find(|org| org.org.resource_id == value);
-                        selected_org.set(Some(value.clone()));
-                        if let Some(org) = org {
-                            let first_project = org.projects.first().map(|p| p.resource_id.clone());
-                            selected_project.set(first_project);
-                        } else {
-                            selected_project.set(None);
+            div { class: "space-y-4",
+                div { class: "flex flex-col gap-2",
+                    label { class: "text-xs text-form-label/80", "Organization" }
+                    Select {
+                        value: selected_org_id.clone(),
+                        on_value_change: move |value: Option<String>| {
+                            let Some(value) = value else { return };
+                            let orgs_snapshot = orgs.read().clone();
+                            let org = orgs_snapshot.iter().find(|o| o.org.resource_id == value);
+                            selected_org.set(Some(value.clone()));
+                            if let Some(org) = org {
+                                let first = org.projects.first().map(|p| p.resource_id.clone());
+                                selected_project.set(first);
+                            } else {
+                                selected_project.set(None);
+                            }
+                        },
+                        placeholder: "Select an organization".to_string(),
+                        disabled: false,
+                        SelectTrigger { SelectValue {} }
+                        SelectList {
+                            if org_options.is_empty() {
+                                SelectOptionItem {
+                                    value: "".to_string(),
+                                    text_value: "No results".to_string(),
+                                    index: 0,
+                                    disabled: true,
+                                    "No results"
+                                }
+                            } else {
+                                for (i , (id , label)) in org_options.clone().into_iter().enumerate() {
+                                    SelectOptionItem {
+                                        value: id.clone(),
+                                        text_value: label.clone(),
+                                        index: i,
+                                        div { class: "flex w-full justify-between items-center",
+                                            span { class: "truncate", "{label}" }
+                                            div { class: "text-1xs text-foreground/50 font-mono",
+                                                "{id}"
+                                            }
+                                        }
+                                        SelectItemIndicator {}
+                                    }
+                                }
+                            }
                         }
-                    },
-                    searchable: true,
-                    search_placeholder: "Search organizations…".to_string(),
+                    }
                 }
-                div { class: "h-6" }
-                SelectDropdown {
-                    label: "Project".to_string(),
-                    placeholder: if selected_org_id.is_none() {
-                        "Select an organization first".to_string()
-                    } else {
-                        "Select a project".to_string()
-                    },
-                    items: project_items
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|project| SelectItem {
-                            id: project.resource_id.clone(),
-                            label: project.display_name.clone(),
-                            subtitle: Some(project.resource_id.clone()),
-                        })
-                        .collect(),
-                    selected: selected_project_id.clone(),
-                    on_select: move |value: String| {
-                        selected_project.set(Some(value));
-                    },
-                    disabled: project_disabled,
-                    searchable: true,
-                    search_placeholder: "Search projects…".to_string(),
+                div { class: "flex flex-col gap-2",
+                    label { class: "text-xs text-form-label/80", "Project" }
+                    Select {
+                        value: selected_project_id.clone(),
+                        on_value_change: move |value: Option<String>| {
+                            let Some(value) = value else { return };
+                            selected_project.set(Some(value));
+                        },
+                        placeholder: project_placeholder.clone(),
+                        disabled: project_disabled,
+                        SelectTrigger { SelectValue {} }
+                        SelectList {
+                            if project_options.is_empty() {
+                                SelectOptionItem {
+                                    value: "".to_string(),
+                                    text_value: "No results".to_string(),
+                                    index: 0,
+                                    disabled: true,
+                                    "No results"
+                                }
+                            } else {
+                                for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                    SelectOptionItem {
+                                        value: id.clone(),
+                                        text_value: label.clone(),
+                                        index: i,
+                                        div { class: "flex w-full justify-between items-center",
+                                            span { class: "truncate", "{label}" }
+                                            div { class: "text-1xs text-foreground/50 font-mono",
+                                                "{id}"
+                                            }
+                                        }
+                                        SelectItemIndicator {}
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     };
 
     rsx! {
-        div { class: "w-full grid h-screen bg-[#f4f4f1] place-items-center",
-            div { class: "w-full max-w-xl mx-auto p-8 bg-white rounded-2xl border border-[#e3e7ee] shadow-[0_14px_34px_rgba(17,24,39,0.12)]",
-                div { class: "mb-6",
-                    h1 { class: "text-2xl font-semibold text-slate-900", "Select your org & project" }
-                    p { class: "text-sm text-slate-600 mt-2",
-                        "Choose where to manage tunnels. You can change this later from the header."
+        div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
+            // Content row with sidebar and main content
+            div { class: "flex flex-1 min-h-0 relative",
+                // Sidebar skeleton
+                div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
+                    div { class: "w-full",
+                        div { class: "h-9 w-full rounded-md bg-foreground/10" }
                     }
                 }
-                {content}
-                div { class: "mt-8 flex justify-end",
-                    Button {
-                        text: "Continue".to_string(),
-                        class: if saving() {
-                            Some("opacity-60 pointer-events-none".to_string())
-                        } else if selected_org.read().is_some() && selected_project.read().is_some() {
-                            None
-                        } else {
-                            Some("opacity-50 cursor-not-allowed".to_string())
-                        },
-                        onclick: move |_| {
-                            let org = selected_org.read().clone().unwrap_or_default();
-                            let project = selected_project.read().clone().unwrap_or_default();
-                            if org.is_empty() || project.is_empty() {
-                                return;
-                            }
-                            let save_and_nav = save_and_nav.clone();
-                            save_and_nav(org, project);
-                        },
-                    }
-                    if saving() {
-                        div { class: "text-sm text-slate-500 ml-3", "Saving selection…" }
+                // Main content area with skeleton tunnel cards
+                div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
+                    div { class: "max-w-5xl mx-auto space-y-5",
+                        // Tunnel card skeletons
+                        for _ in 0..3 {
+                            div { class: "bg-foreground/10 rounded-lg border border-app-border shadow-card h-48" }
+                        }
                     }
                 }
-                if let Some(err) = save_error.read().clone() {
-                    div { class: "mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",
-                        div { class: "text-sm font-semibold", "Failed to save selection" }
-                        div { class: "text-sm mt-1 break-words", "{err}" }
+            }
+            // Overlay (same as dialog overlay, but below header bar)
+            div { class: "bg-foreground/30 absolute top-10 left-0 w-full bottom-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+                // Form dialog centered on top
+                div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card relative z-50",
+                    div { class: "mb-6",
+                        h1 { class: "text-xl font-medium text-foreground",
+                            "Where to manage your tunnels"
+                        }
+                    }
+                    {content}
+                    div { class: "mt-6 flex justify-start",
+                        Button {
+                            text: "Continue".to_string(),
+                            class: if saving() { Some("opacity-60 pointer-events-none".to_string()) } else if selected_org.read().is_some() && selected_project.read().is_some() { None } else { Some("opacity-50 cursor-not-allowed".to_string()) },
+                            onclick: move |_| {
+                                let org = selected_org.read().clone().unwrap_or_default();
+                                let project = selected_project.read().clone().unwrap_or_default();
+                                if org.is_empty() || project.is_empty() {
+                                    return;
+                                }
+                                let save_and_nav = save_and_nav.clone();
+                                save_and_nav(org, project);
+                            },
+                        }
+                        if saving() {
+                            div { class: "text-sm text-slate-500 ml-3", "Saving selection…" }
+                        }
+                    }
+                    if let Some(err) = save_error.read().clone() {
+                        div { class: "mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-alert-red",
+                            div { class: "text-sm font-semibold", "Failed to save selection" }
+                            div { class: "text-sm mt-1 break-words", "{err}" }
+                        }
                     }
                 }
             }

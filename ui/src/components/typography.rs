@@ -8,9 +8,6 @@ pub struct ChildProps {
 #[component]
 pub fn Subhead(props: ChildProps) -> Element {
     rsx! {
-        h2 {
-            class: "uppercase text-sm font-bold text-gray-600",
-            {props.text}
-        }
+        h2 { class: "uppercase text-sm font-bold text-foreground", {props.text} }
     }
 }
