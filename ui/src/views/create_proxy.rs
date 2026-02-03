@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use lib::{Advertisment, ProxyState, TcpProxyData};
 
 use crate::{
     components::{Button, ButtonKind},
@@ -15,18 +16,17 @@ pub fn CreateProxy() -> Element {
 
     let mut save = use_action(move |_| async move {
         let state = consume_context::<AppState>();
-        let project_id = state
-            .selected_context()
-            .context("No project selected")?
-            .project_id;
-        let tunnel = state
-            .tunnel_service()
-            .create_active(&label(), &address())
+        let service = TcpProxyData::from_host_port_str(&address()).context("Invalid address")?;
+        let info = Advertisment::new(service, Some(label()));
+        let proxy = ProxyState {
+            info,
+            enabled: true,
+        };
+        state
+            .listen_node()
+            .set_proxy(proxy)
             .await
-            .context("Failed to create tunnel")?;
-        state.upsert_tunnel(tunnel);
-        state.bump_tunnel_refresh();
-        state.heartbeat().register_project(project_id).await;
+            .context("Failed to save proxy")?;
         let nav = use_navigator();
         nav.push(Route::ProxiesList {});
         n0_error::Ok(())
