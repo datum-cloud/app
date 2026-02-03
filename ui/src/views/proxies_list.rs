@@ -1,46 +1,68 @@
 use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
-use lib::ProxyState;
+use lib::TunnelSummary;
 
 use crate::{state::AppState, Route};
 
 #[component]
 pub fn ProxiesList() -> Element {
-    let mut proxies = use_signal(Vec::<ProxyState>::new);
+    let state = consume_context::<AppState>();
+    let tunnels = state.tunnel_cache();
 
-    use_future(move || async move {
-        let state = consume_context::<AppState>();
-        let node = state.listen_node();
-        let updated = node.state_updated();
-        tokio::pin!(updated);
-
+    let state_for_future = state.clone();
+    use_future(move || {
+        let state_for_future = state_for_future.clone();
+        async move {
+        let mut ctx_rx = state_for_future.datum().selected_context_watch();
+        let refresh = state_for_future.tunnel_refresh();
         loop {
-            let list = node.proxies();
-            proxies.set(list);
-            (&mut updated).await;
-            updated.set(node.state().updated());
+            let list = state_for_future
+                .tunnel_service()
+                .list_active()
+                .await
+                .unwrap_or_default();
+            state_for_future.set_tunnel_cache(list);
+            tokio::select! {
+                res = ctx_rx.changed() => {
+                    if res.is_err() {
+                        return;
+                    }
+                }
+                _ = refresh.notified() => {}
+            }
+        }
         }
     });
 
     // Important: do async mutations from this parent component scope.
     // If we spawn from inside `TunnelCard` and then optimistically remove the card,
     // Dioxus will drop that scope and cancel the task before it runs.
-    let mut on_delete = use_action(move |proxy: ProxyState| async move {
-        let state = consume_context::<AppState>();
-        debug!("on delete called: {}", proxy.id());
-        state
-            .listen_node()
-            .remove_proxy(proxy.id())
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("delete tunnel failed: {err:#}");
-            })?;
-        n0_error::Ok(())
+    let mut on_delete = use_action(move |tunnel: TunnelSummary| {
+        let state = state.clone();
+        async move {
+            debug!("on delete called: {}", tunnel.id);
+            let outcome = state
+                .tunnel_service()
+                .delete_active(&tunnel.id)
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("delete tunnel failed: {err:#}");
+                })?;
+            if outcome.connector_deleted {
+                state
+                    .heartbeat()
+                    .deregister_project(&outcome.project_id)
+                    .await;
+            }
+            state.remove_tunnel(&tunnel.id);
+            state.bump_tunnel_refresh();
+            n0_error::Ok(())
+        }
     });
 
     let on_delete_handler = move |proxy_state| on_delete.call(proxy_state);
 
-    let list = if proxies().is_empty() {
+    let list = if tunnels().is_empty() {
         rsx! {
             div { class: "rounded-2xl border border-[#e3e7ee] bg-white/70 p-10 text-center",
                 div { class: "text-base font-semibold text-slate-900", "No tunnels yet" }
@@ -54,9 +76,8 @@ pub fn ProxiesList() -> Element {
     } else {
         rsx! {
             div { class: "space-y-5",
-                for proxy in proxies().into_iter() {
-                    // println!("PROXY {proxy:?}");
-                    TunnelCard { key: "{proxy.id()}", proxy, on_delete: on_delete_handler }
+                for tunnel in tunnels().into_iter() {
+                    TunnelCard { key: "{tunnel.id}", tunnel, on_delete: on_delete_handler }
                 }
             }
         }
@@ -70,28 +91,47 @@ pub fn ProxiesList() -> Element {
 }
 
 #[component]
-fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element {
-    let mut proxy_signal = use_signal(move || proxy);
+fn TunnelCard(tunnel: TunnelSummary, on_delete: EventHandler<TunnelSummary>) -> Element {
+    let mut tunnel_signal = use_signal(move || tunnel);
 
     let mut menu_open = use_signal(|| false);
     let nav = use_navigator();
+    let state = consume_context::<AppState>();
 
-    let mut toggle_action = use_action(move |state: bool| async move {
-        let mut proxy = proxy_signal().clone();
-        proxy.enabled = state;
-        let state = consume_context::<AppState>();
-        if let Err(err) = state.listen_node().set_proxy(proxy.clone()).await {
-            // TODO: Move into UI
-            warn!("Update proxy state failed: {err:#}");
-            Err(err)
-        } else {
-            proxy_signal.set(proxy);
-            Ok(())
+    let mut toggle_action = use_action(move |next_enabled: bool| {
+        let state = state.clone();
+        async move {
+            let tunnel = tunnel_signal().clone();
+            let updated = state
+                .tunnel_service()
+                .set_enabled_active(&tunnel.id, next_enabled)
+                .await?;
+            if next_enabled {
+                if let Some(selected) = state.selected_context() {
+                    state.heartbeat().register_project(selected.project_id).await;
+                }
+            }
+            state.upsert_tunnel(updated.clone());
+            tunnel_signal.set(updated);
+            state.bump_tunnel_refresh();
+            n0_error::Ok(())
         }
     });
 
-    let proxy = proxy_signal();
-    let enabled = proxy.enabled;
+    let tunnel = tunnel_signal();
+    let enabled = tunnel.enabled;
+    let display_hostname = tunnel
+        .hostnames
+        .first()
+        .cloned()
+        .unwrap_or_else(|| tunnel.id.clone());
+    let display_hostname_href = display_hostname.clone();
+    let display_endpoint = if tunnel.endpoint.is_empty() {
+        "unknown".to_string()
+    } else {
+        tunnel.endpoint.clone()
+    };
+    let display_endpoint_href = display_endpoint.clone();
 
     rsx! {
         div {
@@ -108,7 +148,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
             div { class: "",
                 // header row: title + toggle
                 div { class: "p-4 flex items-start justify-between",
-                    h2 { class: "text-md font-semibold tracking-tight text-slate-900", {proxy.info.label()} }
+                    h2 { class: "text-md font-semibold tracking-tight text-slate-900", {tunnel.label} }
                     Toggle {
                         enabled,
                         on_toggle: move |next| toggle_action.call(next)
@@ -124,20 +164,20 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                         div { class: "flex items-center gap-5",
                             GlobeIcon { class: "w-[20] h-[20]" }
                             a { class: "text-base font-medium text-slate-800",
-                                href: format!("http://{}", proxy.info.domain()),
-                                {proxy.info.domain()}
+                                href: format!("http://{}", display_hostname_href),
+                                {display_hostname}
                             }
                         }
                         div { class: "flex items-center gap-5",
                             ArrowIcon { class: "w-[20] h-[20] "}
                             a { class: "text-base text-slate-800",
-                                href: proxy.info.local_url(),
-                                {proxy.info.local_url()}
+                                href: format!("http://{}", display_endpoint_href),
+                                {display_endpoint}
                             }
                         }
                         div { class: "flex items-center gap-5",
                             PlugIcon { class: "w-[20] h-[20] "}
-                            span { class: "text-base text-slate-700", {proxy.info.datum_resource_url()} }
+                            span { class: "text-base text-slate-700", {format!("datum://{}", tunnel.id)} }
                         }
                     }
                     div { class: "relative",
@@ -168,7 +208,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                                     onclick: move |evt: MouseEvent| {
                                         evt.stop_propagation();
                                         menu_open.set(false);
-                                        let id = proxy_signal().id().to_string();
+                                        let id = tunnel_signal().id.to_string();
                                         nav.push(Route::EditProxy { id });
                                     },
                                     "Details"
@@ -178,7 +218,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                                     onclick: move |evt: MouseEvent| {
                                         evt.stop_propagation();
                                         menu_open.set(false);
-                                        let id = proxy_signal().id().to_string();
+                                        let id = tunnel_signal().id.to_string();
                                         nav.push(Route::TunnelBandwidth { id });
                                     },
                                     "Bandwidth"
@@ -188,7 +228,7 @@ fn TunnelCard(proxy: ProxyState, on_delete: EventHandler<ProxyState>) -> Element
                                     onclick: move |evt: MouseEvent| {
                                         evt.stop_propagation();
                                         menu_open.set(false);
-                                        on_delete.call(proxy_signal().clone());
+                                        on_delete.call(tunnel_signal().clone());
                                     },
                                     "Delete"
                                 }

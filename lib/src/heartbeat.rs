@@ -245,17 +245,17 @@ async fn run_project(
     let mut backoff = Backoff::new();
     let mut cache: Option<ConnectorCache> = None;
 
-    loop {
-        if cancel.is_cancelled() {
-            return;
-        }
+            loop {
+                if cancel.is_cancelled() {
+                    return;
+                }
 
         let pcp = match datum.project_control_plane_client(&project_id).await {
             Ok(client) => client,
-            Err(err) => {
+                        Err(err) => {
                 warn!(%project_id, "heartbeat: failed to get pcp client: {err:#}");
                 sleep_with_cancel(backoff.next(), &cancel).await;
-                continue;
+                                continue;
             }
         };
         let client = pcp.client();
@@ -288,15 +288,15 @@ async fn run_project(
                 Ok(None) => {
                     debug!(%project_id, "heartbeat: no connector yet");
                     sleep_with_cancel(backoff.next(), &cancel).await;
-                    continue;
-                }
+                                continue;
+                            }
                 Err(err) => {
                     warn!(%project_id, "heartbeat: connector lookup failed: {err:#}");
                     sleep_with_cancel(backoff.next(), &cancel).await;
-                    continue;
+                            continue;
+                        }
+                    }
                 }
-            }
-        }
 
         let Some(mut cached) = cache.take() else {
             continue;
@@ -321,8 +321,8 @@ async fn run_project(
                         .and_then(|status| status.connection_details.as_ref())
                         .and_then(|details| details.public_key.as_ref())
                         .map(|details| details.home_relay.clone());
-                }
-                Err(err) => {
+                        }
+                        Err(err) => {
                     warn!(
                         %project_id,
                         connector = %cached.name,
@@ -341,7 +341,7 @@ async fn run_project(
                 warn!(%project_id, connector = %cached.name, "heartbeat: missing home relay");
                 cache = Some(cached);
                 sleep_with_cancel(backoff.next(), &cancel).await;
-                continue;
+                                continue;
             }
         };
 
@@ -355,8 +355,8 @@ async fn run_project(
                 );
                 cache = Some(cached);
                 sleep_with_cancel(backoff.next(), &cancel).await;
-                continue;
-            }
+                                continue;
+                            }
         };
 
         if cached.last_details.as_ref() != Some(&details_value) {
