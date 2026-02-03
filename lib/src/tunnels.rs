@@ -161,7 +161,7 @@ impl TunnelService {
                 .cloned()
                 .unwrap_or_else(|| name.clone());
             let endpoint = normalize_endpoint(&proxy_backend_endpoint(&proxy).unwrap_or_default());
-            let hostnames = proxy.spec.hostnames.clone().unwrap_or_default();
+            let hostnames = proxy_hostnames(&proxy);
             let enabled = enabled_by_name.contains_key(&name);
             tunnels.push(TunnelSummary {
                 id: name,
@@ -281,7 +281,7 @@ impl TunnelService {
             id: proxy_name,
             label: label.to_string(),
             endpoint,
-            hostnames: proxy.spec.hostnames.clone().unwrap_or_default(),
+            hostnames: proxy_hostnames(&proxy),
             enabled: true,
         })
     }
@@ -347,7 +347,7 @@ impl TunnelService {
             id: tunnel_id.to_string(),
             label: label.to_string(),
             endpoint,
-            hostnames,
+            hostnames: proxy_hostnames(&existing),
             enabled,
         })
     }
@@ -423,7 +423,7 @@ impl TunnelService {
             id: tunnel_id.to_string(),
             label,
             endpoint,
-            hostnames,
+            hostnames: proxy_hostnames(&proxy),
             enabled,
         })
     }
@@ -726,6 +726,15 @@ fn strip_scheme(endpoint: &str) -> String {
         }
     }
     endpoint.to_string()
+}
+
+fn proxy_hostnames(proxy: &HTTPProxy) -> Vec<String> {
+    proxy
+        .status
+        .as_ref()
+        .and_then(|status| status.hostnames.clone())
+        .or_else(|| proxy.spec.hostnames.clone())
+        .unwrap_or_default()
 }
 
 fn proxy_rule(endpoint: &str, connector_name: &str) -> HTTPProxyRule {

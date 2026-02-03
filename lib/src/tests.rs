@@ -1,6 +1,8 @@
 use std::net::Ipv4Addr;
 
-use hyper::StatusCode;
+use http_body_util::BodyExt;
+use hyper::{Request, StatusCode, client::conn::http2};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use iroh::{Endpoint, discovery::static_provider::StaticProvider};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
@@ -155,6 +157,166 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[traced_test]
+async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
+    let discovery = TestDiscovery::default();
+
+    let n0des_endpoint = Endpoint::bind().await?;
+    discovery.add(&n0des_endpoint);
+    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let repo = Repo::open_or_create(temp_dir.path()).await?;
+
+    let (origin_addr, _origin_task) = origin_server::spawn("origin").await?;
+
+    let proxy_state = {
+        let data = TcpProxyData::from_host_port_str(&origin_addr.to_string())?;
+        let advertisment = Advertisment::new(data, None);
+        ProxyState::new(advertisment)
+    };
+
+    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    discovery.add(&upstream.endpoint());
+    upstream.set_proxy(proxy_state).await?;
+
+    let (gateway_addr, _gateway_task) = {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let endpoint = Endpoint::bind().await?;
+        discovery.add(&endpoint);
+        let config = GatewayConfig {
+            gateway_mode: GatewayMode::Forward,
+            ..Default::default()
+        };
+        let task = tokio::task::spawn(gateway::serve(endpoint, None, listener, config));
+        (addr, AbortOnDropHandle::new(task))
+    };
+
+    let stream = tokio::net::TcpStream::connect(gateway_addr).await?;
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .map_err(|err| n0_error::anyerr!(err))?;
+    tokio::spawn(async move {
+        if let Err(err) = conn.await {
+            tracing::warn!("h2c client connection error: {err:#}");
+        }
+    });
+
+    for _ in 0..5 {
+        let req: Request<http_body_util::Full<hyper::body::Bytes>> = Request::builder()
+            .method("GET")
+            .uri("/hello")
+            .header("x-iroh-endpoint-id", upstream.endpoint_id().to_string())
+            .header("x-datum-target-host", origin_addr.ip().to_string())
+            .header("x-datum-target-port", origin_addr.port().to_string())
+            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+            .unwrap();
+
+        let res = sender
+            .send_request(req)
+            .await
+            .map_err(|err| n0_error::anyerr!(err))?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|err| n0_error::anyerr!(err))?
+            .to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("origin GET /hello"),
+            "unexpected h2c response: {body}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
+    let discovery = TestDiscovery::default();
+
+    let n0des_endpoint = Endpoint::bind().await?;
+    discovery.add(&n0des_endpoint);
+    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let repo = Repo::open_or_create(temp_dir.path()).await?;
+
+    let (origin_addr, _origin_task) = origin_server::spawn_closing("origin").await?;
+
+    let proxy_state = {
+        let data = TcpProxyData::from_host_port_str(&origin_addr.to_string())?;
+        let advertisment = Advertisment::new(data, None);
+        ProxyState::new(advertisment)
+    };
+
+    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    discovery.add(&upstream.endpoint());
+    upstream.set_proxy(proxy_state).await?;
+
+    let (gateway_addr, _gateway_task) = {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let endpoint = Endpoint::bind().await?;
+        discovery.add(&endpoint);
+        let config = GatewayConfig {
+            gateway_mode: GatewayMode::Forward,
+            ..Default::default()
+        };
+        let task = tokio::task::spawn(gateway::serve(endpoint, None, listener, config));
+        (addr, AbortOnDropHandle::new(task))
+    };
+
+    let stream = tokio::net::TcpStream::connect(gateway_addr).await?;
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .map_err(|err| n0_error::anyerr!(err))?;
+    tokio::spawn(async move {
+        if let Err(err) = conn.await {
+            tracing::warn!("h2c client connection error: {err:#}");
+        }
+    });
+
+    for _ in 0..3 {
+        let req: Request<http_body_util::Full<hyper::body::Bytes>> = Request::builder()
+            .method("GET")
+            .uri("/hello")
+            .header("x-iroh-endpoint-id", upstream.endpoint_id().to_string())
+            .header("x-datum-target-host", origin_addr.ip().to_string())
+            .header("x-datum-target-port", origin_addr.port().to_string())
+            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+            .unwrap();
+
+        let res = sender
+            .send_request(req)
+            .await
+            .map_err(|err| n0_error::anyerr!(err))?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|err| n0_error::anyerr!(err))?
+            .to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("origin GET /hello"),
+            "unexpected h2c response: {body}"
+        );
+    }
+
+    Ok(())
+}
+
 mod origin_server {
     use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
@@ -162,7 +324,7 @@ mod origin_server {
     use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
     use hyper_util::rt::TokioIo;
     use n0_future::task::AbortOnDropHandle;
-    use tokio::net::TcpListener;
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
     use tracing::debug;
 
     /// Spawns a simple HTTP origin server that echoes back "{label} {method} {path}".
@@ -173,6 +335,17 @@ mod origin_server {
         let tcp_addr = listener.local_addr()?;
         debug!(%label, %tcp_addr, "spawned origin server");
         let task = tokio::spawn(async move { run(listener, label).await });
+        Ok((tcp_addr, AbortOnDropHandle::new(task)))
+    }
+
+    /// Spawns a raw HTTP/1.1 origin server that always closes after each response.
+    pub async fn spawn_closing(
+        label: &'static str,
+    ) -> n0_error::Result<(SocketAddr, AbortOnDropHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let tcp_addr = listener.local_addr()?;
+        debug!(%label, %tcp_addr, "spawned closing origin server");
+        let task = tokio::spawn(async move { run_closing(listener, label).await });
         Ok((tcp_addr, AbortOnDropHandle::new(task)))
     }
 
@@ -196,6 +369,34 @@ mod origin_server {
                 let _ = http1::Builder::new()
                     .serve_connection(io, service_fn(handler))
                     .await;
+            });
+        }
+    }
+
+    async fn run_closing(listener: TcpListener, label: &'static str) {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::task::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let read = match stream.read(&mut buf).await {
+                        Ok(0) => return,
+                        Ok(n) => n,
+                        Err(_) => return,
+                    };
+                    if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = format!("{label} GET /hello");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
             });
         }
     }

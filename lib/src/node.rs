@@ -212,11 +212,31 @@ impl ListenNode {
 
 impl StateWrapper {
     fn tcp_proxy_exists(&self, host: &str, port: u16) -> bool {
-        self.get()
+        // Strip scheme from incoming host (e.g., "http://127.0.0.1" -> "127.0.0.1")
+        // The gateway may send the host with scheme, but local state stores without
+        let normalized_host = strip_host_scheme(host);
+        let exists = self
+            .get()
             .proxies
             .iter()
-            .any(|a| a.enabled && a.info.service().host == host && a.info.service().port == port)
+            .any(|a| a.enabled && a.info.service().host == normalized_host && a.info.service().port == port);
+        if !exists {
+            debug!(
+                requested_host = host,
+                normalized_host,
+                port,
+                "tcp_proxy_exists: no matching proxy found"
+            );
+        }
+        exists
     }
+}
+
+/// Strip scheme prefix from host (e.g., "http://127.0.0.1" -> "127.0.0.1")
+fn strip_host_scheme(host: &str) -> &str {
+    host.strip_prefix("http://")
+        .or_else(|| host.strip_prefix("https://"))
+        .unwrap_or(host)
 }
 
 impl AuthHandler for StateWrapper {
@@ -233,7 +253,43 @@ impl AuthHandler for StateWrapper {
                     Err(AuthError::Forbidden)
                 }
             }
-            HttpProxyRequestKind::Absolute { .. } => Err(AuthError::Forbidden),
+            HttpProxyRequestKind::Absolute { target, .. } => {
+                // Parse host:port from absolute URL (e.g., "http://localhost:5173/path")
+                if let Some((host, port)) = parse_host_port_from_url(target) {
+                    if self.tcp_proxy_exists(&host, port) {
+                        Ok(())
+                    } else {
+                        Err(AuthError::Forbidden)
+                    }
+                } else {
+                    debug!(target, "failed to parse host:port from absolute URL");
+                    Err(AuthError::Forbidden)
+                }
+            }
+        }
+    }
+}
+
+/// Parse host and port from an absolute URL (e.g., "http://localhost:5173/path")
+fn parse_host_port_from_url(url: &str) -> Option<(String, u16)> {
+    // Remove scheme
+    let without_scheme = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    
+    // Split off the path
+    let authority = without_scheme.split('/').next()?;
+    
+    // Split host and port
+    if let Some((host, port_str)) = authority.rsplit_once(':') {
+        let port = port_str.parse().ok()?;
+        Some((host.to_string(), port))
+    } else {
+        // Default ports
+        if url.starts_with("https://") {
+            Some((authority.to_string(), 443))
+        } else {
+            Some((authority.to_string(), 80))
         }
     }
 }
