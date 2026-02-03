@@ -65,7 +65,7 @@ impl RequestHandler for HeaderResolver {
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
-            HttpRequestKind::Origin => {
+            HttpRequestKind::Origin | HttpRequestKind::Http1Absolute => {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
                 let host = header_value(&req.headers, HEADER_TARGET_HOST)?;
                 let port = header_value(&req.headers, HEADER_TARGET_PORT)?
@@ -78,13 +78,6 @@ impl RequestHandler for HeaderResolver {
                     .set_forwarded_for(src_addr)
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
-            }
-            HttpRequestKind::Http1Absolute => {
-                // TODO: If I read the upstream correctly, this is currently not supported, correct?
-                // I.e. target host/port is *only* taken from the x-datum headers, not from absolute-form request target.
-                return Err(Deny::bad_request(
-                    "Absolute-form request targets are not supported",
-                ));
             }
         }
     }
