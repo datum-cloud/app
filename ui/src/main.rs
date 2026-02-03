@@ -6,6 +6,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[cfg(feature = "desktop")]
 use n0_error::Result;
 
+
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
@@ -89,7 +90,7 @@ fn main() {
                     .with_close_behaviour(WindowCloseBehaviour::WindowHides)
                     .with_window(
                         WindowBuilder::new()
-                            .with_title("Datum Desktop")
+                            .with_title("Datum")
                             .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
                             .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
                             // Required for rounded app chrome: we render our own rounded container inside.
@@ -148,8 +149,14 @@ fn App() -> Element {
     use_tray_menu_event_handler(move |event| {
         // The event ID corresponds to the menu item text
         match event.id.0.as_str() {
+            "About Datum" => {
+                let _ = open::that("https://datum.net");
+            }
             "Show Window" => {
                 use_window().set_visible(true);
+            }
+            "Hide" => {
+                use_window().set_visible(false);
             }
             "Quit" => {
                 std::process::exit(0);
@@ -185,13 +192,15 @@ fn init_menu_bar() -> Result<TrayIcon> {
     let tray_menu = Menu::new();
 
     // Create menu items with IDs for event handling
+    let about_item = MenuItem::new("About Datum", true, None);
     let show_item = MenuItem::new("Show Window", true, None);
+    let hide_item = MenuItem::new("Hide", true, None);
     let separator = PredefinedMenuItem::separator();
     let quit_item = MenuItem::new("Quit", true, None);
 
-    // Build the menu structure
+    // Build the menu structure (macOS-style: About, Show, Hide, sep, Quit)
     tray_menu
-        .append_items(&[&show_item, &separator, &quit_item])
+        .append_items(&[&about_item, &show_item, &hide_item, &separator, &quit_item])
         .expect("Failed to build tray menu");
 
     let icon = icon();
@@ -199,7 +208,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
     // Build the tray icon
     TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("Datum Desktop")
+        .with_tooltip("Datum")
         .with_icon(icon)
         .build()
         .std_context("building tray icon")
@@ -257,28 +266,201 @@ fn set_macos_dock_icon() {
     }
 }
 
-/// Set the macOS menu bar app name (called after app launches when menu exists)
+/// Custom Objective-C class to handle About menu action and route navigation
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+mod macos_menu_handler {
+    use objc2::runtime::NSObject;
+    use objc2::{define_class, extern_methods};
+    use objc2_foundation::{NSObject as FoundationNSObject, NSString, NSURL};
+    use objc2_app_kit::{NSWorkspace};
+    use objc2::rc::Retained;
+
+    define_class!(
+        #[unsafe(super(FoundationNSObject))]
+        pub struct MenuActionHandler;
+
+        impl MenuActionHandler {
+            #[unsafe(method(openAboutURL:))]
+            fn open_about_url(&self, _sender: Option<&NSObject>) {
+                // Open https://datum.net in the default browser
+                let url_str = NSString::from_str("https://datum.net");
+                if let Some(url) = NSURL::URLWithString(&url_str) {
+                    // SAFETY: sharedWorkspace is safe to call
+                    unsafe {
+                        let workspace = NSWorkspace::sharedWorkspace();
+                        let _ = workspace.openURL(&url);
+                    }
+                }
+            }
+
+        }
+    );
+
+    // Expose the `new` method from NSObject
+    impl MenuActionHandler {
+        extern_methods!(
+            #[unsafe(method(new))]
+            pub fn new() -> Retained<Self>;
+        );
+    }
+}
+
+/// Set the macOS menu bar app name and add standard app menu items (About, Hide, Quit).
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 fn set_macos_menu_name() {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
+    use std::ffi::CStr;
+    use std::sync::Once;
+    use objc2::runtime::Sel;
+    use objc2::{ClassType, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
     use objc2_foundation::NSString;
 
     // SAFETY: We're on the main thread (called from use_effect in the UI)
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
     let app = NSApplication::sharedApplication(mtm);
-    let app_name = NSString::from_str("Datum Desktop");
+    let app_name = NSString::from_str("Datum");
 
     // Set the menu bar app name by modifying the main menu's first item (app menu)
     if let Some(main_menu) = app.mainMenu() {
         if let Some(app_menu_item) = main_menu.itemAtIndex(0) {
             app_menu_item.setTitle(&app_name);
 
-            // Also update the submenu title if present
+            // Also update the submenu title and add standard items (only once)
             if let Some(app_submenu) = app_menu_item.submenu() {
                 app_submenu.setTitle(&app_name);
+
+                static MENU_ITEMS_ADDED: Once = Once::new();
+                static HANDLER: std::sync::OnceLock<
+                    objc2::rc::Retained<macos_menu_handler::MenuActionHandler>,
+                > = std::sync::OnceLock::new();
+                MENU_ITEMS_ADDED.call_once(|| {
+                    // Register the custom handler class
+                    macos_menu_handler::MenuActionHandler::class();
+
+                    // Create an instance of the handler to use as target (store it statically so it's retained)
+                    let handler = macos_menu_handler::MenuActionHandler::new();
+                    HANDLER.set(handler.clone()).ok();
+
+                    // Remove any existing icons from menu items
+                    let item_count = app_submenu.numberOfItems();
+
+                    for i in 0..item_count {
+                        if let Some(item) = app_submenu.itemAtIndex(i) {
+                            unsafe {
+                                item.setImage(None);
+                                item.setOnStateImage(None);
+                                item.setOffStateImage(None);
+                            }
+                        }
+                    }
+
+                    // Add "About Datum" at the beginning
+                    let about_title = NSString::from_str("About Datum");
+                    let empty_key = NSString::from_str("");
+                    // SAFETY: openAboutURL: is a valid selector on our custom handler
+                    unsafe {
+                        let about_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"openAboutURL:\0").unwrap());
+                        let about_item =
+                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &about_title,
+                                Some(about_sel),
+                                &empty_key,
+                                0,
+                            );
+                        about_item.setTarget(Some(&*handler));
+                        about_item.setImage(None);
+                        // Also clear state images to ensure no icons appear
+                        about_item.setOnStateImage(None);
+                        about_item.setOffStateImage(None);
+                    }
+
+                    // Add separator after "About Datum"
+                    unsafe {
+                        let separator = NSMenuItem::separatorItem(mtm);
+                        app_submenu.insertItem_atIndex(&separator, 1);
+                    }
+
+                    // Add "Hide Datum" (Cmd+H), "Hide Others" (Option+Cmd+H), and "Show All"
+                    let hide_title = NSString::from_str("Hide Datum");
+                    let hide_others_title = NSString::from_str("Hide Others");
+                    let show_all_title = NSString::from_str("Show All");
+                    let quit_title = NSString::from_str("Quit Datum");
+                    let key_h = NSString::from_str("h");
+                    let key_q = NSString::from_str("q");
+                    let count = app_submenu.numberOfItems();
+                    // SAFETY: hide:, hideOtherApplications:, unhideAllApplications:, and terminate: are valid selectors on NSApplication
+                    unsafe {
+                        // Hide Datum (Cmd+H)
+                        let hide_sel = Sel::register(CStr::from_bytes_with_nul(b"hide:\0").unwrap());
+                        let hide_item =
+                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &hide_title,
+                                Some(hide_sel),
+                                &key_h,
+                                count,
+                            );
+                        hide_item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+                        hide_item.setImage(None);
+                        hide_item.setOnStateImage(None);
+                        hide_item.setOffStateImage(None);
+
+                        // Hide Others (Option+Cmd+H)
+                        let hide_others_sel = Sel::register(
+                            CStr::from_bytes_with_nul(b"hideOtherApplications:\0").unwrap(),
+                        );
+                        let hide_others_item =
+                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &hide_others_title,
+                                Some(hide_others_sel),
+                                &key_h,
+                                count + 1,
+                            );
+                        hide_others_item.setKeyEquivalentModifierMask(
+                            NSEventModifierFlags::Option | NSEventModifierFlags::Command,
+                        );
+                        hide_others_item.setImage(None);
+                        hide_others_item.setOnStateImage(None);
+                        hide_others_item.setOffStateImage(None);
+
+                        // Show All
+                        let show_all_sel = Sel::register(
+                            CStr::from_bytes_with_nul(b"unhideAllApplications:\0").unwrap(),
+                        );
+                        let show_all_item =
+                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &show_all_title,
+                                Some(show_all_sel),
+                                &empty_key,
+                                count + 2,
+                            );
+                        show_all_item.setImage(None);
+                        show_all_item.setOnStateImage(None);
+                        show_all_item.setOffStateImage(None);
+
+                        // Add separator before Quit
+                        let separator2 = NSMenuItem::separatorItem(mtm);
+                        app_submenu.insertItem_atIndex(&separator2, count + 3);
+
+                        // Quit Datum (Cmd+Q)
+                        let term_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"terminate:\0").unwrap());
+                        let quit_item =
+                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &quit_title,
+                                Some(term_sel),
+                                &key_q,
+                                count + 4,
+                            );
+                        quit_item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+                        quit_item.setImage(None);
+                        quit_item.setOnStateImage(None);
+                        quit_item.setOffStateImage(None);
+                    }
+                });
             }
         }
     }
 }
+

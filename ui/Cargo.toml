@@ -3,13 +3,13 @@ name = "datum-connect-gui"
 version = "0.1.0"
 authors = ["b5 <sparkle_pony_2000@qri.io>"]
 edition = "2021"
-default-run = "Datum_Desktop"
+default-run = "Datum"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 # Rename the binary - underscore becomes space in macOS dock hover
 [[bin]]
-name = "Datum_Desktop"
+name = "Datum"
 path = "src/main.rs"
 
 [dependencies]

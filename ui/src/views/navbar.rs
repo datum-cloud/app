@@ -4,7 +4,7 @@ use crate::{
             DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
         },
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource,
-        select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
+        select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize, SelectTrigger, SelectValue},
     },
     state::AppState,
     Route,
@@ -231,7 +231,7 @@ pub fn HeaderBar() -> Element {
     rsx! {
         // Custom titlebar (color + height)
         div {
-            class: "h-10 shrink-0 bg-background border-b border-app-border flex items-center select-none cursor-grab active:cursor-grabbing",
+            class: "h-10 shrink-0 bg-background border-b border-app-border flex items-center select-none",
             onmousedown: move |_| window().drag(),
             // macOS-ish window controls
             div {
@@ -260,7 +260,7 @@ pub fn HeaderBar() -> Element {
                             class: "min-w-0",
                             style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
                             Select {
-                                value: selected_org_id(),
+                                value: selected_org_id.read().clone(),
                                 on_value_change: move |value: Option<String>| {
                                     let Some(value) = value else { return };
                                     if selected_org_id.read().as_deref() == Some(&value) {
@@ -272,8 +272,8 @@ pub fn HeaderBar() -> Element {
                                 },
                                 placeholder: "Select org".to_string(),
                                 disabled: false,
-                                SelectTrigger { SelectValue {} }
-                                SelectList {
+                                SelectTrigger { size: SelectSize::Small, SelectValue {} }
+                                SelectList { size: SelectSize::Small,
                                     if org_options.is_empty() {
                                         SelectOptionItem {
                                             value: "".to_string(),
@@ -301,7 +301,7 @@ pub fn HeaderBar() -> Element {
                             class: "min-w-0",
                             style: "width: min(max-content, clamp(15ch, 12vw, 22ch));",
                             Select {
-                                value: selected_project_id(),
+                                value: selected_project_id.read().clone(),
                                 on_value_change: move |value: Option<String>| {
                                     let Some(value) = value else { return };
                                     let org_id = match selected_org_id.read().clone() {
@@ -331,8 +331,10 @@ pub fn HeaderBar() -> Element {
                                 },
                                 placeholder: "Select project".to_string(),
                                 disabled: selected_org_id.read().is_none(),
-                                SelectTrigger { SelectValue {} }
-                                SelectList { align: Some(SelectAlign::End),
+                                SelectTrigger { size: SelectSize::Small, SelectValue {} }
+                                SelectList {
+                                    align: Some(SelectAlign::End),
+                                    size: SelectSize::Small,
                                     if project_options.is_empty() {
                                         SelectOptionItem {
                                             value: "".to_string(),
@@ -364,7 +366,7 @@ pub fn HeaderBar() -> Element {
                             default_open: false,
                             on_open_change: move |v| profile_menu_open.set(Some(v)),
                             disabled: use_signal(|| false),
-                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-pointer mt-0.5 focus:outline-2 focus:outline-app-border/50",
+                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-default mt-0.5 focus:outline-2 focus:outline-app-border/50",
                                 svg {
                                     width: "18",
                                     height: "18",

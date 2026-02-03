@@ -26,3 +26,4 @@ pub mod switch;
 pub use switch::{Switch, SwitchThumb};
 pub mod dropdown_menu;
 pub mod select;
+pub mod skeleton;

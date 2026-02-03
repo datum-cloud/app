@@ -1,6 +1,6 @@
 [application]
 # App name (used for the binary and display name)
-name = "Datum Desktop"
+name = "Datum"
 
 # Web `build` & `serve` dist path
 out_dir = "dist"
@@ -11,7 +11,7 @@ asset_dir = "assets"
 [web.app]
 
 # HTML title tag content
-title = "Datum Desktop"
+title = "Datum"
 
 # include `assets` in web platform
 [web.resource]
@@ -39,7 +39,7 @@ Datum Datum Datum
 """
 
 [bundle.macos]
-bundle_name = "Datum Desktop"
+bundle_name = "Datum"
 icon = "assets/bundle/macos/Assets.xcassets/AppIcon.appiconset"
 # Code signing - uses APPLE_SIGNING_IDENTITY env var if set, otherwise this value
 # For local dev: "Developer ID Application: Your Name (TEAMID)"

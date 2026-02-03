@@ -211,6 +211,7 @@ pub fn TunnelCard(
                     h2 { class: "text-md font-normal text-foreground", {proxy.info.label()} }
                     Switch {
                         checked: proxy.enabled,
+                        disabled: toggle_action.pending(),
                         on_checked_change: move |next| toggle_action.call(next),
                         SwitchThumb {}
                     }
