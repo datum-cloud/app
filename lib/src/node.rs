@@ -159,6 +159,13 @@ impl ListenNode {
         Ok(())
     }
 
+    pub async fn set_proxy_state(&self, proxy: ProxyState) -> Result<()> {
+        self.state
+            .update(&self.repo, |state| state.set_proxy(proxy))
+            .await?;
+        Ok(())
+    }
+
     pub async fn remove_proxy(&self, resource_id: &str) -> Result<Option<ProxyState>> {
         debug!(%resource_id, "removing proxy {resource_id}");
         let res = self
@@ -173,6 +180,16 @@ impl ListenNode {
         {
             warn!(%resource_id, "Failed to unpublish ticket from n0des: {err:#}");
         }
+        res
+    }
+
+    pub async fn remove_proxy_state(&self, resource_id: &str) -> Result<Option<ProxyState>> {
+        debug!(%resource_id, "removing proxy state {resource_id}");
+        let res = self
+            .state
+            .update(&self.repo, move |state| state.remove_proxy(resource_id))
+            .await;
+        debug!(%resource_id, "removed {res:?}");
         res
     }
 

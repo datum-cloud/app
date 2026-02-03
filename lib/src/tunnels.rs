@@ -19,6 +19,7 @@ use crate::datum_apis::connector_advertisement::{
 use crate::datum_apis::connector::CONNECTOR_NAME_ANNOTATION;
 use crate::datum_apis::http_proxy::{
     ConnectorReference, HTTPProxy, HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
+    HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED,
 };
 use gateway_api::apis::standard::httproutes::{
     HTTPRouteRulesMatchesPath, HTTPRouteRulesMatchesPathType,
@@ -38,6 +39,8 @@ pub struct TunnelSummary {
     pub endpoint: String,
     pub hostnames: Vec<String>,
     pub enabled: bool,
+    pub accepted: bool,
+    pub programmed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +54,29 @@ pub struct TunnelService {
     datum: DatumCloudClient,
     listen: ListenNode,
     publish_tickets: bool,
+}
+
+// TODO(zachsmith1): Use connectors + ConnectorAdvertisements across all projects to
+// decide which local proxies should be allowed, instead of only syncing the
+// selected project's tunnel list.
+fn proxy_state_from_summary(
+    tunnel_id: &str,
+    endpoint: &str,
+    label: &str,
+    enabled: bool,
+) -> Result<ProxyState> {
+    let data = TcpProxyData::from_host_port_str(&strip_scheme(endpoint))?;
+    let info = Advertisment::with_id(tunnel_id.to_string(), data, Some(label.to_string()));
+    Ok(ProxyState { info, enabled })
+}
+
+fn condition_is_true(conditions: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>, kind: &str) -> bool {
+    conditions
+        .unwrap_or_default()
+        .iter()
+        .find(|condition| condition.type_ == kind)
+        .map(|condition| condition.status == "True")
+        .unwrap_or(false)
 }
 
 impl TunnelService {
@@ -162,6 +188,14 @@ impl TunnelService {
                 .unwrap_or_else(|| name.clone());
             let endpoint = normalize_endpoint(&proxy_backend_endpoint(&proxy).unwrap_or_default());
             let hostnames = proxy_hostnames(&proxy);
+            let accepted = condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            );
+            let programmed = condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            );
             let enabled = enabled_by_name.contains_key(&name);
             tunnels.push(TunnelSummary {
                 id: name,
@@ -169,8 +203,25 @@ impl TunnelService {
                 endpoint,
                 hostnames,
                 enabled,
+                accepted,
+                programmed,
             });
         }
+        if !self.publish_tickets {
+            for tunnel in &tunnels {
+                if let Ok(proxy_state) = proxy_state_from_summary(
+                    &tunnel.id,
+                    &tunnel.endpoint,
+                    &tunnel.label,
+                    tunnel.enabled,
+                ) {
+                    if let Err(err) = self.listen.set_proxy_state(proxy_state).await {
+                        warn!(tunnel_id = %tunnel.id, "Failed to store proxy state: {err:#}");
+                    }
+                }
+            }
+        }
+
         Ok(tunnels)
     }
 
@@ -264,17 +315,14 @@ impl TunnelService {
             "created ConnectorAdvertisement"
         );
 
+        let proxy_state = proxy_state_from_summary(&proxy_name, &endpoint, label, true)?;
         if self.publish_tickets {
-            let data = TcpProxyData::from_host_port_str(&strip_scheme(&endpoint))?;
-            let info = Advertisment::with_id(proxy_name.clone(), data, Some(label.to_string()));
-            let proxy_state = ProxyState {
-                info,
-                enabled: true,
-            };
             debug!(%proxy_name, "publishing ticket for tunnel");
             if let Err(err) = self.listen.set_proxy(proxy_state).await {
                 warn!(%proxy_name, "Failed to publish ticket: {err:#}");
             }
+        } else if let Err(err) = self.listen.set_proxy_state(proxy_state).await {
+            warn!(%proxy_name, "Failed to store proxy state: {err:#}");
         }
 
         Ok(TunnelSummary {
@@ -283,6 +331,14 @@ impl TunnelService {
             endpoint,
             hostnames: proxy_hostnames(&proxy),
             enabled: true,
+            accepted: condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
         })
     }
 
@@ -343,13 +399,42 @@ impl TunnelService {
             .std_context("Failed to load ConnectorAdvertisement")?
             .is_some();
 
-        Ok(TunnelSummary {
+        let summary = TunnelSummary {
             id: tunnel_id.to_string(),
             label: label.to_string(),
             endpoint,
             hostnames: proxy_hostnames(&existing),
             enabled,
-        })
+            accepted: condition_is_true(
+                existing
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                existing
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
+        };
+
+        if !self.publish_tickets {
+            if let Ok(proxy_state) = proxy_state_from_summary(
+                &summary.id,
+                &summary.endpoint,
+                &summary.label,
+                summary.enabled,
+            ) {
+                if let Err(err) = self.listen.set_proxy_state(proxy_state).await {
+                    warn!(tunnel_id = %summary.id, "Failed to store proxy state: {err:#}");
+                }
+            }
+        }
+
+        Ok(summary)
     }
 
     pub async fn set_enabled_project(
@@ -419,13 +504,36 @@ impl TunnelService {
                 .std_context("Failed to delete ConnectorAdvertisement")?;
         }
 
-        Ok(TunnelSummary {
+        let summary = TunnelSummary {
             id: tunnel_id.to_string(),
             label,
             endpoint,
             hostnames: proxy_hostnames(&proxy),
             enabled,
-        })
+            accepted: condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                proxy.status.as_ref().and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
+        };
+
+        if !self.publish_tickets {
+            if let Ok(proxy_state) = proxy_state_from_summary(
+                &summary.id,
+                &summary.endpoint,
+                &summary.label,
+                summary.enabled,
+            ) {
+                if let Err(err) = self.listen.set_proxy_state(proxy_state).await {
+                    warn!(tunnel_id = %summary.id, "Failed to store proxy state: {err:#}");
+                }
+            }
+        }
+
+        Ok(summary)
     }
 
     pub async fn delete_project(
@@ -476,6 +584,8 @@ impl TunnelService {
             if let Err(err) = self.listen.remove_proxy(tunnel_id).await {
                 warn!(%tunnel_id, "Failed to unpublish ticket: {err:#}");
             }
+        } else if let Err(err) = self.listen.remove_proxy_state(tunnel_id).await {
+            warn!(%tunnel_id, "Failed to remove proxy state: {err:#}");
         }
 
         let remaining = proxies

@@ -33,11 +33,15 @@ pub fn ProxiesList() -> Element {
                 .list_active()
                 .await
                 .unwrap_or_default();
-            // Check if any tunnel is missing a hostname - if so, poll more frequently
-            let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+        // Check if any tunnel is missing a hostname or not yet accepted/programmed.
+        // If so, poll more frequently.
+        // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
+        // resource(s) instead of listing all tunnels each cycle.
+        let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+        let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
             state_for_future.set_tunnel_cache(list);
             
-            if has_pending_hostname {
+        if has_pending_hostname || has_pending_status {
                 // Poll every 3 seconds when waiting for hostname provisioning
                 tokio::select! {
                     res = ctx_rx.changed() => {
@@ -240,6 +244,7 @@ pub fn TunnelCard(
         }
     });
     let enabled = tunnel.enabled;
+    let is_ready = tunnel.accepted && tunnel.programmed;
     let proxy_name = tunnel.id.clone();
     let public_hostname = tunnel
         .hostnames
@@ -278,11 +283,19 @@ pub fn TunnelCard(
                 // header row: title + toggle
                 div { class: "px-4 py-2.5 flex items-center justify-between",
                     h2 { class: "text-md font-normal text-foreground", {tunnel.label.clone()} }
-                    Switch {
-                        checked: enabled,
-                        disabled: toggle_action.pending(),
-                        on_checked_change: move |next| toggle_action.call(next),
-                        SwitchThumb {}
+                    if is_ready {
+                        Switch {
+                            checked: enabled,
+                            disabled: toggle_action.pending(),
+                            on_checked_change: move |next| toggle_action.call(next),
+                            SwitchThumb {}
+                        }
+                    } else {
+                        Icon {
+                            source: IconSource::Named("loader-circle".into()),
+                            size: 16,
+                            class: "animate-spin text-icon-tunnel",
+                        }
                     }
                 }
 
