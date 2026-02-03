@@ -134,14 +134,6 @@ impl Advertisment {
         }
     }
 
-    pub fn with_id(resource_id: String, data: TcpProxyData, label: Option<String>) -> Self {
-        Self {
-            resource_id,
-            data,
-            label,
-        }
-    }
-
     pub fn id(&self) -> &str {
         &self.resource_id
     }
