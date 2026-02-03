@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use lib::ProxyState;
 
 use crate::{
-    components::{Icon, IconSource},
+    components::{Icon, IconSource, skeleton::Skeleton},
     state::AppState,
     util::humanize_bytes,
     Route,
@@ -146,9 +146,51 @@ pub fn TunnelBandwidth(id: String) -> Element {
 
     if loading() {
         return rsx! {
-            div { class: "max-w-4xl mx-auto",
-                div { class: "rounded-2xl border border-[#e3e7ee] bg-white/70 p-8",
-                    div { class: "text-sm text-slate-600", "Loading bandwidth…" }
+            div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
+                // Back link skeleton
+                div { class: "mt-2 mb-7",
+                    Skeleton { class: "h-4 w-32".to_string() }
+                }
+
+                // TunnelCard skeleton
+                div { class: "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none",
+                    // Header skeleton
+                    div { class: "px-4 py-2.5 flex items-center justify-between",
+                        Skeleton { class: "h-5 w-48".to_string() }
+                        Skeleton { class: "h-5 w-10 rounded-full".to_string() }
+                    }
+                    // Divider
+                    div { class: "border-t border-tunnel-card-border" }
+                    // Body skeleton
+                    div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                        div { class: "flex flex-col gap-1.5 flex-1",
+                            Skeleton { class: "h-4 w-64".to_string() }
+                            Skeleton { class: "h-4 w-56".to_string() }
+                            Skeleton { class: "h-4 w-72".to_string() }
+                        }
+                        Skeleton { class: "h-8 w-8 rounded-lg".to_string() }
+                    }
+                }
+
+                // Panel skeleton
+                div { class: "bg-white rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
+                    div { class: "border border-app-border rounded-lg p-6",
+                        // Stats skeleton
+                        div { class: "flex items-center justify-start gap-5 mb-4",
+                            div { class: "space-y-1.5 min-w-22",
+                                Skeleton { class: "h-3 w-12".to_string() }
+                                Skeleton { class: "h-5 w-20".to_string() }
+                            }
+                            div { class: "space-y-1.5 min-w-22",
+                                Skeleton { class: "h-3 w-16".to_string() }
+                                Skeleton { class: "h-5 w-20".to_string() }
+                            }
+                        }
+                        // Chart skeleton
+                        div { class: "w-full overflow-hidden",
+                            Skeleton { class: "h-[45vh] min-h-[200px] sm:h-[400px] w-full rounded-lg".to_string() }
+                        }
+                    }
                 }
             }
         };

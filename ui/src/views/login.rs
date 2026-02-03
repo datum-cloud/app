@@ -24,6 +24,7 @@ pub fn Login() -> Element {
 
     let mut login = use_action(move |_: ()| async move {
         let state = consume_context::<AppState>();
+        let mut auth_changed = consume_context::<Signal<u32>>();
         let datum = state.datum();
         match datum.login_state() {
             LoginState::Missing => datum.auth().login().await?,
@@ -34,6 +35,8 @@ pub fn Login() -> Element {
             }
             LoginState::Valid => {}
         }
+        // Increment auth_changed to trigger navbar re-render with user info
+        auth_changed.set(auth_changed() + 1);
         datum.refresh_orgs_projects_and_validate_context().await?;
         if state.selected_context().is_some() {
             nav.push(Route::ProxiesList {});
@@ -61,7 +64,7 @@ pub fn Login() -> Element {
                     trailing_icon: if login.pending() { Some(IconSource::Named("loader-circle".into())) } else { Some(IconSource::Named("external-link".into())) },
                 }
                 div { class: "text-center text-background/70 leading-4 text-xs",
-                    "Once you’ve logged in, return back here to continue to Datum Desktop."
+                    "Once you’ve logged in, return back here to continue."
                 }
                 if let Some(Err(err)) = login.value() {
                     div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",

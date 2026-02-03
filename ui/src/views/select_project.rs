@@ -8,7 +8,8 @@ use lib::SelectedContext;
 use crate::{
     components::{
         Button,
-        select::{Select, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
+        select::{Select, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue},
+        skeleton::Skeleton,
     },
     state::AppState,
     Route,
@@ -137,16 +138,22 @@ pub fn SelectProject() -> Element {
 
     let content = if let Some(err) = load_error.read().clone() {
         rsx! {
-            div { class: "rounded-lg border border-red-200 bg-red-50 p-4 text-red-800",
-                div { class: "text-sm font-semibold", "Failed to load orgs/projects" }
+            div { class: "rounded-lg border border-red-200 bg-red-50 p-4 text-alert-red",
+                div { class: "text-sm font-semibold", "Failed to load your organizations and projects" }
                 div { class: "text-sm mt-1 break-words", "{err}" }
             }
         }
-    } else if orgs.read().is_empty() {
+    } else if orgs.read().is_empty() { 
         rsx! {
-            div { class: "rounded-lg border border-card-border bg-white p-6 text-center",
-                div { class: "text-base font-semibold text-slate-900", "Loading organizations…" }
-                div { class: "text-sm text-foreground mt-2", "Fetching your orgs and projects." }
+            div { class: "flex flex-col gap-4 w-full",
+                div { class: "flex flex-col gap-2",
+                    Skeleton { class: "h-4 w-24" }
+                    Skeleton { class: "h-9 w-full" }
+                }
+                div { class: "flex flex-col gap-2",
+                    Skeleton { class: "h-4 w-20" }
+                    Skeleton { class: "h-9 w-full" }
+                }
             }
         }
     } else {
@@ -178,9 +185,9 @@ pub fn SelectProject() -> Element {
             "Select a project".to_string()
         };
         rsx! {
-            div { class: "space-y-6",
+            div { class: "space-y-4",
                 div { class: "flex flex-col gap-2",
-                    label { class: "text-xs font-semibold text-form-label/80", "Organization" }
+                    label { class: "text-xs text-form-label/80", "Organization" }
                     Select {
                         value: selected_org_id.clone(),
                         on_value_change: move |value: Option<String>| {
@@ -213,7 +220,13 @@ pub fn SelectProject() -> Element {
                                         value: id.clone(),
                                         text_value: label.clone(),
                                         index: i,
-                                        "{label}"
+                                        div { class: "flex w-full justify-between items-center",
+                                            span { class: "truncate", "{label}" }
+                                            div { class: "text-1xs text-foreground/50 font-mono",
+                                                "{id}"
+                                            }
+                                        }
+                                        SelectItemIndicator {}
                                     }
                                 }
                             }
@@ -221,7 +234,7 @@ pub fn SelectProject() -> Element {
                     }
                 }
                 div { class: "flex flex-col gap-2",
-                    label { class: "text-xs font-semibold text-form-label/80", "Project" }
+                    label { class: "text-xs text-form-label/80", "Project" }
                     Select {
                         value: selected_project_id.clone(),
                         on_value_change: move |value: Option<String>| {
@@ -246,7 +259,13 @@ pub fn SelectProject() -> Element {
                                         value: id.clone(),
                                         text_value: label.clone(),
                                         index: i,
-                                        "{label}"
+                                        div { class: "flex w-full justify-between items-center",
+                                            span { class: "truncate", "{label}" }
+                                            div { class: "text-1xs text-foreground/50 font-mono",
+                                                "{id}"
+                                            }
+                                        }
+                                        SelectItemIndicator {}
                                     }
                                 }
                             }
@@ -258,37 +277,58 @@ pub fn SelectProject() -> Element {
     };
 
     rsx! {
-        div { class: "w-full grid h-screen bg-background place-items-center",
-            div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card -mt-10",
-                div { class: "mb-6",
-                    h1 { class: "text-2xl font-semibold text-foreground", "Select your org & project" }
-                    p { class: "text-sm text-foreground mt-2",
-                        "Choose where to manage tunnels. You can change this later from the header."
+        div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
+            // Content row with sidebar and main content
+            div { class: "flex flex-1 min-h-0 relative",
+                // Sidebar skeleton
+                div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
+                    div { class: "w-full",
+                        div { class: "h-9 w-full rounded-md bg-foreground/10" }
                     }
                 }
-                {content}
-                div { class: "mt-6 flex justify-start",
-                    Button {
-                        text: "Continue".to_string(),
-                        class: if saving() { Some("opacity-60 pointer-events-none".to_string()) } else if selected_org.read().is_some() && selected_project.read().is_some() { None } else { Some("opacity-50 cursor-not-allowed".to_string()) },
-                        onclick: move |_| {
-                            let org = selected_org.read().clone().unwrap_or_default();
-                            let project = selected_project.read().clone().unwrap_or_default();
-                            if org.is_empty() || project.is_empty() {
-                                return;
-                            }
-                            let save_and_nav = save_and_nav.clone();
-                            save_and_nav(org, project);
-                        },
-                    }
-                    if saving() {
-                        div { class: "text-sm text-slate-500 ml-3", "Saving selection…" }
+                // Main content area with skeleton tunnel cards
+                div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
+                    div { class: "max-w-5xl mx-auto space-y-5",
+                        // Tunnel card skeletons
+                        for _ in 0..3 {
+                            div { class: "bg-foreground/10 rounded-lg border border-app-border shadow-card h-48" }
+                        }
                     }
                 }
-                if let Some(err) = save_error.read().clone() {
-                    div { class: "mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",
-                        div { class: "text-sm font-semibold", "Failed to save selection" }
-                        div { class: "text-sm mt-1 break-words", "{err}" }
+            }
+            // Overlay (same as dialog overlay, but below header bar)
+            div { class: "bg-foreground/30 absolute top-10 left-0 w-full bottom-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+                // Form dialog centered on top
+                div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card relative z-50",
+                    div { class: "mb-6",
+                        h1 { class: "text-xl font-medium text-foreground",
+                            "Where to manage your tunnels"
+                        }
+                    }
+                    {content}
+                    div { class: "mt-6 flex justify-start",
+                        Button {
+                            text: "Continue".to_string(),
+                            class: if saving() { Some("opacity-60 pointer-events-none".to_string()) } else if selected_org.read().is_some() && selected_project.read().is_some() { None } else { Some("opacity-50 cursor-not-allowed".to_string()) },
+                            onclick: move |_| {
+                                let org = selected_org.read().clone().unwrap_or_default();
+                                let project = selected_project.read().clone().unwrap_or_default();
+                                if org.is_empty() || project.is_empty() {
+                                    return;
+                                }
+                                let save_and_nav = save_and_nav.clone();
+                                save_and_nav(org, project);
+                            },
+                        }
+                        if saving() {
+                            div { class: "text-sm text-slate-500 ml-3", "Saving selection…" }
+                        }
+                    }
+                    if let Some(err) = save_error.read().clone() {
+                        div { class: "mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-alert-red",
+                            div { class: "text-sm font-semibold", "Failed to save selection" }
+                            div { class: "text-sm mt-1 break-words", "{err}" }
+                        }
                     }
                 }
             }
