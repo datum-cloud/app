@@ -97,7 +97,6 @@ jobs:
         run: |
           # Find the DMG file
           DMG_FILE=$(find ui/dist -name "*.dmg" | head -1)
-          
           if [ -n "$DMG_FILE" ]; then
             echo "Notarizing $DMG_FILE..."
             

@@ -28,7 +28,7 @@ impl Repo {
             Ok(path) => path.into(),
             Err(_) => dirs_next::data_local_dir()
                 .expect("Failed to get local data dir")
-                .join("datum_connect"),
+                .join("Datum"),
         }
     }
 
