@@ -89,7 +89,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Notarize macOS App
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
