@@ -1,8 +1,8 @@
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
-use lib::ProxyState;
-use open::that;
+use lib::{ProxyState, TunnelSummary};
 
+use super::OpenEditTunnelDialog;
 use crate::{
     components::{
         dropdown_menu::{
@@ -18,39 +18,70 @@ use crate::{
 
 #[component]
 pub fn ProxiesList() -> Element {
-    let mut proxies = use_signal(Vec::<ProxyState>::new);
+    let state = consume_context::<AppState>();
+    let tunnels = state.tunnel_cache();
 
-    use_future(move || async move {
-        let state = consume_context::<AppState>();
-        let node = state.listen_node();
-        let updated = node.state_updated();
-        tokio::pin!(updated);
-
+    let state_for_future = state.clone();
+    use_future(move || {
+        let state_for_future = state_for_future.clone();
+        async move {
+        let mut ctx_rx = state_for_future.datum().selected_context_watch();
+        let refresh = state_for_future.tunnel_refresh();
         loop {
-            let list = node.proxies();
-            proxies.set(list);
-            (&mut updated).await;
-            updated.set(node.state().updated());
+            let list = state_for_future
+                .tunnel_service()
+                .list_active()
+                .await
+                .unwrap_or_default();
+            state_for_future.set_tunnel_cache(list);
+            tokio::select! {
+                res = ctx_rx.changed() => {
+                    if res.is_err() {
+                        return;
+                    }
+                }
+                _ = refresh.notified() => {}
+            }
+        }
         }
     });
 
-    let mut on_delete = use_action(move |proxy: ProxyState| async move {
-        let state = consume_context::<AppState>();
-        debug!("on delete called: {}", proxy.id());
-        state
-            .listen_node()
-            .remove_proxy(proxy.id())
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("delete tunnel failed: {err:#}");
-            })?;
-        n0_error::Ok(())
+    // Important: do async mutations from this parent component scope.
+    // If we spawn from inside `TunnelCard` and then optimistically remove the card,
+    // Dioxus will drop that scope and cancel the task before it runs.
+    let state_for_delete = state.clone();
+    let mut on_delete = use_action(move |tunnel: TunnelSummary| {
+        let state = state_for_delete.clone();
+        async move {
+            debug!("on delete called: {}", tunnel.id);
+            let outcome = state
+                .tunnel_service()
+                .delete_active(&tunnel.id)
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("delete tunnel failed: {err:#}");
+                })?;
+            if outcome.connector_deleted {
+                state
+                    .heartbeat()
+                    .deregister_project(&outcome.project_id)
+                    .await;
+            }
+            state.remove_tunnel(&tunnel.id);
+            state.bump_tunnel_refresh();
+            n0_error::Ok(())
+        }
     });
-    let on_delete_handler = move |proxy_state: ProxyState| {
-        on_delete.call(proxy_state);
+    let on_delete_handler = move |tunnel: TunnelSummary| {
+        on_delete.call(tunnel);
     };
 
-    let state = consume_context::<AppState>();
+    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
+    let on_edit_handler = move |tunnel_to_edit: TunnelSummary| {
+        open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit));
+        open_edit_dialog.dialog_open.set(true);
+    };
+
     let first_name = state
         .datum()
         .auth_state()
@@ -63,26 +94,26 @@ pub fn ProxiesList() -> Element {
     const EMPTY_ROCKS: Asset = asset!("/assets/images/empty-card-rocks.png");
 
     let mut dialog_open = use_signal(|| false);
-    let mut editing_proxy = use_signal(|| None::<ProxyState>);
+    let initial_proxy_for_dialog = use_signal(|| None::<ProxyState>);
     let mut search_query = use_signal(|| String::new());
 
-    let show_search = proxies().len() > 2;
+    let show_search = tunnels().len() > 2;
     let query = search_query().trim().to_lowercase();
-    let filtered_proxies: Vec<ProxyState> = if query.is_empty() {
-        proxies().into_iter().collect()
+    let filtered_tunnels: Vec<TunnelSummary> = if query.is_empty() {
+        tunnels().into_iter().collect()
     } else {
-        proxies()
+        tunnels()
             .into_iter()
-            .filter(|p| {
-                p.info.label().to_lowercase().contains(&query)
-                    || p.info.domain().to_lowercase().contains(&query)
-                    || p.info.local_url().to_lowercase().contains(&query)
-                    || p.info.datum_resource_url().to_lowercase().contains(&query)
+            .filter(|t| {
+                t.label.to_lowercase().contains(&query)
+                    || t.id.to_lowercase().contains(&query)
+                    || t.endpoint.to_lowercase().contains(&query)
+                    || t.hostnames.iter().any(|h| h.to_lowercase().contains(&query))
             })
             .collect()
     };
 
-    let list = if proxies().is_empty() {
+    let list = if tunnels().is_empty() {
         rsx! {
             div { class: "space-y-5",
                 div { class: "relative rounded-lg border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
@@ -122,17 +153,12 @@ pub fn ProxiesList() -> Element {
                         }
                     }
                 }
-                for proxy in filtered_proxies.into_iter() {
+                for tunnel in filtered_tunnels.into_iter() {
                     TunnelCard {
-                        key: "{proxy.id()}",
-                        proxy,
-                        show_view_item: true,
-                        show_bandwidth: false,
+                        key: "{tunnel.id}",
+                        tunnel,
                         on_delete: on_delete_handler,
-                        on_edit: move |p| {
-                            editing_proxy.set(Some(p));
-                            dialog_open.set(true);
-                        },
+                        on_edit: on_edit_handler,
                     }
                 }
             }
@@ -143,16 +169,11 @@ pub fn ProxiesList() -> Element {
         div { class: "max-w-5xl mx-auto", {list} }
         AddTunnelDialog {
             open: dialog_open,
-            on_open_change: move |open| {
-                dialog_open.set(open);
-                if !open {
-                    editing_proxy.set(None);
-                }
-            },
-            initial_proxy: editing_proxy,
+            on_open_change: move |open| dialog_open.set(open),
+            initial_proxy: initial_proxy_for_dialog,
             on_save_success: move |_| {
                 let state = consume_context::<AppState>();
-                proxies.set(state.listen_node().proxies());
+                state.bump_tunnel_refresh();
             },
         }
     }
@@ -160,41 +181,57 @@ pub fn ProxiesList() -> Element {
 
 #[component]
 pub fn TunnelCard(
-    proxy: ProxyState,
+    tunnel: TunnelSummary,
+    on_delete: EventHandler<TunnelSummary>,
+    #[props(default = true)]
     show_view_item: bool,
+    #[props(default = false)]
     show_bandwidth: bool,
-    on_delete: EventHandler<ProxyState>,
-    on_edit: EventHandler<ProxyState>,
+    #[props(optional)]
+    on_edit: Option<EventHandler<TunnelSummary>>,
 ) -> Element {
-    let initial = proxy.clone();
-    let mut proxy_signal = use_signal(move || initial);
+    let tunnel_initial = tunnel.clone();
+    let tunnel_for_effect = tunnel.clone();
+    let mut tunnel_signal = use_signal(move || tunnel_initial.clone());
+    use_effect(move || tunnel_signal.set(tunnel_for_effect.clone()));
+
     let mut menu_open = use_signal(|| None::<bool>);
     let nav = use_navigator();
-    // Sync prop into local state when the list refreshes (e.g. after edit). Clone so proxy stays available for display.
-    let proxy_for_effect = proxy.clone();
-    use_effect(move || proxy_signal.set(proxy_for_effect.clone()));
+    let state = consume_context::<AppState>();
 
-    let mut toggle_action = use_action(move |state: bool| async move {
-        let id = proxy_signal().id().to_string();
-        let app_state = consume_context::<AppState>();
-        let node = app_state.listen_node();
-        // Use latest proxy from node so we don't overwrite name/other fields with stale proxy_signal.
-        let mut proxy = node
-            .proxies()
-            .into_iter()
-            .find(|p| p.id() == id)
-            .unwrap_or_else(|| proxy_signal().clone());
-        proxy.enabled = state;
-        if let Err(err) = node.set_proxy(proxy.clone()).await {
-            warn!("Update proxy state failed: {err:#}");
-            Err(err)
-        } else {
-            proxy_signal.set(proxy);
-            Ok(())
+    let mut toggle_action = use_action(move |next_enabled: bool| {
+        let state = state.clone();
+        async move {
+            let tunnel = tunnel_signal().clone();
+            let updated = state
+                .tunnel_service()
+                .set_enabled_active(&tunnel.id, next_enabled)
+                .await?;
+            if next_enabled {
+                if let Some(selected) = state.selected_context() {
+                    state.heartbeat().register_project(selected.project_id).await;
+                }
+            }
+            state.upsert_tunnel(updated.clone());
+            tunnel_signal.set(updated);
+            state.bump_tunnel_refresh();
+            n0_error::Ok(())
         }
     });
 
-    // Display from prop so the card updates immediately when the list refreshes after edit.
+    let tunnel = tunnel_signal();
+    let display_hostname = tunnel
+        .hostnames
+        .first()
+        .cloned()
+        .unwrap_or_else(|| tunnel.id.clone());
+    let display_hostname_href = display_hostname.clone();
+    let display_endpoint = if tunnel.endpoint.is_empty() {
+        "unknown".to_string()
+    } else {
+        tunnel.endpoint.clone()
+    };
+    let display_endpoint_href = display_endpoint.clone();
 
     let wrapper_class = if show_bandwidth {
         "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
@@ -208,9 +245,9 @@ pub fn TunnelCard(
             div { class: "",
                 // header row: title + toggle
                 div { class: "px-4 py-2.5 flex items-center justify-between",
-                    h2 { class: "text-md font-normal text-foreground", {proxy.info.label()} }
+                    h2 { class: "text-md font-normal text-foreground", {tunnel.label} }
                     Switch {
-                        checked: proxy.enabled,
+                        checked: tunnel.enabled,
                         disabled: toggle_action.pending(),
                         on_checked_change: move |next| toggle_action.call(next),
                         SwitchThumb {}
@@ -230,8 +267,8 @@ pub fn TunnelCard(
                             }
                             a {
                                 class: "text-xs text-foreground",
-                                href: format!("http://{}", proxy.info.domain()),
-                                {proxy.info.domain()}
+                                href: format!("http://{}", display_hostname_href),
+                                {display_hostname}
                             }
                         }
                         div { class: "flex items-center gap-2.5 text-icon-tunnel",
@@ -241,8 +278,8 @@ pub fn TunnelCard(
                             }
                             a {
                                 class: "text-xs text-foreground",
-                                href: proxy.info.local_url(),
-                                {proxy.info.local_url()}
+                                href: format!("http://{}", display_endpoint_href),
+                                {display_endpoint}
                             }
                         }
                         div { class: "flex items-center gap-2.5 text-icon-tunnel",
@@ -250,7 +287,9 @@ pub fn TunnelCard(
                                 source: IconSource::Named("power-cable".into()),
                                 size: 14,
                             }
-                            span { class: "text-xs text-foreground", {proxy.info.datum_resource_url()} }
+                            span { class: "text-xs text-foreground",
+                                {format!("datum://{}", tunnel.id)}
+                            }
                         }
                     }
                     div { class: "relative",
@@ -274,59 +313,36 @@ pub fn TunnelCard(
                                                 index: use_signal(|| 0),
                                                 disabled: use_signal(|| false),
                                                 on_select: move |_| {
-                                                    let id = proxy_signal().id().to_string();
+                                                    let id = tunnel_signal().id.clone();
                                                     nav.push(Route::TunnelBandwidth { id });
                                                 },
                                                 "View"
                                             }
                                         }
                                     } else {
-                                        rsx! {}
+                                        rsx! {
+                                            Fragment {}
+                                        }
                                     }
                                 }
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "edit".to_string()),
-                                    index: use_signal(|| 0),
-                                    disabled: use_signal(|| false),
-                                    on_select: move |_| on_edit.call(proxy_signal().clone()),
-                                    "Edit"
-                                }
-                                DropdownMenuItem::<String> {
-                                    value: use_signal(|| "dns".to_string()),
                                     index: use_signal(|| 1),
                                     disabled: use_signal(|| false),
                                     on_select: move |_| {
-                                        let url = proxy_signal().info.datum_url();
-                                        spawn(async move {
-                                            if let Err(e) = that(&url) {
-                                                tracing::warn!("Failed to open URL: {e}");
-                                            }
-                                        });
+                                        let t = tunnel_signal().clone();
+                                        if let Some(ref on_edit) = on_edit {
+                                            on_edit.call(t);
+                                        }
                                     },
-                                    icon: Some(IconSource::Named("external-link".into())),
-                                    "DNS Config"
-                                }
-                                DropdownMenuItem::<String> {
-                                    value: use_signal(|| "proxy".to_string()),
-                                    index: use_signal(|| 2),
-                                    disabled: use_signal(|| false),
-                                    on_select: move |_| {
-                                        let url = proxy_signal().info.datum_url();
-                                        spawn(async move {
-                                            if let Err(e) = that(&url) {
-                                                tracing::warn!("Failed to open URL: {e}");
-                                            }
-                                        });
-                                    },
-                                    icon: Some(IconSource::Named("external-link".into())),
-                                    "Proxy Config"
+                                    "Edit"
                                 }
                                 DropdownMenuSeparator {}
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "delete".to_string()),
-                                    index: use_signal(|| 3),
+                                    index: use_signal(|| 2),
                                     disabled: use_signal(|| false),
-                                    on_select: move |_| on_delete.call(proxy_signal().clone()),
+                                    on_select: move |_| on_delete.call(tunnel_signal().clone()),
                                     destructive: true,
                                     "Delete"
                                 }

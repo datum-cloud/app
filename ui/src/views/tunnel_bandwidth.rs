@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local};
 use dioxus::prelude::*;
-use lib::ProxyState;
+use lib::TunnelSummary;
 
 use crate::{
     components::{Icon, IconSource, skeleton::Skeleton},
@@ -23,7 +23,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
 
     let mut loading = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
-    let mut proxy_loaded = use_signal(|| None::<ProxyState>);
+    let mut tunnel_loaded = use_signal(|| None::<TunnelSummary>);
 
     let mut title = use_signal(|| "".to_string());
     let mut codename = use_signal(|| "".to_string());
@@ -32,36 +32,27 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let mut latest_send = use_signal(|| 0u64);
     let mut latest_recv = use_signal(|| 0u64);
 
-    // Load proxy metadata and keep it in sync when state updates (e.g. after edit/save).
+    // Load tunnel metadata and keep in sync when tunnel list refreshes (e.g. after edit/delete).
     use_future({
         let id = id.clone();
         move || {
             let id = id.clone();
             async move {
                 let state = consume_context::<AppState>();
-                let node = state.listen_node();
-                let updated = node.state_updated();
-                tokio::pin!(updated);
-
+                let refresh = state.tunnel_refresh();
                 loop {
-                    if proxy_loaded().is_none() {
-                        loading.set(true);
-                    }
+                    loading.set(true);
                     load_error.set(None);
-                    let proxies = node.proxies();
+                    let tunnel = state.tunnel_service().get_active(&id).await.ok().flatten();
                     loading.set(false);
-                    match proxies.iter().find(|p| p.id() == &id) {
-                        Some(proxy) => {
-                            proxy_loaded.set(Some(proxy.clone()));
-                            title.set(proxy.info.label().to_owned());
-                            codename.set(proxy.id().to_owned());
-                        }
-                        None => {
-                            load_error.set(Some("Tunnel not found".to_string()));
-                        }
+                    tunnel_loaded.set(tunnel.clone());
+                    if let Some(ref t) = tunnel {
+                        title.set(t.label.clone());
+                        codename.set(t.id.clone());
+                    } else {
+                        load_error.set(Some("Tunnel not found".to_string()));
                     }
-                    (&mut updated).await;
-                    updated.set(node.state().updated());
+                    refresh.notified().await;
                 }
             }
         }
@@ -144,6 +135,34 @@ pub fn TunnelBandwidth(id: String) -> Element {
         }
     });
 
+    let state_for_delete = consume_context::<AppState>().clone();
+    let nav_for_delete = nav.clone();
+    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
+    let mut on_delete = use_action(move |tunnel: TunnelSummary| {
+        let state = state_for_delete.clone();
+        let nav = nav_for_delete.clone();
+        async move {
+            debug!("on delete called: {}", tunnel.id);
+            let outcome = state
+                .tunnel_service()
+                .delete_active(&tunnel.id)
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("delete tunnel failed: {err:#}");
+                })?;
+            if outcome.connector_deleted {
+                state
+                    .heartbeat()
+                    .deregister_project(&outcome.project_id)
+                    .await;
+            }
+            state.remove_tunnel(&tunnel.id);
+            state.bump_tunnel_refresh();
+            let _ = nav.push(Route::ProxiesList {});
+            n0_error::Ok(())
+        }
+    });
+
     if loading() {
         return rsx! {
             div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
@@ -207,20 +226,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
         };
     }
 
-    let mut on_delete = use_action(move |proxy: ProxyState| async move {
-        let state = consume_context::<AppState>();
-        debug!("on delete called: {}", proxy.id());
-        state
-            .listen_node()
-            .remove_proxy(proxy.id())
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("delete tunnel failed: {err:#}");
-            })?;
-        n0_error::Ok(())
-    });
-    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
-    let proxy = proxy_loaded().expect("proxy loaded when not loading and no error");
+    let tunnel = tunnel_loaded().expect("tunnel loaded when not loading and no error");
 
     rsx! {
         div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
@@ -239,20 +245,15 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
 
             TunnelCard {
-                key: "{proxy.id()}",
-                proxy: proxy.clone(),
+                key: "{tunnel.id}",
+                tunnel: tunnel.clone(),
+                on_delete: move |tunnel_to_delete: TunnelSummary| {
+                    on_delete.call(tunnel_to_delete);
+                },
                 show_view_item: false,
                 show_bandwidth: true,
-                on_delete: move |proxy_to_delete: ProxyState| {
-                    let nav = nav.clone();
-                    let fut = on_delete.call(proxy_to_delete);
-                    spawn(async move {
-                        let _ = fut.await;
-                        let _ = nav.push(Route::ProxiesList {});
-                    });
-                },
-                on_edit: move |proxy_to_edit: ProxyState| {
-                    open_edit_dialog.editing_proxy.set(Some(proxy_to_edit.clone()));
+                on_edit: move |tunnel_to_edit: TunnelSummary| {
+                    open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit));
                     open_edit_dialog.dialog_open.set(true);
                 },
             }

@@ -10,7 +10,7 @@ use n0_error::Result;
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, CreateProxy, EditProxy, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
     TunnelBandwidth,
 };
 
@@ -50,12 +50,6 @@ enum Route {
     #[layout(Sidebar)]
         #[route("/proxies")]
         ProxiesList {},
-        // The route attribute can include dynamic parameters that implement [`std::str::FromStr`] and [`std::fmt::Display`] with the `:` syntax.
-        // In this case, id will match any integer like `/blog/123` or `/blog/-456`.
-        #[route("/proxy/create")]
-        CreateProxy {},
-        #[route("/proxy/edit/:id")]
-        EditProxy { id: String },
         #[route("/proxy/edit/:id/bandwidth")]
         TunnelBandwidth { id: String },
         #[route("/proxy/join")]
