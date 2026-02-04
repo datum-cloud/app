@@ -104,14 +104,18 @@ pub fn Sidebar() -> Element {
                     }
                     span { class: "text-xs", "Invite" }
                 }
-                        // div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
-            //     Icon {
-            //         source: IconSource::Named("settings".into()),
-            //         size: 16,
-            //         class: "text-icon-select",
-            //     }
-            //     span { class: "text-xs", "Settings" }
-            // }
+                div {
+                    class: "flex items-center gap-3 cursor-default hover:opacity-80 duration-300 text-foreground text-xs",
+                    onclick: move |_| {
+                        let _ = nav.push(Route::Settings {});
+                    },
+                    Icon {
+                        source: IconSource::Named("settings".into()),
+                        size: 16,
+                        class: "text-icon-select",
+                    }
+                    span { class: "text-xs", "Settings" }
+                }
             }
         }
     };

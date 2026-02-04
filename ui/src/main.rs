@@ -10,7 +10,7 @@ use n0_error::Result;
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, Sidebar, Signup,
     TunnelBandwidth,
 };
 
@@ -54,6 +54,8 @@ enum Route {
         TunnelBandwidth { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
+        #[route("/settings")]
+        Settings {},
 }
 
 fn main() {
@@ -87,6 +89,7 @@ fn main() {
                             .with_title("Datum")
                             .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
                             .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
+                            .with_resizable(false)
                             // Required for rounded app chrome: we render our own rounded container inside.
                             .with_transparent(true)
                             .with_decorations(false)
