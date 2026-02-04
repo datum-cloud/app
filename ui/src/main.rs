@@ -70,9 +70,11 @@ fn main() {
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
 
-    // Set macOS dock icon programmatically (needed for dx serve / development mode)
+    // Set macOS dock icon programmatically only in development (dx serve / cargo run).
     #[cfg(all(feature = "desktop", target_os = "macos"))]
-    set_macos_dock_icon();
+    if !running_from_app_bundle() {
+        set_macos_dock_icon();
+    }
 
     #[cfg(feature = "desktop")]
     {
@@ -240,7 +242,17 @@ fn window_icon() -> dioxus_desktop::tao::window::Icon {
         .expect("Failed to create window icon from image")
 }
 
-/// Set the macOS dock icon programmatically (for development mode without a bundle)
+/// True when the executable is inside a .app bundle (e.g. production build).
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn running_from_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
+}
+
+/// Set the macOS dock icon programmatically using the .icns file (dev mode only)
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 fn set_macos_dock_icon() {
     use objc2::AllocAnyThread;
@@ -248,7 +260,8 @@ fn set_macos_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
+    // Use the multi-resolution .icns file instead of a single PNG
+    let icon_bytes = include_bytes!("../assets/bundle/macos/Datum.icns");
 
     // SAFETY: We're on the main thread when this is called during app initialization
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
