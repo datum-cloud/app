@@ -524,7 +524,11 @@ impl AuthClient {
         let auth = auth.get()?;
         let new_auth = match self.client.refresh(&auth.tokens).await {
             Ok(auth) => auth,
-            Err(err) => Err(err).context("Failed to refresh auth tokens, needs login")?,
+            Err(err) => {
+                warn!("Failed to refresh auth tokens, logging out: {err:#}");
+                self.state.set(None).await?;
+                Err(err).context("Failed to refresh auth tokens, needs login")?
+            }
         };
         self.state.set(Some(new_auth)).await?;
         Ok(())

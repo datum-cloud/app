@@ -17,7 +17,6 @@ use dioxus_desktop::DesktopContext;
 /// Provided by Sidebar so child routes (e.g. TunnelBandwidth) can open the Add/Edit tunnel dialog.
 #[derive(Clone)]
 pub struct OpenEditTunnelDialog {
-    pub editing_proxy: Signal<Option<lib::ProxyState>>,
     pub editing_tunnel: Signal<Option<lib::TunnelSummary>>,
     pub dialog_open: Signal<bool>,
 }
@@ -37,11 +36,9 @@ pub fn Sidebar() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
     let mut add_tunnel_dialog_open = use_signal(|| false);
-    let editing_proxy = use_signal(|| None::<lib::ProxyState>);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
 
     provide_context(OpenEditTunnelDialog {
-        editing_proxy,
         editing_tunnel,
         dialog_open: add_tunnel_dialog_open,
     });
@@ -126,7 +123,6 @@ pub fn Sidebar() -> Element {
                         editing_tunnel.set(None);
                     }
                 },
-                initial_proxy: editing_proxy,
                 initial_tunnel: Some(editing_tunnel),
                 on_save_success: move |_| {
                     editing_tunnel.set(None);

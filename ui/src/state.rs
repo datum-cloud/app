@@ -2,7 +2,7 @@ use dioxus::prelude::WritableExt;
 use lib::{
     HeartbeatAgent, SelectedContext, TunnelSummary,
     datum_cloud::{ApiEnv, DatumCloudClient},
-    ListenNode, Node, ProjectControlPlaneClient, Repo, TunnelService,
+    ListenNode, Node, Repo, TunnelService,
 };
 use tokio::sync::Notify;
 use tracing::info;
@@ -47,12 +47,6 @@ impl AppState {
 
     pub fn heartbeat(&self) -> &HeartbeatAgent {
         &self.heartbeat
-    }
-
-    pub async fn project_control_plane(
-        &self,
-    ) -> n0_error::Result<Option<ProjectControlPlaneClient>> {
-        self.datum.project_control_plane_client_active().await
     }
 
     pub fn listen_node(&self) -> &ListenNode {
