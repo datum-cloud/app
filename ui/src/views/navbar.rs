@@ -95,7 +95,7 @@ pub fn Sidebar() -> Element {
                     span { class: "text-xs leading-4", "Docs" }
                 }
                 div {
-                    class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                    class: "flex items-center gap-3 cursor-default hover:opacity-80 duration-300 text-foreground text-xs",
                     onclick: move |_| invite_user_dialog_open.set(true),
                     Icon {
                         source: IconSource::Named("users".into()),
