@@ -62,7 +62,7 @@ pub fn DropdownMenuSeparator() -> Element {
 }
 
 const ITEM_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-default";
-const ITEM_DESTRUCTIVE_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-alert-red-dark rounded-md cursor-default";
+const ITEM_DESTRUCTIVE_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-red-50 text-alert-red-dark rounded-md cursor-default";
 
 /// Props for our DropdownMenuItem wrapper (adds `destructive` and optional `icon` over the primitive).
 #[derive(Props, Clone, PartialEq)]

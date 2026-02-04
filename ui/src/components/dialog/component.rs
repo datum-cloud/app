@@ -23,7 +23,7 @@ pub fn DialogRoot(props: DialogRootProps) -> Element {
 pub fn DialogContent(props: DialogContentProps) -> Element {
     rsx! {
         dialog::DialogContent {
-            class: "bg-white rounded-md p-6.5 shadow-dialog animate-in fade-in duration-300",
+            class: "bg-white rounded-md p-6.5 py-7 shadow-dialog animate-in fade-in duration-300",
             id: props.id,
             attributes: props.attributes,
             {props.children}

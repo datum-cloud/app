@@ -3,7 +3,7 @@ use crate::{
         dropdown_menu::{
             DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
         },
-        AddTunnelDialog, Button, ButtonKind, Icon, IconSource,
+        AddTunnelDialog, Button, ButtonKind, Icon, IconSource, InviteUserDialog,
         select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize, SelectTrigger, SelectValue},
     },
     state::AppState,
@@ -13,6 +13,7 @@ use lib::datum_cloud::{LoginState, OrganizationWithProjects};
 use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
 use dioxus_desktop::DesktopContext;
+use open::that;
 
 /// Provided by Sidebar so child routes (e.g. TunnelBandwidth) can open the Add/Edit tunnel dialog.
 #[derive(Clone)]
@@ -37,6 +38,7 @@ pub fn Sidebar() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
     let mut add_tunnel_dialog_open = use_signal(|| false);
+    let mut invite_user_dialog_open = use_signal(|| false);
     let editing_proxy = use_signal(|| None::<lib::ProxyState>);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
 
@@ -80,7 +82,11 @@ pub fn Sidebar() -> Element {
 
             // Bottom nav (visual-only for now)
             div { class: "w-full mt-auto space-y-4 pl-2",
-                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                div {
+                    class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                    onclick: move |_| {
+                        let _ = that("https://www.datum.net/docs/");
+                    },
                     Icon {
                         source: IconSource::Named("book-open".into()),
                         size: 16,
@@ -88,7 +94,9 @@ pub fn Sidebar() -> Element {
                     }
                     span { class: "text-xs leading-4", "Docs" }
                 }
-                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                div {
+                    class: "flex items-center gap-3 cursor-default hover:opacity-80 duration-300 text-foreground text-xs",
+                    onclick: move |_| invite_user_dialog_open.set(true),
                     Icon {
                         source: IconSource::Named("users".into()),
                         size: 16,
@@ -96,7 +104,11 @@ pub fn Sidebar() -> Element {
                     }
                     span { class: "text-xs", "Invite" }
                 }
-                div { class: "flex items-center gap-3 cursor-pointer hover:opacity-80 duration-300 text-foreground text-xs",
+                div {
+                    class: "flex items-center gap-3 cursor-default hover:opacity-80 duration-300 text-foreground text-xs",
+                    onclick: move |_| {
+                        let _ = nav.push(Route::Settings {});
+                    },
                     Icon {
                         source: IconSource::Named("settings".into()),
                         size: 16,
@@ -131,6 +143,10 @@ pub fn Sidebar() -> Element {
                 on_save_success: move |_| {
                     editing_tunnel.set(None);
                 },
+            }
+            InviteUserDialog {
+                open: invite_user_dialog_open(),
+                on_open_change: move |open| invite_user_dialog_open.set(open),
             }
         }
     }
