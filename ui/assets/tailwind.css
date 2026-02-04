@@ -4,7 +4,6 @@
 @layer theme {
   :root, :host {
     --color-red-50: oklch(97.1% 0.013 17.38);
-    --color-red-100: oklch(93.6% 0.032 17.717);
     --color-red-200: oklch(88.5% 0.062 18.334);
     --color-red-500: oklch(63.7% 0.237 25.331);
     --color-red-600: oklch(57.7% 0.245 27.325);
@@ -842,9 +841,6 @@
   .bg-red-50 {
     background-color: var(--color-red-50);
   }
-  .bg-red-600 {
-    background-color: var(--color-red-600);
-  }
   .bg-switch-disabled {
     background-color: var(--alert-red-dark);
   }
@@ -861,12 +857,6 @@
     background-color: color-mix(in srgb, #fff 30%, transparent);
     @supports (color: color-mix(in lab, red, red)) {
       background-color: color-mix(in oklab, var(--color-white) 30%, transparent);
-    }
-  }
-  .bg-white\/80 {
-    background-color: color-mix(in srgb, #fff 80%, transparent);
-    @supports (color: color-mix(in lab, red, red)) {
-      background-color: color-mix(in oklab, var(--color-white) 80%, transparent);
     }
   }
   .bg-contain {
@@ -1072,12 +1062,6 @@
       color: color-mix(in oklab, var(--midnight-fjord) 10%, transparent);
     }
   }
-  .text-foreground\/30 {
-    color: color-mix(in srgb, oklch(0.228 0.045 253.7) 30%, transparent);
-    @supports (color: color-mix(in lab, red, red)) {
-      color: color-mix(in oklab, var(--midnight-fjord) 30%, transparent);
-    }
-  }
   .text-foreground\/50 {
     color: color-mix(in srgb, oklch(0.228 0.045 253.7) 50%, transparent);
     @supports (color: color-mix(in lab, red, red)) {
@@ -1129,14 +1113,8 @@
   .text-slate-500 {
     color: var(--color-slate-500);
   }
-  .text-white {
-    color: var(--color-white);
-  }
   .uppercase {
     text-transform: uppercase;
-  }
-  .italic {
-    font-style: italic;
   }
   .underline {
     text-decoration-line: underline;
@@ -1170,11 +1148,6 @@
   }
   .filter {
     filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
-  }
-  .backdrop-blur-sm {
-    --tw-backdrop-blur: blur(var(--blur-sm));
-    -webkit-backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
-    backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
   }
   .transition-colors {
     transition-property: color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to;
@@ -1268,13 +1241,6 @@
     &:hover {
       @media (hover: hover) {
         background-color: var(--color-red-50);
-      }
-    }
-  }
-  .hover\:bg-red-700 {
-    &:hover {
-      @media (hover: hover) {
-        background-color: var(--color-red-700);
       }
     }
   }
@@ -1743,42 +1709,6 @@
   syntax: "*";
   inherits: false;
 }
-@property --tw-backdrop-blur {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-brightness {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-contrast {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-grayscale {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-hue-rotate {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-invert {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-opacity {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-saturate {
-  syntax: "*";
-  inherits: false;
-}
-@property --tw-backdrop-sepia {
-  syntax: "*";
-  inherits: false;
-}
 @property --tw-duration {
   syntax: "*";
   inherits: false;
@@ -1847,15 +1777,6 @@
       --tw-drop-shadow-color: initial;
       --tw-drop-shadow-alpha: 100%;
       --tw-drop-shadow-size: initial;
-      --tw-backdrop-blur: initial;
-      --tw-backdrop-brightness: initial;
-      --tw-backdrop-contrast: initial;
-      --tw-backdrop-grayscale: initial;
-      --tw-backdrop-hue-rotate: initial;
-      --tw-backdrop-invert: initial;
-      --tw-backdrop-opacity: initial;
-      --tw-backdrop-saturate: initial;
-      --tw-backdrop-sepia: initial;
       --tw-duration: initial;
       --tw-outline-style: solid;
       --tw-animation-delay: 0s;
