@@ -10,7 +10,7 @@ use n0_error::Result;
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, Sidebar, Signup,
     TunnelBandwidth,
 };
 
@@ -54,6 +54,8 @@ enum Route {
         TunnelBandwidth { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
+        #[route("/settings")]
+        Settings {},
 }
 
 fn main() {
@@ -67,10 +69,6 @@ fn main() {
 
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
-
-    // Set macOS dock icon programmatically (needed for dx serve / development mode)
-    #[cfg(all(feature = "desktop", target_os = "macos"))]
-    set_macos_dock_icon();
 
     #[cfg(feature = "desktop")]
     {
@@ -87,6 +85,7 @@ fn main() {
                             .with_title("Datum")
                             .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
                             .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
+                            .with_resizable(false)
                             // Required for rounded app chrome: we render our own rounded container inside.
                             .with_transparent(true)
                             .with_decorations(false)
@@ -131,7 +130,7 @@ fn App() -> Element {
         app_state_ready.set(true);
     });
 
-    // Set the macOS menu bar app name after the app launches (menu now exists)
+    // Set macOS menu bar name and dock icon after the app launches (run loop must be active)
     #[cfg(all(feature = "desktop", target_os = "macos"))]
     {
         use_effect(|| {
@@ -213,7 +212,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
 fn icon() -> Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -227,7 +226,7 @@ fn icon() -> Icon {
 fn window_icon() -> dioxus_desktop::tao::window::Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -237,27 +236,14 @@ fn window_icon() -> dioxus_desktop::tao::window::Icon {
         .expect("Failed to create window icon from image")
 }
 
-/// Set the macOS dock icon programmatically (for development mode without a bundle)
+/// True when the executable is inside a .app bundle (e.g. production build).
 #[cfg(all(feature = "desktop", target_os = "macos"))]
-fn set_macos_dock_icon() {
-    use objc2::AllocAnyThread;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
-
-    // SAFETY: We're on the main thread when this is called during app initialization
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-
-    let app = NSApplication::sharedApplication(mtm);
-
-    // Set the dock icon
-    let ns_data = NSData::with_bytes(icon_bytes);
-    if let Some(ns_image) = NSImage::initWithData(NSImage::alloc(), &ns_data) {
-        // SAFETY: We're setting a valid NSImage on the main thread
-        unsafe { app.setApplicationIconImage(Some(&ns_image)) };
-    }
+fn running_from_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
 }
 
 /// Custom Objective-C class to handle About menu action and route navigation
@@ -305,8 +291,8 @@ fn set_macos_menu_name() {
     use std::ffi::CStr;
     use std::sync::Once;
     use objc2::runtime::Sel;
-    use objc2::{ClassType, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
     use objc2_foundation::NSString;
 
     // SAFETY: We're on the main thread (called from use_effect in the UI)
@@ -451,6 +437,66 @@ fn set_macos_menu_name() {
                         quit_item.setImage(None);
                         quit_item.setOnStateImage(None);
                         quit_item.setOffStateImage(None);
+                    }
+
+                    // Add Edit menu with Paste (Cmd+V), Copy, Cut, Select All so keyboard shortcuts
+                    // work in text fields (e.g. search). Without this menu, Cmd+V does nothing.
+                    unsafe {
+                        let edit_menu = NSMenu::initWithTitle(
+                            NSMenu::alloc(mtm),
+                            &NSString::from_str("Edit"),
+                        );
+                        let key_v = NSString::from_str("v");
+                        let key_x = NSString::from_str("x");
+                        let key_c = NSString::from_str("c");
+                        let key_a = NSString::from_str("a");
+                        let paste_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"paste:\0").unwrap());
+                        let copy_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"copy:\0").unwrap());
+                        let cut_sel = Sel::register(CStr::from_bytes_with_nul(b"cut:\0").unwrap());
+                        let select_all_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"selectAll:\0").unwrap());
+                        let cmd = NSEventModifierFlags::Command;
+
+                        let paste_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Paste"),
+                            Some(paste_sel),
+                            &key_v,
+                            0,
+                        );
+                        paste_item.setKeyEquivalentModifierMask(cmd);
+                        let copy_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Copy"),
+                            Some(copy_sel),
+                            &key_c,
+                            1,
+                        );
+                        copy_item.setKeyEquivalentModifierMask(cmd);
+                        let cut_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Cut"),
+                            Some(cut_sel),
+                            &key_x,
+                            2,
+                        );
+                        cut_item.setKeyEquivalentModifierMask(cmd);
+                        let select_all_item =
+                            edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &NSString::from_str("Select All"),
+                                Some(select_all_sel),
+                                &key_a,
+                                3,
+                            );
+                        select_all_item.setKeyEquivalentModifierMask(cmd);
+
+                        let edit_title_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str("Edit"),
+                            None,
+                            &NSString::from_str(""),
+                        );
+                        edit_title_item.setSubmenu(Some(&edit_menu));
+                        main_menu.insertItem_atIndex(&edit_title_item, 1);
                     }
                 });
             }
