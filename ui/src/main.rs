@@ -70,12 +70,6 @@ fn main() {
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
 
-    // Set macOS dock icon programmatically only in development (dx serve / cargo run).
-    #[cfg(all(feature = "desktop", target_os = "macos"))]
-    if !running_from_app_bundle() {
-        set_macos_dock_icon();
-    }
-
     #[cfg(feature = "desktop")]
     {
         // Use a custom titlebar so we can theme the top chrome (height + color).
@@ -136,7 +130,7 @@ fn App() -> Element {
         app_state_ready.set(true);
     });
 
-    // Set the macOS menu bar app name after the app launches (menu now exists)
+    // Set macOS menu bar name and dock icon after the app launches (run loop must be active)
     #[cfg(all(feature = "desktop", target_os = "macos"))]
     {
         use_effect(|| {
@@ -250,30 +244,6 @@ fn running_from_app_bundle() -> bool {
         .and_then(|p| p.canonicalize().ok())
         .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
         .unwrap_or(false)
-}
-
-/// Set the macOS dock icon programmatically using the .icns file (dev mode only)
-#[cfg(all(feature = "desktop", target_os = "macos"))]
-fn set_macos_dock_icon() {
-    use objc2::AllocAnyThread;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    // Use the multi-resolution .icns file instead of a single PNG
-    let icon_bytes = include_bytes!("../assets/bundle/macos/Datum.icns");
-
-    // SAFETY: We're on the main thread when this is called during app initialization
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-
-    let app = NSApplication::sharedApplication(mtm);
-
-    // Set the dock icon
-    let ns_data = NSData::with_bytes(icon_bytes);
-    if let Some(ns_image) = NSImage::initWithData(NSImage::alloc(), &ns_data) {
-        // SAFETY: We're setting a valid NSImage on the main thread
-        unsafe { app.setApplicationIconImage(Some(&ns_image)) };
-    }
 }
 
 /// Custom Objective-C class to handle About menu action and route navigation
