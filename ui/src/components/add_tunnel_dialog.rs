@@ -201,7 +201,7 @@ pub fn AddTunnelDialog(
                             div { class: "text-sm mt-1 break-words", "{err}" }
                         }
                     }
-                    div { class: "flex items-center gap-4 pt-2 justify-start",
+                    div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
                             class: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending()

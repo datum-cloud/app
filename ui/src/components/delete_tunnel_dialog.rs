@@ -64,7 +64,7 @@ pub fn DeleteTunnelDialog(
                         }
                     }
                 }
-                div { class: "flex items-center gap-4 justify-end",
+                div { class: "flex items-center gap-2.5 justify-end",
                     Button {
                         kind: ButtonKind::Ghost,
                         onclick: cancel_delete_handler,
