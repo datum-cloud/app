@@ -291,8 +291,8 @@ fn set_macos_menu_name() {
     use std::ffi::CStr;
     use std::sync::Once;
     use objc2::runtime::Sel;
-    use objc2::{ClassType, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
     use objc2_foundation::NSString;
 
     // SAFETY: We're on the main thread (called from use_effect in the UI)
@@ -437,6 +437,66 @@ fn set_macos_menu_name() {
                         quit_item.setImage(None);
                         quit_item.setOnStateImage(None);
                         quit_item.setOffStateImage(None);
+                    }
+
+                    // Add Edit menu with Paste (Cmd+V), Copy, Cut, Select All so keyboard shortcuts
+                    // work in text fields (e.g. search). Without this menu, Cmd+V does nothing.
+                    unsafe {
+                        let edit_menu = NSMenu::initWithTitle(
+                            NSMenu::alloc(mtm),
+                            &NSString::from_str("Edit"),
+                        );
+                        let key_v = NSString::from_str("v");
+                        let key_x = NSString::from_str("x");
+                        let key_c = NSString::from_str("c");
+                        let key_a = NSString::from_str("a");
+                        let paste_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"paste:\0").unwrap());
+                        let copy_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"copy:\0").unwrap());
+                        let cut_sel = Sel::register(CStr::from_bytes_with_nul(b"cut:\0").unwrap());
+                        let select_all_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"selectAll:\0").unwrap());
+                        let cmd = NSEventModifierFlags::Command;
+
+                        let paste_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Paste"),
+                            Some(paste_sel),
+                            &key_v,
+                            0,
+                        );
+                        paste_item.setKeyEquivalentModifierMask(cmd);
+                        let copy_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Copy"),
+                            Some(copy_sel),
+                            &key_c,
+                            1,
+                        );
+                        copy_item.setKeyEquivalentModifierMask(cmd);
+                        let cut_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Cut"),
+                            Some(cut_sel),
+                            &key_x,
+                            2,
+                        );
+                        cut_item.setKeyEquivalentModifierMask(cmd);
+                        let select_all_item =
+                            edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &NSString::from_str("Select All"),
+                                Some(select_all_sel),
+                                &key_a,
+                                3,
+                            );
+                        select_all_item.setKeyEquivalentModifierMask(cmd);
+
+                        let edit_title_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str("Edit"),
+                            None,
+                            &NSString::from_str(""),
+                        );
+                        edit_title_item.setSubmenu(Some(&edit_menu));
+                        main_menu.insertItem_atIndex(&edit_title_item, 1);
                     }
                 });
             }
