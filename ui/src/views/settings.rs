@@ -65,7 +65,7 @@ pub fn Settings() -> Element {
                     a {
                         class: "text-sm text-button-link-foreground cursor-pointer flex items-center gap-2 w-fit mt-2",
                         onclick: move |_| {
-                            let _ = that("https://cloud.datum.net/account/settings");
+                            let _ = that("https://cloud.datum.net/account/general");
                         },
                         "View account details and settings"
                         Icon {
