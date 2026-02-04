@@ -4,8 +4,8 @@ mod dns_dev;
 mod tunnel_dev;
 
 use lib::{
-    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, GatewayMode, ListenNode,
-    ProxyState, Repo, TcpProxyData,
+    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, ListenNode, ProxyState, Repo,
+    TcpProxyData,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
 use std::{
@@ -148,9 +148,6 @@ pub struct ServeArgs {
     pub bind_addr: IpAddr,
     #[clap(long, default_value = "8080")]
     pub port: u16,
-    /// Gateway mode for reverse proxy (default) or forward proxy (CONNECT).
-    #[clap(long, value_enum)]
-    pub mode: Option<GatewayModeArg>,
     /// Discovery mode for connection details.
     #[clap(long, value_enum)]
     pub discovery: Option<DiscoveryModeArg>,
@@ -297,12 +294,6 @@ async fn main() -> n0_error::Result<()> {
             let bind_addr: SocketAddr = (args.bind_addr, args.port).into();
             let secret_key = repo.gateway_key().await?;
             let mut config = repo.gateway_config().await?;
-            if let Some(mode) = args.mode {
-                config.gateway_mode = match mode {
-                    GatewayModeArg::Reverse => GatewayMode::Reverse,
-                    GatewayModeArg::Forward => GatewayMode::Forward,
-                };
-            }
             if let Some(discovery) = args.discovery {
                 config.common.discovery_mode = match discovery {
                     DiscoveryModeArg::Default => DiscoveryMode::Default,
