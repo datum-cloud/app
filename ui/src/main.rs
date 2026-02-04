@@ -213,7 +213,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
 fn icon() -> Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -227,7 +227,7 @@ fn icon() -> Icon {
 fn window_icon() -> dioxus_desktop::tao::window::Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -245,7 +245,7 @@ fn set_macos_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
 
     // SAFETY: We're on the main thread when this is called during app initialization
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
