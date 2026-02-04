@@ -7,12 +7,16 @@
 mod add_tunnel_dialog;
 mod bandwidth_timeseries_chart;
 mod button;
+mod delete_tunnel_dialog;
 mod head;
 mod icon;
+mod invite_user_dialog;
 mod splash;
 mod typography;
 
 pub use add_tunnel_dialog::AddTunnelDialog;
+pub use delete_tunnel_dialog::DeleteTunnelDialog;
+pub use invite_user_dialog::InviteUserDialog;
 pub use button::Button;
 pub use button::ButtonKind;
 pub use head::Head;

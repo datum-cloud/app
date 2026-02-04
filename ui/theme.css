@@ -94,6 +94,7 @@
   --color-button-secondary-foreground: var(--midnight-fjord);
   --color-button-outline-background: var(--app-dark-utility-5);
   --color-button-outline-foreground: var(--midnight-fjord);
+  --color-button-link-foreground: var(--canyon-clay);
 
   /* Border Colors */
   --color-app-border: var(--glacier-mist-900);
