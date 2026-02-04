@@ -92,7 +92,7 @@ pub fn AddTunnelDialog(
             .project_id;
         let tunnel = state
             .tunnel_service()
-            .create_active(&label(), &address())
+            .create_active(&label().trim(), &address().trim())
             .await
             .context("Failed to create tunnel")?;
         state.upsert_tunnel(tunnel);
@@ -105,12 +105,12 @@ pub fn AddTunnelDialog(
 
     let mut save_proxy = use_action(move |existing: Option<ProxyState>| async move {
         let state = consume_context::<AppState>();
-        let service = TcpProxyData::from_host_port_str(&address()).context("Invalid address")?;
+        let service = TcpProxyData::from_host_port_str(&address().trim()).context("Invalid address")?;
         let proxy = match existing {
             Some(proxy) => {
                 let info = Advertisment {
                     resource_id: proxy.info.resource_id.clone(),
-                    label: Some(label()),
+                    label: Some(label().trim().to_string()),
                     data: service,
                 };
                 ProxyState {
@@ -119,7 +119,7 @@ pub fn AddTunnelDialog(
                 }
             }
             None => {
-                let info = Advertisment::new(service, Some(label()));
+                let info = Advertisment::new(service, Some(label().trim().to_string()));
                 ProxyState {
                     info,
                     enabled: true,
@@ -141,7 +141,7 @@ pub fn AddTunnelDialog(
         let state = consume_context::<AppState>();
         let updated = state
             .tunnel_service()
-            .update_active(&tunnel_id, &label(), &address())
+            .update_active(&tunnel_id, &label().trim(), &address().trim())
             .await
             .context("Failed to update tunnel")?;
         state.upsert_tunnel(updated);
@@ -159,8 +159,8 @@ pub fn AddTunnelDialog(
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
     let error_title = if is_edit { "Couldn't update tunnel" } else { "Couldn't create tunnel" };
 
-    let address_validation = validate_tunnel_address(&address());
-    let address_invalid = address().trim().is_empty() || address_validation.is_some();
+    let address_validation = use_memo(move || validate_tunnel_address(&address()));
+    let address_invalid = use_memo(move || address().trim().is_empty() || address_validation().is_some());
 
     rsx! {
         DialogRoot {
@@ -182,10 +182,11 @@ pub fn AddTunnelDialog(
                         label: Some("Local address to forward".into()),
                         value: "{address}",
                         placeholder: "e.g. 127.0.0.1:5173",
-                        error: address_validation.clone(),
+                        error: address_validation().clone(),
                         autocomplete: "off",
                         autocapitalize: "off",
                         autocorrect: "off",
+                        oninput: move |e: FormEvent| address.set(e.value()),
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
@@ -204,9 +205,9 @@ pub fn AddTunnelDialog(
                         Button {
                             kind: ButtonKind::Primary,
                             class: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending()
-    || address_invalid { Some("opacity-60".to_string()) } else { None },
+    || address_invalid() { Some("opacity-60".to_string()) } else { None },
                             onclick: move |_| {
-                                if address_invalid {
+                                if address_invalid() {
                                     return;
                                 }
                                 if let Some(tunnel_id) = initial_tunnel
