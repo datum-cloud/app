@@ -20,6 +20,7 @@ struct RatePoint {
 #[component]
 pub fn TunnelBandwidth(id: String) -> Element {
     let nav = use_navigator();
+    let state = consume_context::<AppState>();
 
     let mut loading = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
@@ -32,26 +33,39 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let mut latest_send = use_signal(|| 0u64);
     let mut latest_recv = use_signal(|| 0u64);
 
-    // Load tunnel metadata and keep in sync when tunnel list refreshes (e.g. after edit/delete).
+    // Load tunnel metadata and keep it in sync when state updates (e.g. after edit/save).
+    let state_for_future = state.clone();
     use_future({
         let id = id.clone();
         move || {
             let id = id.clone();
+            let state = state_for_future.clone();
             async move {
-                let state = consume_context::<AppState>();
                 let refresh = state.tunnel_refresh();
+
                 loop {
-                    loading.set(true);
-                    load_error.set(None);
-                    let tunnel = state.tunnel_service().get_active(&id).await.ok().flatten();
-                    loading.set(false);
-                    tunnel_loaded.set(tunnel.clone());
-                    if let Some(ref t) = tunnel {
-                        title.set(t.label.clone());
-                        codename.set(t.id.clone());
-                    } else {
-                        load_error.set(Some("Tunnel not found".to_string()));
+                    if tunnel_loaded().is_none() {
+                        loading.set(true);
                     }
+                    load_error.set(None);
+                    
+                    match state.tunnel_service().get_active(&id).await {
+                        Ok(Some(tunnel)) => {
+                    loading.set(false);
+                            title.set(tunnel.label.clone());
+                            codename.set(tunnel.id.clone());
+                            tunnel_loaded.set(Some(tunnel));
+                        }
+                        Ok(None) => {
+                            loading.set(false);
+                            load_error.set(Some("Tunnel not found".to_string()));
+                        }
+                        Err(err) => {
+                            loading.set(false);
+                            load_error.set(Some(format!("Failed to load tunnel: {err}")));
+                        }
+                    }
+                    
                     refresh.notified().await;
                 }
             }
@@ -135,34 +149,6 @@ pub fn TunnelBandwidth(id: String) -> Element {
         }
     });
 
-    let state_for_delete = consume_context::<AppState>().clone();
-    let nav_for_delete = nav.clone();
-    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
-    let mut on_delete = use_action(move |tunnel: TunnelSummary| {
-        let state = state_for_delete.clone();
-        let nav = nav_for_delete.clone();
-        async move {
-            debug!("on delete called: {}", tunnel.id);
-            let outcome = state
-                .tunnel_service()
-                .delete_active(&tunnel.id)
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!("delete tunnel failed: {err:#}");
-                })?;
-            if outcome.connector_deleted {
-                state
-                    .heartbeat()
-                    .deregister_project(&outcome.project_id)
-                    .await;
-            }
-            state.remove_tunnel(&tunnel.id);
-            state.bump_tunnel_refresh();
-            let _ = nav.push(Route::ProxiesList {});
-            n0_error::Ok(())
-        }
-    });
-
     if loading() {
         return rsx! {
             div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
@@ -226,6 +212,29 @@ pub fn TunnelBandwidth(id: String) -> Element {
         };
     }
 
+    let mut on_delete = use_action(move |tunnel: TunnelSummary| {
+        let state = state.clone();
+        async move {
+            debug!("on delete called: {}", tunnel.id);
+            let outcome = state
+                .tunnel_service()
+                .delete_active(&tunnel.id)
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("delete tunnel failed: {err:#}");
+            })?;
+            if outcome.connector_deleted {
+                state
+                    .heartbeat()
+                    .deregister_project(&outcome.project_id)
+                    .await;
+            }
+            state.remove_tunnel(&tunnel.id);
+            state.bump_tunnel_refresh();
+        n0_error::Ok(())
+        }
+    });
+    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
     let tunnel = tunnel_loaded().expect("tunnel loaded when not loading and no error");
 
     rsx! {
@@ -247,13 +256,18 @@ pub fn TunnelBandwidth(id: String) -> Element {
             TunnelCard {
                 key: "{tunnel.id}",
                 tunnel: tunnel.clone(),
-                on_delete: move |tunnel_to_delete: TunnelSummary| {
-                    on_delete.call(tunnel_to_delete);
-                },
                 show_view_item: false,
                 show_bandwidth: true,
+                on_delete: move |tunnel_to_delete: TunnelSummary| {
+                    let nav = nav.clone();
+                    let fut = on_delete.call(tunnel_to_delete);
+                    spawn(async move {
+                        let _ = fut.await;
+                        let _ = nav.push(Route::ProxiesList {});
+                    });
+                },
                 on_edit: move |tunnel_to_edit: TunnelSummary| {
-                    open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit));
+                    open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit.clone()));
                     open_edit_dialog.dialog_open.set(true);
                 },
             }

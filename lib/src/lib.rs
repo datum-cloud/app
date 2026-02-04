@@ -16,7 +16,7 @@ pub use heartbeat::HeartbeatAgent;
 pub use tunnels::{TunnelDeleteOutcome, TunnelService, TunnelSummary};
 pub use repo::Repo;
 pub use state::*;
-pub use config::{Config, DiscoveryMode, GatewayConfig, GatewayMode};
+pub use config::{Config, DiscoveryMode, GatewayConfig};
 
 /// The root domain for datum connect urls to subdomain from. A proxy URL will
 /// be a three-word-codename subdomain off this URL. eg: "https://vast-gold-mine.iroh.datum.net"

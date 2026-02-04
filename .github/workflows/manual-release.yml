@@ -1,11 +1,17 @@
-name: bundle
+name: manual-release
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.0.1)"
+        required: true
+        type: string
+      publish_docker:
+        description: "Publish iroh-gateway image"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   bundle:
@@ -89,7 +95,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Notarize macOS App
-        if: runner.os == 'macOS' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.os == 'macOS'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -148,18 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - name: Set Version Info and Paths
-        id: set_paths
-        env:
-          FULL_SHA: ${{ github.sha }}
-        run: |
-          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
-          echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
-          SHORT_SHA=${FULL_SHA::7}
-          echo "RELEASE_VERSION=$(date +'%Y.%m.%d')-$SHORT_SHA" >> $GITHUB_ENV
-
       - name: Download All Artifacts
         uses: actions/download-artifact@v7
         with:
@@ -181,26 +176,39 @@ jobs:
             cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
           fi
 
-      - name: Prepare Release Body Data
-        id: release_data
-        run: |
-          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
-
-      - name: Create Main Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Continuous release (${{ env.RELEASE_VERSION }})
-          tag_name: rolling
-          make_latest: true
+          name: DatumConnect ${{ inputs.version }}
+          tag_name: ${{ inputs.version }}
+          make_latest: false
           prerelease: false
-          body: |
-            This is a rolling release of DatumConnect, published automatically on every commit to main.
-
-            Version: ${{ env.RELEASE_VERSION }}
-            Commit: ${{ github.sha }}
-            Built: ${{ env.CURRENT_DATE_STR }}
-            Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-            See the release assets for SHA256 checksums.
+          draft: false
           files: artifacts/**/*
-          generate_release_notes: false
+
+  publish-docker:
+    if: ${{ inputs.publish_docker }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push iroh-gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ghcr.io/datum-cloud/iroh-gateway:${{ inputs.version }}
