@@ -210,6 +210,10 @@ pub fn HeaderBar() -> Element {
         Ok(auth) => auth.profile.email.clone(),
         Err(_) => "Not logged in".to_string(),
     };
+    let user_avatar_url = match auth_state.get() {
+        Ok(auth) => auth.profile.avatar_url.clone(),
+        Err(_) => None,
+    };
     let mut logout = use_action(move |_: ()| {
         let mut auth_changed = auth_changed.clone();
         async move {
@@ -393,22 +397,30 @@ pub fn HeaderBar() -> Element {
                             default_open: false,
                             on_open_change: move |v| profile_menu_open.set(Some(v)),
                             disabled: use_signal(|| false),
-                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-default mt-0.5 focus:outline-2 focus:outline-app-border/50",
-                                svg {
-                                    width: "18",
-                                    height: "18",
-                                    view_box: "0 0 24 24",
-                                    fill: "none",
-                                    path {
-                                        d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
-                                        stroke: "currentColor",
-                                        stroke_width: "1.6",
+                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-default mt-0.5 focus:outline-2 focus:outline-app-border/50 overflow-hidden",
+                                if let Some(avatar_url) = user_avatar_url.as_ref() {
+                                    img {
+                                        src: "{avatar_url}",
+                                        alt: "User avatar",
+                                        class: "w-full h-full object-cover",
                                     }
-                                    path {
-                                        d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
-                                        stroke: "currentColor",
-                                        stroke_width: "1.6",
-                                        stroke_linecap: "round",
+                                } else {
+                                    svg {
+                                        width: "18",
+                                        height: "18",
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        path {
+                                            d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.6",
+                                        }
+                                        path {
+                                            d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.6",
+                                            stroke_linecap: "round",
+                                        }
                                     }
                                 }
                             }

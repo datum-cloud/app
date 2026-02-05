@@ -215,6 +215,10 @@ impl DatumCloudClient {
 
     async fn fetch(&self, scope: Scope, api: Api) -> Result<serde_json::Value> {
         let url = self.url(scope, api);
+        self.fetch_direct(&url).await
+    }
+
+    async fn fetch_direct(&self, url: &str) -> Result<serde_json::Value> {
         tracing::debug!("GET {url}");
 
         // Refresh access token if they are close to expiring.
@@ -223,7 +227,7 @@ impl DatumCloudClient {
 
         let res = self
             .http
-            .get(&url)
+            .get(url)
             .header(
                 "Authorization",
                 format!("Bearer {}", auth.tokens.access_token.secret()),
