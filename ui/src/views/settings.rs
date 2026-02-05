@@ -11,11 +11,11 @@ pub fn Settings() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
     let auth_state = state.datum().auth_state();
-    let first_name = match auth_state.get() {
+    let first_name: String = match auth_state.get() {
         Ok(auth) => auth.profile.first_name.clone().unwrap_or_default(),
         Err(_) => String::new(),
     };
-    let last_name = match auth_state.get() {
+    let last_name: String = match auth_state.get() {
         Ok(auth) => auth.profile.last_name.clone().unwrap_or_default(),
         Err(_) => String::new(),
     };

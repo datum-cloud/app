@@ -122,6 +122,12 @@ fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
+        // Refresh user profile on app startup to fetch latest data from API
+        if state.datum().login_state() != lib::datum_cloud::LoginState::Missing {
+            if let Err(err) = state.datum().auth().refresh_profile().await {
+                tracing::warn!("Failed to refresh user profile on startup: {err:#}");
+            }
+        }
         // let nav = navigator();
         // if state.datum().login_state() == LoginState::Missing {
         //     nav.push(Route::Login {});
