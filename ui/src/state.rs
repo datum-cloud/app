@@ -1,7 +1,7 @@
 use dioxus::prelude::WritableExt;
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
-    ListenNode, Node, Repo, TunnelService,
+    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelService, TunnelSummary,
 };
 use tokio::sync::Notify;
 use tracing::info;

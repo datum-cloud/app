@@ -175,11 +175,7 @@ pub fn AddTunnelDialog(
                     div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
-                            class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid {
-                                Some("opacity-60".to_string())
-                            } else {
-                                None
-                            },
+                            class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid() { Some("opacity-60".to_string()) } else { None },
                             onclick: move |_| {
                                 if address_invalid() {
                                     return;
@@ -194,11 +190,7 @@ pub fn AddTunnelDialog(
                                     save_create_tunnel.call(());
                                 }
                             },
-                            text: if save_tunnel.pending() || save_create_tunnel.pending() {
-                                submit_pending_label.to_string()
-                            } else {
-                                submit_label.to_string()
-                            },
+                            text: if save_tunnel.pending() || save_create_tunnel.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
                         }
                         Button {
                             kind: ButtonKind::Ghost,
