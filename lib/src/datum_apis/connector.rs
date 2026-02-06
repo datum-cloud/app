@@ -1,5 +1,5 @@
-use kube::CustomResource;
 use k8s_openapi::{api::core::v1, apimachinery::pkg::apis::meta::v1 as metav1};
+use kube::CustomResource;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

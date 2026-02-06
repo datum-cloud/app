@@ -2,13 +2,13 @@ use chrono::{DateTime, Local};
 use dioxus::prelude::*;
 use lib::TunnelSummary;
 
+use super::{OpenEditTunnelDialog, TunnelCard};
 use crate::{
-    components::{Icon, IconSource, skeleton::Skeleton},
+    components::{skeleton::Skeleton, DeleteTunnelDialog, Icon, IconSource},
     state::AppState,
     util::humanize_bytes,
     Route,
 };
-use super::{OpenEditTunnelDialog, TunnelCard};
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -48,10 +48,10 @@ pub fn TunnelBandwidth(id: String) -> Element {
                         loading.set(true);
                     }
                     load_error.set(None);
-                    
+
                     match state.tunnel_service().get_active(&id).await {
                         Ok(Some(tunnel)) => {
-                    loading.set(false);
+                            loading.set(false);
                             title.set(tunnel.label.clone());
                             codename.set(tunnel.id.clone());
                             tunnel_loaded.set(Some(tunnel));
@@ -65,7 +65,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                             load_error.set(Some(format!("Failed to load tunnel: {err}")));
                         }
                     }
-                    
+
                     refresh.notified().await;
                 }
             }
@@ -153,8 +153,18 @@ pub fn TunnelBandwidth(id: String) -> Element {
         return rsx! {
             div { id: "tunnel-bandwidth", class: "max-w-4xl mx-auto",
                 // Back link skeleton
-                div { class: "mt-2 mb-7",
-                    Skeleton { class: "h-4 w-32".to_string() }
+                // Back link
+                button {
+                    class: "text-xs text-foreground flex items-center gap-1 mt-2 mb-7",
+                    onclick: move |_| {
+                        let _ = nav.push(Route::ProxiesList {});
+                    },
+                    Icon {
+                        source: IconSource::Named("chevron-down".into()),
+                        class: "rotate-90 text-icon-select",
+                        size: 10,
+                    }
+                    span { class: "underline", "Back to Tunnels List" }
                 }
 
                 // TunnelCard skeleton
@@ -204,7 +214,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
     if let Some(err) = load_error() {
         return rsx! {
             div { class: "max-w-4xl mx-auto",
-                div { class: "rounded-2xl border border-red-200 bg-red-50 text-red-800 p-6",
+                div { class: "rounded-2xl border border-red-200 bg-red-50 text-alert-red-dark p-6",
                     div { class: "text-sm font-semibold", "Couldn't load bandwidth" }
                     div { class: "text-sm mt-1 break-words", "{err}" }
                 }
@@ -219,10 +229,10 @@ pub fn TunnelBandwidth(id: String) -> Element {
             let outcome = state
                 .tunnel_service()
                 .delete_active(&tunnel.id)
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("delete tunnel failed: {err:#}");
-            })?;
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("delete tunnel failed: {err:#}");
+                })?;
             if outcome.connector_deleted {
                 state
                     .heartbeat()
@@ -231,9 +241,22 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
             state.remove_tunnel(&tunnel.id);
             state.bump_tunnel_refresh();
-        n0_error::Ok(())
+            n0_error::Ok(())
         }
     });
+
+    let mut delete_confirm_open = use_signal(|| false);
+    let mut tunnel_pending_delete = use_signal(|| None::<TunnelSummary>);
+
+    // Navigate after successful deletion
+    use_effect(move || {
+        if let Some(result) = on_delete.value() {
+            if result.is_ok() {
+                let _ = nav.push(Route::ProxiesList {});
+            }
+        }
+    });
+
     let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
     let tunnel = tunnel_loaded().expect("tunnel loaded when not loading and no error");
 
@@ -258,17 +281,48 @@ pub fn TunnelBandwidth(id: String) -> Element {
                 tunnel: tunnel.clone(),
                 show_view_item: false,
                 show_bandwidth: true,
+                tunnel_to_delete: use_signal(|| None::<TunnelSummary>),
                 on_delete: move |tunnel_to_delete: TunnelSummary| {
-                    let nav = nav.clone();
-                    let fut = on_delete.call(tunnel_to_delete);
-                    spawn(async move {
-                        let _ = fut.await;
-                        let _ = nav.push(Route::ProxiesList {});
-                    });
+                    tunnel_pending_delete.set(Some(tunnel_to_delete));
+                    delete_confirm_open.set(true);
                 },
                 on_edit: move |tunnel_to_edit: TunnelSummary| {
                     open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit.clone()));
                     open_edit_dialog.dialog_open.set(true);
+                },
+            }
+            DeleteTunnelDialog {
+                open: delete_confirm_open,
+                on_open_change: move |open| {
+                    delete_confirm_open.set(open);
+                    if !open {
+                        tunnel_pending_delete.set(None);
+                    }
+                },
+                tunnel: tunnel_pending_delete,
+                on_delete: move |tunnel| {
+                    on_delete.call(tunnel);
+                },
+                delete_pending: {
+                    let mut pending_signal: Signal<bool> = use_signal(|| on_delete.pending());
+                    use_effect(move || {
+                        pending_signal.set(on_delete.pending());
+                    });
+                    let read_signal: ReadSignal<bool> = pending_signal.into();
+                    read_signal
+                },
+                delete_result: {
+                    let mut error_signal: Signal<Option<String>> = use_signal(|| None::<String>);
+                    use_effect(move || {
+                        if let Some(result) = on_delete.value() {
+                            match result {
+                                Ok(_) => error_signal.set(None),
+                                Err(e) => error_signal.set(Some(e.to_string())),
+                            }
+                        }
+                    });
+                    let read_signal: ReadSignal<Option<String>> = error_signal.into();
+                    read_signal
                 },
             }
 

@@ -10,13 +10,13 @@ use iroh::{
     Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
     protocol::Router,
 };
-use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_n0des::ApiSecret;
 use iroh_proxy_utils::{ALPN as IROH_HTTP_CONNECT_ALPN, HttpProxyRequest, HttpProxyRequestKind};
 use iroh_proxy_utils::{
     downstream::{DownstreamProxy, EndpointAuthority, ProxyMode},
     upstream::{AuthError, AuthHandler, UpstreamProxy},
 };
+use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use n0_error::{AnyError, Result, StackResultExt, StdResultExt, stack_error};
 use n0_future::{IterExt, StreamExt, task::AbortOnDropHandle};
 use tokio::{
@@ -136,9 +136,8 @@ impl ListenNode {
     }
 
     pub fn proxies(&self) -> Vec<ProxyState> {
-        self.state.get().proxies.iter().cloned().collect()
+        self.state.get().proxies.to_vec()
     }
-
 
     pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {
         self.state
@@ -232,17 +231,13 @@ impl StateWrapper {
         // Strip scheme from incoming host (e.g., "http://127.0.0.1" -> "127.0.0.1")
         // The gateway may send the host with scheme, but local state stores without
         let normalized_host = strip_host_scheme(host);
-        let exists = self
-            .get()
-            .proxies
-            .iter()
-            .any(|a| a.enabled && a.info.service().host == normalized_host && a.info.service().port == port);
+        let exists = self.get().proxies.iter().any(|a| {
+            a.enabled && a.info.service().host == normalized_host && a.info.service().port == port
+        });
         if !exists {
             debug!(
                 requested_host = host,
-                normalized_host,
-                port,
-                "tcp_proxy_exists: no matching proxy found"
+                normalized_host, port, "tcp_proxy_exists: no matching proxy found"
             );
         }
         exists
@@ -293,10 +288,10 @@ fn parse_host_port_from_url(url: &str) -> Option<(String, u16)> {
     let without_scheme = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))?;
-    
+
     // Split off the path
     let authority = without_scheme.split('/').next()?;
-    
+
     // Split host and port
     if let Some((host, port_str)) = authority.rsplit_once(':') {
         let port = port_str.parse().ok()?;
@@ -457,8 +452,9 @@ pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Re
         crate::config::DiscoveryMode::Dns => {
             Endpoint::empty_builder(default_relay_mode()).secret_key(secret_key)
         }
-        crate::config::DiscoveryMode::Default
-        | crate::config::DiscoveryMode::Hybrid => Endpoint::builder().secret_key(secret_key),
+        crate::config::DiscoveryMode::Default | crate::config::DiscoveryMode::Hybrid => {
+            Endpoint::builder().secret_key(secret_key)
+        }
     };
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);

@@ -33,11 +33,17 @@ fn validate_tunnel_address(s: &str) -> Option<String> {
     }
     let lower = s.to_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Some("Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173).".to_string());
+        return Some(
+            "Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173)."
+                .to_string(),
+        );
     }
     match TcpProxyData::from_host_port_str(s) {
         Ok(_) => None,
-        Err(e) => Some(format!("Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).", e)),
+        Err(e) => Some(format!(
+            "Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).",
+            e
+        )),
     }
 }
 
@@ -52,8 +58,8 @@ pub fn AddTunnelDialog(
     /// Called after a successful save so the parent can refresh the tunnels list.
     on_save_success: EventHandler<()>,
 ) -> Element {
-    let mut address = use_signal(|| String::new());
-    let mut label = use_signal(|| String::new());
+    let mut address = use_signal(String::new);
+    let mut label = use_signal(String::new);
 
     // Reset form when dialog closes (after success or cancel) so next open starts clean
     use_effect(move || {
@@ -87,7 +93,7 @@ pub fn AddTunnelDialog(
             .project_id;
         let tunnel = state
             .tunnel_service()
-            .create_active(&label(), &address())
+            .create_active(label().trim(), address().trim())
             .await
             .context("Failed to create tunnel")?;
         state.upsert_tunnel(tunnel);
@@ -103,7 +109,7 @@ pub fn AddTunnelDialog(
         let state = consume_context::<AppState>();
         let updated = state
             .tunnel_service()
-            .update_active(&tunnel_id, &label(), &address())
+            .update_active(&tunnel_id, label().trim(), address().trim())
             .await
             .context("Failed to update tunnel")?;
         state.upsert_tunnel(updated);
@@ -118,10 +124,15 @@ pub fn AddTunnelDialog(
     let title = if is_edit { "Edit tunnel" } else { "Add a tunnel" };
     let submit_label = if is_edit { "Save changes" } else { "Create tunnel" };
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
-    let error_title = if is_edit { "Couldn't update tunnel" } else { "Couldn't create tunnel" };
+    let error_title = if is_edit {
+        "Couldn't update tunnel"
+    } else {
+        "Couldn't create tunnel"
+    };
 
-    let address_validation = validate_tunnel_address(&address());
-    let address_invalid = address().trim().is_empty() || address_validation.is_some();
+    let address_validation = use_memo(move || validate_tunnel_address(&address()));
+    let address_invalid =
+        use_memo(move || address().trim().is_empty() || address_validation().is_some());
 
     rsx! {
         DialogRoot {
@@ -143,10 +154,11 @@ pub fn AddTunnelDialog(
                         label: Some("Local address to forward".into()),
                         value: "{address}",
                         placeholder: "e.g. 127.0.0.1:5173",
-                        error: address_validation.clone(),
+                        error: address_validation().clone(),
                         autocomplete: "off",
                         autocapitalize: "off",
                         autocorrect: "off",
+                        oninput: move |e: FormEvent| address.set(e.value()),
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
@@ -160,7 +172,7 @@ pub fn AddTunnelDialog(
                             div { class: "text-sm mt-1 break-words", "{err}" }
                         }
                     }
-                    div { class: "flex items-center gap-4 pt-2 justify-start",
+                    div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
                             class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid {
@@ -169,7 +181,7 @@ pub fn AddTunnelDialog(
                                 None
                             },
                             onclick: move |_| {
-                                if address_invalid {
+                                if address_invalid() {
                                     return;
                                 }
                                 if let Some(tunnel_id) = initial_tunnel

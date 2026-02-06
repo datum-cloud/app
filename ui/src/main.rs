@@ -1,16 +1,15 @@
 use dioxus::prelude::*;
+#[cfg(feature = "desktop")]
+use n0_error::Result;
 use std::sync::OnceLock;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
-#[cfg(feature = "desktop")]
-use n0_error::Result;
-
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::components::{Head, Splash};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Sidebar, Signup,
+    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, Sidebar, Signup,
     TunnelBandwidth,
 };
 
@@ -54,11 +53,13 @@ enum Route {
         TunnelBandwidth { id: String },
         #[route("/proxy/join")]
         JoinProxy {},
+        #[route("/settings")]
+        Settings {},
 }
 
 fn main() {
     init_tracing();
-    if let Some(path) = dotenv::dotenv().ok() {
+    if let Ok(path) = dotenv::dotenv() {
         info!("Loaded environment variables from {}", path.display());
     }
 
@@ -67,10 +68,6 @@ fn main() {
 
     #[cfg(feature = "desktop")]
     let _tray_icon = init_menu_bar().unwrap();
-
-    // Set macOS dock icon programmatically (needed for dx serve / development mode)
-    #[cfg(all(feature = "desktop", target_os = "macos"))]
-    set_macos_dock_icon();
 
     #[cfg(feature = "desktop")]
     {
@@ -87,6 +84,7 @@ fn main() {
                             .with_title("Datum")
                             .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
                             .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
+                            .with_resizable(false)
                             // Required for rounded app chrome: we render our own rounded container inside.
                             .with_transparent(true)
                             .with_decorations(false)
@@ -103,14 +101,16 @@ fn main() {
 fn init_tracing() {
     let repo_path = lib::Repo::default_location();
     if let Err(err) = std::fs::create_dir_all(&repo_path) {
-        eprintln!("ui: failed to create repo dir {}: {err}", repo_path.display());
+        eprintln!(
+            "ui: failed to create repo dir {}: {err}",
+            repo_path.display()
+        );
     }
     let file_appender = tracing_appender::rolling::never(&repo_path, "ui.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_writer(std::io::stderr))
@@ -123,6 +123,12 @@ fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
     use_future(move || async move {
         let state = AppState::load().await.unwrap();
+        // Refresh user profile on app startup to fetch latest data from API
+        if state.datum().login_state() != lib::datum_cloud::LoginState::Missing {
+            if let Err(err) = state.datum().auth().refresh_profile().await {
+                tracing::warn!("Failed to refresh user profile on startup: {err:#}");
+            }
+        }
         // let nav = navigator();
         // if state.datum().login_state() == LoginState::Missing {
         //     nav.push(Route::Login {});
@@ -131,7 +137,7 @@ fn App() -> Element {
         app_state_ready.set(true);
     });
 
-    // Set the macOS menu bar app name after the app launches (menu now exists)
+    // Set macOS menu bar name and dock icon after the app launches (run loop must be active)
     #[cfg(all(feature = "desktop", target_os = "macos"))]
     {
         use_effect(|| {
@@ -169,7 +175,7 @@ fn App() -> Element {
     }
 
     // Signal bumped on login/logout so title bar and other auth-dependent UI re-render.
-    let mut auth_changed = use_signal(|| 0u32);
+    let auth_changed = use_signal(|| 0u32);
     provide_context(auth_changed);
 
     rsx! {
@@ -213,7 +219,7 @@ fn init_menu_bar() -> Result<TrayIcon> {
 fn icon() -> Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -227,7 +233,7 @@ fn icon() -> Icon {
 fn window_icon() -> dioxus_desktop::tao::window::Icon {
     use image::GenericImageView;
 
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
+    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
     let image = image::load_from_memory(icon_bytes).unwrap();
 
     let (width, height) = image.dimensions();
@@ -237,37 +243,24 @@ fn window_icon() -> dioxus_desktop::tao::window::Icon {
         .expect("Failed to create window icon from image")
 }
 
-/// Set the macOS dock icon programmatically (for development mode without a bundle)
+/// True when the executable is inside a .app bundle (e.g. production build).
 #[cfg(all(feature = "desktop", target_os = "macos"))]
-fn set_macos_dock_icon() {
-    use objc2::AllocAnyThread;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let icon_bytes = include_bytes!("../assets/bundle/linux/128.png");
-
-    // SAFETY: We're on the main thread when this is called during app initialization
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-
-    let app = NSApplication::sharedApplication(mtm);
-
-    // Set the dock icon
-    let ns_data = NSData::with_bytes(icon_bytes);
-    if let Some(ns_image) = NSImage::initWithData(NSImage::alloc(), &ns_data) {
-        // SAFETY: We're setting a valid NSImage on the main thread
-        unsafe { app.setApplicationIconImage(Some(&ns_image)) };
-    }
+fn running_from_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
 }
 
 /// Custom Objective-C class to handle About menu action and route navigation
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 mod macos_menu_handler {
+    use objc2::rc::Retained;
     use objc2::runtime::NSObject;
     use objc2::{define_class, extern_methods};
+    use objc2_app_kit::NSWorkspace;
     use objc2_foundation::{NSObject as FoundationNSObject, NSString, NSURL};
-    use objc2_app_kit::{NSWorkspace};
-    use objc2::rc::Retained;
 
     define_class!(
         #[unsafe(super(FoundationNSObject))]
@@ -302,12 +295,12 @@ mod macos_menu_handler {
 /// Set the macOS menu bar app name and add standard app menu items (About, Hide, Quit).
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 fn set_macos_menu_name() {
+    use objc2::runtime::Sel;
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
+    use objc2_foundation::NSString;
     use std::ffi::CStr;
     use std::sync::Once;
-    use objc2::runtime::Sel;
-    use objc2::{ClassType, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
-    use objc2_foundation::NSString;
 
     // SAFETY: We're on the main thread (called from use_effect in the UI)
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
@@ -356,8 +349,8 @@ fn set_macos_menu_name() {
                     unsafe {
                         let about_sel =
                             Sel::register(CStr::from_bytes_with_nul(b"openAboutURL:\0").unwrap());
-                        let about_item =
-                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                        let about_item = app_submenu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
                                 &about_title,
                                 Some(about_sel),
                                 &empty_key,
@@ -387,9 +380,10 @@ fn set_macos_menu_name() {
                     // SAFETY: hide:, hideOtherApplications:, unhideAllApplications:, and terminate: are valid selectors on NSApplication
                     unsafe {
                         // Hide Datum (Cmd+H)
-                        let hide_sel = Sel::register(CStr::from_bytes_with_nul(b"hide:\0").unwrap());
-                        let hide_item =
-                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                        let hide_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"hide:\0").unwrap());
+                        let hide_item = app_submenu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
                                 &hide_title,
                                 Some(hide_sel),
                                 &key_h,
@@ -404,8 +398,8 @@ fn set_macos_menu_name() {
                         let hide_others_sel = Sel::register(
                             CStr::from_bytes_with_nul(b"hideOtherApplications:\0").unwrap(),
                         );
-                        let hide_others_item =
-                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                        let hide_others_item = app_submenu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
                                 &hide_others_title,
                                 Some(hide_others_sel),
                                 &key_h,
@@ -422,8 +416,8 @@ fn set_macos_menu_name() {
                         let show_all_sel = Sel::register(
                             CStr::from_bytes_with_nul(b"unhideAllApplications:\0").unwrap(),
                         );
-                        let show_all_item =
-                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                        let show_all_item = app_submenu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
                                 &show_all_title,
                                 Some(show_all_sel),
                                 &empty_key,
@@ -440,8 +434,8 @@ fn set_macos_menu_name() {
                         // Quit Datum (Cmd+Q)
                         let term_sel =
                             Sel::register(CStr::from_bytes_with_nul(b"terminate:\0").unwrap());
-                        let quit_item =
-                            app_submenu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                        let quit_item = app_submenu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
                                 &quit_title,
                                 Some(term_sel),
                                 &key_q,
@@ -452,9 +446,67 @@ fn set_macos_menu_name() {
                         quit_item.setOnStateImage(None);
                         quit_item.setOffStateImage(None);
                     }
+
+                    // Add Edit menu with Paste (Cmd+V), Copy, Cut, Select All so keyboard shortcuts
+                    // work in text fields (e.g. search). Without this menu, Cmd+V does nothing.
+                    unsafe {
+                        let edit_menu =
+                            NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Edit"));
+                        let key_v = NSString::from_str("v");
+                        let key_x = NSString::from_str("x");
+                        let key_c = NSString::from_str("c");
+                        let key_a = NSString::from_str("a");
+                        let paste_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"paste:\0").unwrap());
+                        let copy_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"copy:\0").unwrap());
+                        let cut_sel = Sel::register(CStr::from_bytes_with_nul(b"cut:\0").unwrap());
+                        let select_all_sel =
+                            Sel::register(CStr::from_bytes_with_nul(b"selectAll:\0").unwrap());
+                        let cmd = NSEventModifierFlags::Command;
+
+                        let paste_item = edit_menu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &NSString::from_str("Paste"),
+                                Some(paste_sel),
+                                &key_v,
+                                0,
+                            );
+                        paste_item.setKeyEquivalentModifierMask(cmd);
+                        let copy_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Copy"),
+                            Some(copy_sel),
+                            &key_c,
+                            1,
+                        );
+                        copy_item.setKeyEquivalentModifierMask(cmd);
+                        let cut_item = edit_menu.insertItemWithTitle_action_keyEquivalent_atIndex(
+                            &NSString::from_str("Cut"),
+                            Some(cut_sel),
+                            &key_x,
+                            2,
+                        );
+                        cut_item.setKeyEquivalentModifierMask(cmd);
+                        let select_all_item = edit_menu
+                            .insertItemWithTitle_action_keyEquivalent_atIndex(
+                                &NSString::from_str("Select All"),
+                                Some(select_all_sel),
+                                &key_a,
+                                3,
+                            );
+                        select_all_item.setKeyEquivalentModifierMask(cmd);
+
+                        let edit_title_item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str("Edit"),
+                            None,
+                            &NSString::from_str(""),
+                        );
+                        edit_title_item.setSubmenu(Some(&edit_menu));
+                        main_menu.insertItem_atIndex(&edit_title_item, 1);
+                    }
                 });
             }
         }
     }
 }
-

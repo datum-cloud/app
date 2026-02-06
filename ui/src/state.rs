@@ -1,6 +1,5 @@
 use dioxus::prelude::WritableExt;
 use lib::{
-    HeartbeatAgent, SelectedContext, TunnelSummary,
     datum_cloud::{ApiEnv, DatumCloudClient},
     ListenNode, Node, Repo, TunnelService,
 };
@@ -106,8 +105,9 @@ impl AppState {
                 .map_or("<none>".to_string(), SelectedContext::label),
             "ui: setting selected context"
         );
-        self.datum.set_selected_context(selected_context.clone()).await?;
+        self.datum
+            .set_selected_context(selected_context.clone())
+            .await?;
         Ok(())
     }
-
 }

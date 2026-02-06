@@ -11,7 +11,6 @@ use crate::{
 pub fn Login() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
-    let mut auth_changed = consume_context::<Signal<u32>>();
     use_effect(move || {
         if state.datum().login_state() == LoginState::Valid {
             if state.selected_context().is_some() {
@@ -67,7 +66,7 @@ pub fn Login() -> Element {
                     "Once you’ve logged in, return back here to continue."
                 }
                 if let Some(Err(err)) = login.value() {
-                    div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-red-800",
+                    div { class: "rounded-xl border border-red-200 bg-red-50 p-4 text-alert-red-dark",
                         div { class: "text-sm font-semibold", "Failed to login" }
                         div { class: "text-sm mt-1 break-words", "{err}" }
                     }
