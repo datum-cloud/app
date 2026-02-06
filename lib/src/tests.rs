@@ -29,10 +29,6 @@ impl TestDiscovery {
 async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
     let discovery = TestDiscovery::default();
 
-    let n0des_endpoint = Endpoint::bind().await?;
-    discovery.add(&n0des_endpoint);
-    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
-
     let temp_dir = tempfile::tempdir()?;
     let repo = Repo::open_or_create(temp_dir.path()).await?;
 
@@ -46,7 +42,7 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
 
     let codename = proxy_state.info.codename();
 
-    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    let upstream = ListenNode::new(repo).await?;
     discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
@@ -88,10 +84,6 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
 async fn gateway_forward_connect_tunnel() -> Result<()> {
     let discovery = TestDiscovery::default();
 
-    let n0des_endpoint = Endpoint::bind().await?;
-    discovery.add(&n0des_endpoint);
-    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
-
     let temp_dir = tempfile::tempdir()?;
     let repo = Repo::open_or_create(temp_dir.path()).await?;
 
@@ -103,7 +95,7 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
         ProxyState::new(advertisment)
     };
 
-    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    let upstream = ListenNode::new(repo).await?;
     discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
@@ -160,10 +152,6 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
 async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
     let discovery = TestDiscovery::default();
 
-    let n0des_endpoint = Endpoint::bind().await?;
-    discovery.add(&n0des_endpoint);
-    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
-
     let temp_dir = tempfile::tempdir()?;
     let repo = Repo::open_or_create(temp_dir.path()).await?;
 
@@ -175,7 +163,7 @@ async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
         ProxyState::new(advertisment)
     };
 
-    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    let upstream = ListenNode::new(repo).await?;
     discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
@@ -236,10 +224,6 @@ async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
 async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
     let discovery = TestDiscovery::default();
 
-    let n0des_endpoint = Endpoint::bind().await?;
-    discovery.add(&n0des_endpoint);
-    let (api_secret, _n0des_router) = n0des_local::start(n0des_endpoint)?;
-
     let temp_dir = tempfile::tempdir()?;
     let repo = Repo::open_or_create(temp_dir.path()).await?;
 
@@ -251,7 +235,7 @@ async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
         ProxyState::new(advertisment)
     };
 
-    let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
+    let upstream = ListenNode::new(repo).await?;
     discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
