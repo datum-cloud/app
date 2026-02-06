@@ -1,23 +1,28 @@
 use crate::{
     components::{
         dropdown_menu::{
-            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+            DropdownMenuTrigger,
+        },
+        select::{
+            Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize,
+            SelectTrigger, SelectValue,
         },
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource, InviteUserDialog,
-        select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize, SelectTrigger, SelectValue},
     },
     state::AppState,
     Route,
 };
-use lib::datum_cloud::{LoginState, OrganizationWithProjects};
 use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
 use dioxus_desktop::DesktopContext;
+use lib::datum_cloud::{LoginState, OrganizationWithProjects};
 use open::that;
 
 /// Provided by Sidebar so child routes (e.g. TunnelBandwidth) can open the Add/Edit tunnel dialog.
 #[derive(Clone)]
 pub struct OpenEditTunnelDialog {
+    #[allow(unused)]
     pub editing_proxy: Signal<Option<lib::ProxyState>>,
     pub editing_tunnel: Signal<Option<lib::TunnelSummary>>,
     pub dialog_open: Signal<bool>,
@@ -156,7 +161,7 @@ pub fn Sidebar() -> Element {
 pub fn HeaderBar() -> Element {
     let window = || consume_context::<DesktopContext>();
     let state = consume_context::<AppState>();
-    let mut auth_changed = consume_context::<Signal<u32>>();
+    let auth_changed = consume_context::<Signal<u32>>();
     let _ = auth_changed();
     let auth_state = state.datum().auth_state();
     let nav = use_navigator();
@@ -215,7 +220,7 @@ pub fn HeaderBar() -> Element {
         Err(_) => None,
     };
     let mut logout = use_action(move |_: ()| {
-        let mut auth_changed = auth_changed.clone();
+        let mut auth_changed = auth_changed;
         async move {
             let state = consume_context::<AppState>();
             state.datum().auth().logout().await?;
@@ -248,7 +253,9 @@ pub fn HeaderBar() -> Element {
         selected_org_snapshot
             .as_ref()
             .and_then(|org_id| {
-                orgs_snapshot.iter().find(|org| &org.org.resource_id == org_id)
+                orgs_snapshot
+                    .iter()
+                    .find(|org| &org.org.resource_id == org_id)
             })
             .map(|org| {
                 org.projects
@@ -451,5 +458,3 @@ pub fn HeaderBar() -> Element {
         }
     }
 }
-
-

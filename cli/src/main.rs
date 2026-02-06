@@ -175,7 +175,7 @@ pub enum DiscoveryModeArg {
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
     tracing_subscriber::fmt::init();
-    if let Some(path) = dotenv::dotenv().ok() {
+    if let Ok(path) = dotenv::dotenv() {
         info!("Loaded environment variables from {}", path.display());
     }
 
@@ -198,7 +198,7 @@ async fn main() -> n0_error::Result<()> {
                 }
             }
 
-            println!("");
+            println!();
             let state = repo.load_state().await?;
             for p in state.get().proxies.iter() {
                 println!(

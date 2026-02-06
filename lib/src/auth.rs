@@ -159,13 +159,7 @@ impl Auth {
             return false;
         }
         match &req.kind {
-            HttpProxyRequestKind::Tunnel { target } => {
-                if !self.allows_port(target.port) {
-                    false
-                } else {
-                    true
-                }
-            }
+            HttpProxyRequestKind::Tunnel { target } => self.allows_port(target.port),
             HttpProxyRequestKind::Absolute { .. } => {
                 // TODO - finish
                 false

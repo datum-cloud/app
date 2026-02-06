@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -7,9 +10,9 @@ use arc_swap::ArcSwap;
 use chrono::Utc;
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr, stack_error};
 use openidconnect::{
-    AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
-    CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
-    PkceCodeChallenge, RefreshToken, Scope, TokenResponse,
+    AccessToken, AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
+    Nonce, NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, RefreshToken, Scope,
+    TokenResponse,
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde::{Deserialize, Serialize};
@@ -118,7 +121,6 @@ impl UserProfile {
     //             .map(|(_lang, name)| name.to_string()),
     //     })
     // }
-
 }
 
 #[derive(Debug, Clone)]
@@ -156,11 +158,7 @@ impl StatelessClient {
         )
         .set_redirect_uri(RedirectServer::url());
 
-        Ok(Self { 
-            oidc, 
-            http,
-            env,
-        })
+        Ok(Self { oidc, http, env })
     }
 
     pub async fn login(&self) -> Result<AuthState> {
@@ -234,7 +232,9 @@ impl StatelessClient {
             .request_async(&self.http)
             .await
             .std_context("Failed to refresh tokens")?;
-        let state = self.parse_token_response(tokens, refresh_nonce_verifier).await?;
+        let state = self
+            .parse_token_response(tokens, refresh_nonce_verifier)
+            .await?;
         debug!("Access token refreshed");
         Ok(state)
     }
@@ -292,8 +292,8 @@ impl StatelessClient {
         // Fetch user profile from Datum Cloud API
         let profile = self.fetch_user_profile(&auth_tokens, &user_id).await?;
 
-        Ok(AuthState { 
-            tokens: auth_tokens, 
+        Ok(AuthState {
+            tokens: auth_tokens,
             profile,
         })
     }
@@ -307,17 +307,17 @@ impl StatelessClient {
             let metadata = json.get("metadata")?.as_object()?;
             let spec = json.get("spec").and_then(|s| s.as_object());
             let status = json.get("status").and_then(|s| s.as_object());
-            
+
             // Extract user_id from metadata.name
             let user_id = metadata.get("name")?.as_str()?.to_string();
-            
+
             // Extract email from spec or status (try spec first, then status)
             let email = spec
                 .and_then(|s| s.get("email"))
                 .or_else(|| status.and_then(|s| s.get("email")))
                 .and_then(|e| e.as_str())
                 .map(|s| s.to_string());
-            
+
             // Extract first_name from spec (API uses givenName, not firstName)
             let first_name = spec
                 .and_then(|s| s.get("givenName"))
@@ -328,7 +328,7 @@ impl StatelessClient {
                 .or_else(|| status.and_then(|s| s.get("first_name")))
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
-            
+
             // Extract last_name from spec (API uses familyName, not lastName)
             let last_name = spec
                 .and_then(|s| s.get("familyName"))
@@ -347,7 +347,7 @@ impl StatelessClient {
                 .or_else(|| spec.and_then(|s| s.get("avatar_url")))
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
-            
+
             Some(UserProfile {
                 user_id,
                 email: email?,
@@ -362,7 +362,7 @@ impl StatelessClient {
             self.env.api_url(),
             user_id
         );
-        
+
         let res = self
             .http
             .get(&url)
@@ -374,7 +374,7 @@ impl StatelessClient {
             .await
             .inspect_err(|e| warn!(%url, "Failed to fetch user profile: {e:#}"))
             .with_std_context(|_| format!("Failed to fetch user profile from {url}"))?;
-        
+
         let status = res.status();
         if !status.is_success() {
             let text = match res.text().await {
@@ -390,7 +390,6 @@ impl StatelessClient {
             .await
             .std_context("Failed to parse user profile response as JSON")?;
 
-        
         parse_user(&json).context("Failed to parse user profile")
     }
 }
@@ -464,7 +463,9 @@ impl AuthStateWrapper {
             repo.write_oauth(auth.as_ref()).await?;
         }
         self.inner.store(Arc::new(MaybeAuth(auth)));
-        let _ = self.login_state_tx.send(login_state_for(self.load().get().ok()));
+        let _ = self
+            .login_state_tx
+            .send(login_state_for(self.load().get().ok()));
         let next = self.auth_update_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.auth_update_tx.send(next);
         Ok(())
@@ -632,7 +633,10 @@ impl AuthClient {
         let auth = self.state.load();
         let auth = auth.get()?;
         let user_id = auth.profile.user_id.clone();
-        let new_profile = self.client.fetch_user_profile(&auth.tokens, &user_id).await?;
+        let new_profile = self
+            .client
+            .fetch_user_profile(&auth.tokens, &user_id)
+            .await?;
         let new_auth = AuthState {
             tokens: AuthTokens {
                 access_token: auth.tokens.access_token.clone(),

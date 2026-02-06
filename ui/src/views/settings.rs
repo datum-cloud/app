@@ -1,9 +1,9 @@
-use dioxus::prelude::*;
 use crate::{
-    Route,
-    components::{Icon, IconSource, input::Input},
+    components::{input::Input, Icon, IconSource},
     state::AppState,
+    Route,
 };
+use dioxus::prelude::*;
 use open::that;
 
 #[component]

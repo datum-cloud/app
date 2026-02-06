@@ -5,7 +5,10 @@ use log::{info, warn};
 use n0_error::{Result, StackResultExt, StdResultExt};
 
 use crate::{
-    StateWrapper, auth::Auth, config::{Config, GatewayConfig}, datum_cloud::AuthState,
+    StateWrapper,
+    auth::Auth,
+    config::{Config, GatewayConfig},
+    datum_cloud::AuthState,
     state::State,
 };
 
