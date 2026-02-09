@@ -2,13 +2,13 @@ use chrono::{DateTime, Local};
 use dioxus::prelude::*;
 use lib::TunnelSummary;
 
+use super::{OpenEditTunnelDialog, TunnelCard};
 use crate::{
-    components::{DeleteTunnelDialog, Icon, IconSource, skeleton::Skeleton},
+    components::{skeleton::Skeleton, DeleteTunnelDialog, Icon, IconSource},
     state::AppState,
     util::humanize_bytes,
     Route,
 };
-use super::{OpenEditTunnelDialog, TunnelCard};
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -48,10 +48,10 @@ pub fn TunnelBandwidth(id: String) -> Element {
                         loading.set(true);
                     }
                     load_error.set(None);
-                    
+
                     match state.tunnel_service().get_active(&id).await {
                         Ok(Some(tunnel)) => {
-                    loading.set(false);
+                            loading.set(false);
                             title.set(tunnel.label.clone());
                             codename.set(tunnel.id.clone());
                             tunnel_loaded.set(Some(tunnel));
@@ -65,7 +65,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                             load_error.set(Some(format!("Failed to load tunnel: {err}")));
                         }
                     }
-                    
+
                     refresh.notified().await;
                 }
             }
@@ -229,10 +229,10 @@ pub fn TunnelBandwidth(id: String) -> Element {
             let outcome = state
                 .tunnel_service()
                 .delete_active(&tunnel.id)
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("delete tunnel failed: {err:#}");
-            })?;
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("delete tunnel failed: {err:#}");
+                })?;
             if outcome.connector_deleted {
                 state
                     .heartbeat()
@@ -241,13 +241,13 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
             state.remove_tunnel(&tunnel.id);
             state.bump_tunnel_refresh();
-        n0_error::Ok(())
+            n0_error::Ok(())
         }
     });
-    
+
     let mut delete_confirm_open = use_signal(|| false);
     let mut tunnel_pending_delete = use_signal(|| None::<TunnelSummary>);
-    
+
     // Navigate after successful deletion
     use_effect(move || {
         if let Some(result) = on_delete.value() {
@@ -256,7 +256,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
         }
     });
-    
+
     let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
     let tunnel = tunnel_loaded().expect("tunnel loaded when not loading and no error");
 

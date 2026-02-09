@@ -104,10 +104,7 @@ impl DatumCloudClient {
     ) -> Result<ProjectControlPlaneClient> {
         let auth_state = self.auth().load_refreshed().await?;
         let auth = auth_state.get()?;
-        self.project_control_plane_client_with_token(
-            project_id,
-            auth.tokens.access_token.secret(),
-        )
+        self.project_control_plane_client_with_token(project_id, auth.tokens.access_token.secret())
     }
 
     pub async fn project_control_plane_client_active(
@@ -215,6 +212,10 @@ impl DatumCloudClient {
 
     async fn fetch(&self, scope: Scope, api: Api) -> Result<serde_json::Value> {
         let url = self.url(scope, api);
+        self.fetch_direct(&url).await
+    }
+
+    async fn fetch_direct(&self, url: &str) -> Result<serde_json::Value> {
         tracing::debug!("GET {url}");
 
         // Refresh access token if they are close to expiring.
@@ -223,7 +224,7 @@ impl DatumCloudClient {
 
         let res = self
             .http
-            .get(&url)
+            .get(url)
             .header(
                 "Authorization",
                 format!("Bearer {}", auth.tokens.access_token.secret()),
@@ -367,16 +368,15 @@ impl SessionStateWrapper {
         self.selected_context_tx.subscribe()
     }
 
-    async fn set_selected_context(
-        &self,
-        selected_context: Option<SelectedContext>,
-    ) -> Result<()> {
+    async fn set_selected_context(&self, selected_context: Option<SelectedContext>) -> Result<()> {
         let current = self.selected_context.load_full();
         if current.as_ref().as_ref() != selected_context.as_ref() {
             if let Some(repo) = self.repo.as_ref() {
-                repo.write_selected_context(selected_context.as_ref()).await?;
+                repo.write_selected_context(selected_context.as_ref())
+                    .await?;
             }
-            self.selected_context.store(Arc::new(selected_context.clone()));
+            self.selected_context
+                .store(Arc::new(selected_context.clone()));
         }
         let _ = self.selected_context_tx.send(selected_context);
         Ok(())

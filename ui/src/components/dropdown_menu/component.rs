@@ -6,7 +6,8 @@ use dioxus_primitives::dropdown_menu::{
 use crate::components::icon::{Icon, IconSource};
 
 /// Dark backdrop when dropdown is open (same style as dialog). Only visible when using controlled `open` state.
-const BACKDROP_CLASS: &str = "fixed inset-0 bg-foreground/30 z-40 mt-10 rounded-b-md animate-in fade-in duration-100";
+const BACKDROP_CLASS: &str =
+    "fixed inset-0 bg-foreground/30 z-40 mt-10 rounded-b-md animate-in fade-in duration-100";
 
 #[component]
 pub fn DropdownMenu(props: DropdownMenuProps) -> Element {

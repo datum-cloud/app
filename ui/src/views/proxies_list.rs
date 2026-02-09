@@ -6,16 +6,17 @@ use open::that;
 use crate::{
     components::{
         dropdown_menu::{
-            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+            DropdownMenuTrigger,
         },
         input::Input,
         skeleton::Skeleton,
-        AddTunnelDialog, DeleteTunnelDialog, Icon, IconSource, Switch, SwitchThumb, Button, ButtonKind,
+        AddTunnelDialog, Button, ButtonKind, DeleteTunnelDialog, Icon, IconSource, Switch,
+        SwitchThumb,
     },
     state::AppState,
     Route,
 };
-
 
 #[component]
 pub fn ProxiesList() -> Element {
@@ -27,47 +28,47 @@ pub fn ProxiesList() -> Element {
     let state_for_future = state.clone();
     use_future(move || {
         let state_for_future = state_for_future.clone();
-        let mut has_loaded_for_future = has_loaded.clone();
+        let mut has_loaded_for_future = has_loaded;
         async move {
-        let mut ctx_rx = state_for_future.datum().selected_context_watch();
-        let refresh = state_for_future.tunnel_refresh();
-        loop {
-            let list = state_for_future
-                .tunnel_service()
-                .list_active()
-                .await
-                .unwrap_or_default();
-        // Check if any tunnel is missing a hostname or not yet accepted/programmed.
-        // If so, poll more frequently.
-        // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
-        // resource(s) instead of listing all tunnels each cycle.
-        let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
-        let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
-            state_for_future.set_tunnel_cache(list);
-            has_loaded_for_future.set(true);
-            
-        if has_pending_hostname || has_pending_status {
-                // Poll every 3 seconds when waiting for hostname provisioning
-                tokio::select! {
+            let mut ctx_rx = state_for_future.datum().selected_context_watch();
+            let refresh = state_for_future.tunnel_refresh();
+            loop {
+                let list = state_for_future
+                    .tunnel_service()
+                    .list_active()
+                    .await
+                    .unwrap_or_default();
+                // Check if any tunnel is missing a hostname or not yet accepted/programmed.
+                // If so, poll more frequently.
+                // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
+                // resource(s) instead of listing all tunnels each cycle.
+                let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+                let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
+                state_for_future.set_tunnel_cache(list);
+                has_loaded_for_future.set(true);
+
+                if has_pending_hostname || has_pending_status {
+                    // Poll every 3 seconds when waiting for hostname provisioning
+                    tokio::select! {
+                        res = ctx_rx.changed() => {
+                            if res.is_err() {
+                                return;
+                            }
+                        }
+                        _ = refresh.notified() => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                    }
+                } else {
+                    tokio::select! {
                     res = ctx_rx.changed() => {
                         if res.is_err() {
                             return;
                         }
                     }
                     _ = refresh.notified() => {}
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
-                }
-            } else {
-            tokio::select! {
-                res = ctx_rx.changed() => {
-                    if res.is_err() {
-                        return;
                     }
                 }
-                _ = refresh.notified() => {}
-                }
             }
-        }
         }
     });
 
@@ -99,12 +100,12 @@ pub fn ProxiesList() -> Element {
     let mut delete_confirm_open = use_signal(|| false);
     let mut tunnel_to_delete = use_signal(|| None::<TunnelSummary>);
     let mut tunnel_pending_delete = use_signal(|| None::<TunnelSummary>);
-    
+
     let on_delete_handler = move |tunnel: TunnelSummary| {
         tunnel_pending_delete.set(Some(tunnel));
         delete_confirm_open.set(true);
     };
-    
+
     // Set tunnel_to_delete when deletion is confirmed (for showing tunnel as deleting)
     // This happens when the dialog calls on_delete
     use_effect(move || {
@@ -134,7 +135,7 @@ pub fn ProxiesList() -> Element {
 
     let mut dialog_open = use_signal(|| false);
     let mut editing_tunnel = use_signal(|| None::<TunnelSummary>);
-    let mut search_query = use_signal(|| String::new());
+    let mut search_query = use_signal(String::new);
 
     let show_search = tunnels().len() > 2;
     let query = search_query().trim().to_lowercase();
@@ -145,7 +146,9 @@ pub fn ProxiesList() -> Element {
             .into_iter()
             .filter(|t| {
                 t.label.to_lowercase().contains(&query)
-                    || t.hostnames.iter().any(|h| h.to_lowercase().contains(&query))
+                    || t.hostnames
+                        .iter()
+                        .any(|h| h.to_lowercase().contains(&query))
                     || t.endpoint.to_lowercase().contains(&query)
                     || t.id.to_lowercase().contains(&query)
             })
@@ -215,7 +218,7 @@ pub fn ProxiesList() -> Element {
             }
         }
     } else {
-        let tunnel_to_delete_for_cards = tunnel_to_delete.clone();
+        let tunnel_to_delete_for_cards = tunnel_to_delete;
         rsx! {
             div { class: "space-y-5",
                 if show_search {
@@ -234,7 +237,7 @@ pub fn ProxiesList() -> Element {
                         tunnel,
                         show_view_item: true,
                         show_bandwidth: false,
-                        tunnel_to_delete: tunnel_to_delete_for_cards.clone(),
+                        tunnel_to_delete: tunnel_to_delete_for_cards,
                         on_delete: on_delete_handler,
                         on_edit: move |t| {
                             editing_tunnel.set(Some(t));
@@ -245,11 +248,6 @@ pub fn ProxiesList() -> Element {
             }
         }
     };
-
-    let tunnel_name_for_dialog = tunnel_pending_delete()
-        .as_ref()
-        .map(|t| t.label.clone())
-        .unwrap_or_default();
 
     rsx! {
         div { class: "max-w-5xl mx-auto", {list} }
@@ -337,7 +335,10 @@ pub fn TunnelCard(
                 .await?;
             if next_enabled {
                 if let Some(selected) = state.selected_context() {
-                    state.heartbeat().register_project(selected.project_id).await;
+                    state
+                        .heartbeat()
+                        .register_project(selected.project_id)
+                        .await;
                 }
             }
             state.upsert_tunnel(updated);
@@ -388,7 +389,7 @@ pub fn TunnelCard(
             .map(|t| t.id == tunnel_id_for_deleting)
             .unwrap_or(false)
     });
-    
+
     // Compute is_disabled reactively from tunnel cache and deletion state
     let is_disabled = use_memo(move || {
         let tunnel_from_cache = tunnel_cache()

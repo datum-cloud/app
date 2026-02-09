@@ -1,8 +1,8 @@
 use dioxus::prelude::WritableExt;
 use lib::{
-    HeartbeatAgent, SelectedContext, TunnelSummary,
     datum_cloud::{ApiEnv, DatumCloudClient},
-    ListenNode, Node, ProjectControlPlaneClient, Repo, TunnelService,
+    HeartbeatAgent, ListenNode, Node, ProjectControlPlaneClient, Repo, SelectedContext,
+    TunnelService, TunnelSummary,
 };
 use tokio::sync::Notify;
 use tracing::info;
@@ -49,6 +49,7 @@ impl AppState {
         &self.heartbeat
     }
 
+    #[allow(unused)]
     pub async fn project_control_plane(
         &self,
     ) -> n0_error::Result<Option<ProjectControlPlaneClient>> {
@@ -112,8 +113,9 @@ impl AppState {
                 .map_or("<none>".to_string(), SelectedContext::label),
             "ui: setting selected context"
         );
-        self.datum.set_selected_context(selected_context.clone()).await?;
+        self.datum
+            .set_selected_context(selected_context.clone())
+            .await?;
         Ok(())
     }
-
 }

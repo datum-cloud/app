@@ -1,12 +1,12 @@
+use crate::components::icon::{Icon, IconSource};
 use dioxus::prelude::*;
 use dioxus_primitives::select::{
-    self, SelectGroupLabelProps, SelectGroupProps, SelectOptionProps, SelectProps,
-    SelectValueProps,
+    self, SelectGroupLabelProps, SelectGroupProps, SelectOptionProps, SelectProps, SelectValueProps,
 };
-use crate::components::icon::{Icon, IconSource};
 
 /// Alignment of the select list relative to the trigger (start = left, end = right, center = centered).
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(unused)]
 pub enum SelectAlign {
     Start,
     Center,
@@ -64,7 +64,7 @@ pub fn SelectTrigger(props: SelectTriggerPropsWithSize) -> Element {
         SelectSize::Default => "w-full h-9 min-w-0 rounded-md border border-app-border bg-white px-2 text-left text-xs text-foreground hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default data-disabled:opacity-50 data-disabled:cursor-not-allowed",
         SelectSize::Small => "w-full h-6 min-w-0 rounded-md border border-app-border bg-white px-2 text-left text-xs text-foreground hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default data-disabled:opacity-50 data-disabled:cursor-not-allowed",
     };
-    
+
     rsx! {
         select::SelectTrigger { class, attributes: props.attributes,
             {props.children}
@@ -103,8 +103,7 @@ fn align_class(align: Option<SelectAlign>) -> &'static str {
 pub fn SelectList(
     #[props(default = None)] align: Option<SelectAlign>,
     #[props(default = None)] id: Option<String>,
-    #[props(default = SelectSize::Default)]
-    size: SelectSize,
+    #[props(default = SelectSize::Default)] size: SelectSize,
     children: Element,
 ) -> Element {
     let base_class = match size {

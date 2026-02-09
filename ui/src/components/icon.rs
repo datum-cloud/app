@@ -13,6 +13,7 @@ pub enum IconKind {
 /// Icons loaded from `ui/assets/icons/<name>.svg`. Use `currentColor` in the SVG for styling.
 #[derive(Clone, PartialEq)]
 pub enum IconSource {
+    #[allow(unused)]
     Kind(IconKind),
     /// Name of the SVG file in assets/icons (without .svg), e.g. "plus", "check".
     Named(String),
@@ -85,7 +86,11 @@ fn force_current_color(svg: &str) -> String {
 /// Injects width/100% height/100% and display:block into the first <svg tag so the icon fills its container and doesn't shift from baseline.
 fn svg_with_fill(svg: &str) -> String {
     let with_color = force_current_color(svg);
-    with_color.replacen("<svg", r#"<svg width="100%" height="100%" style="display:block;vertical-align:middle""#, 1)
+    with_color.replacen(
+        "<svg",
+        r#"<svg width="100%" height="100%" style="display:block;vertical-align:middle""#,
+        1,
+    )
 }
 
 #[component]

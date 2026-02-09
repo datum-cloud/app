@@ -47,7 +47,7 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
     let codename = proxy_state.info.codename();
 
     let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
-    discovery.add(&upstream.endpoint());
+    discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
     let (gateway_addr, _gateway_task) = {
@@ -104,7 +104,7 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
     };
 
     let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
-    discovery.add(&upstream.endpoint());
+    discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
     let (gateway_addr, _gateway_task) = {
@@ -176,7 +176,7 @@ async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
     };
 
     let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
-    discovery.add(&upstream.endpoint());
+    discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
     let (gateway_addr, _gateway_task) = {
@@ -252,7 +252,7 @@ async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
     };
 
     let upstream = ListenNode::with_n0des_api_secret(repo, api_secret.clone()).await?;
-    discovery.add(&upstream.endpoint());
+    discovery.add(upstream.endpoint());
     upstream.set_proxy(proxy_state).await?;
 
     let (gateway_addr, _gateway_task) = {

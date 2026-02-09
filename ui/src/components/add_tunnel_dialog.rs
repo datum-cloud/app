@@ -33,11 +33,17 @@ fn validate_tunnel_address(s: &str) -> Option<String> {
     }
     let lower = s.to_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Some("Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173).".to_string());
+        return Some(
+            "Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173)."
+                .to_string(),
+        );
     }
     match TcpProxyData::from_host_port_str(s) {
         Ok(_) => None,
-        Err(e) => Some(format!("Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).", e)),
+        Err(e) => Some(format!(
+            "Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).",
+            e
+        )),
     }
 }
 
@@ -54,8 +60,8 @@ pub fn AddTunnelDialog(
     /// Called after a successful save so the parent can refresh the tunnels list.
     on_save_success: EventHandler<()>,
 ) -> Element {
-    let mut address = use_signal(|| String::new());
-    let mut label = use_signal(|| String::new());
+    let mut address = use_signal(String::new);
+    let mut label = use_signal(String::new);
 
     // Reset form when dialog closes (after success or cancel) so next open starts clean
     use_effect(move || {
@@ -92,7 +98,7 @@ pub fn AddTunnelDialog(
             .project_id;
         let tunnel = state
             .tunnel_service()
-            .create_active(&label().trim(), &address().trim())
+            .create_active(label().trim(), address().trim())
             .await
             .context("Failed to create tunnel")?;
         state.upsert_tunnel(tunnel);
@@ -105,7 +111,8 @@ pub fn AddTunnelDialog(
 
     let mut save_proxy = use_action(move |existing: Option<ProxyState>| async move {
         let state = consume_context::<AppState>();
-        let service = TcpProxyData::from_host_port_str(&address().trim()).context("Invalid address")?;
+        let service =
+            TcpProxyData::from_host_port_str(address().trim()).context("Invalid address")?;
         let proxy = match existing {
             Some(proxy) => {
                 let info = Advertisment {
@@ -141,7 +148,7 @@ pub fn AddTunnelDialog(
         let state = consume_context::<AppState>();
         let updated = state
             .tunnel_service()
-            .update_active(&tunnel_id, &label().trim(), &address().trim())
+            .update_active(&tunnel_id, label().trim(), address().trim())
             .await
             .context("Failed to update tunnel")?;
         state.upsert_tunnel(updated);
@@ -154,13 +161,26 @@ pub fn AddTunnelDialog(
     let is_edit_tunnel = initial_tunnel.as_ref().and_then(|s| s()).is_some();
     let is_edit_proxy = initial_proxy().is_some();
     let is_edit = is_edit_tunnel || is_edit_proxy;
-    let title = if is_edit { "Edit tunnel" } else { "Add a tunnel" };
-    let submit_label = if is_edit { "Save changes" } else { "Create tunnel" };
+    let title = if is_edit {
+        "Edit tunnel"
+    } else {
+        "Add a tunnel"
+    };
+    let submit_label = if is_edit {
+        "Save changes"
+    } else {
+        "Create tunnel"
+    };
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
-    let error_title = if is_edit { "Couldn't update tunnel" } else { "Couldn't create tunnel" };
+    let error_title = if is_edit {
+        "Couldn't update tunnel"
+    } else {
+        "Couldn't create tunnel"
+    };
 
     let address_validation = use_memo(move || validate_tunnel_address(&address()));
-    let address_invalid = use_memo(move || address().trim().is_empty() || address_validation().is_some());
+    let address_invalid =
+        use_memo(move || address().trim().is_empty() || address_validation().is_some());
 
     rsx! {
         DialogRoot {
