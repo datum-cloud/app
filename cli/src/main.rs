@@ -133,13 +133,9 @@ pub struct ConnectArgs {
     #[clap(long)]
     pub bind: SocketAddr,
 
-    /// three-word-name for a tunnel to connect to.
-    #[clap(long, conflicts_with = "ticket")]
-    pub codename: Option<String>,
-
     /// provide a ticket to drive connection directly.
     #[clap(long, conflicts_with = "codename")]
-    pub ticket: Option<AdvertismentTicket>,
+    pub ticket: AdvertismentTicket,
 }
 
 #[derive(Parser, Debug)]
@@ -263,19 +259,8 @@ async fn main() -> n0_error::Result<()> {
             println!()
         }
         Commands::Connect(args) => {
-            let ConnectArgs {
-                bind,
-                codename,
-                ticket,
-            } = args;
+            let ConnectArgs { bind, ticket } = args;
             let node = ConnectNode::new(repo).await?;
-            let ticket = if let Some(codename) = codename {
-                node.tickets.get(&codename).await?
-            } else if let Some(ticket) = ticket {
-                ticket
-            } else {
-                n0_error::bail_any!("either --codename or --ticket is required");
-            };
 
             let handle = node
                 .connect_and_bind_local(ticket.endpoint, &ticket.data.data, bind)
