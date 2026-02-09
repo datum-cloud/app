@@ -121,8 +121,16 @@ pub fn AddTunnelDialog(
 
     let is_edit_tunnel = initial_tunnel.as_ref().and_then(|s| s()).is_some();
     let is_edit = is_edit_tunnel;
-    let title = if is_edit { "Edit tunnel" } else { "Add a tunnel" };
-    let submit_label = if is_edit { "Save changes" } else { "Create tunnel" };
+    let title = if is_edit {
+        "Edit tunnel"
+    } else {
+        "Add a tunnel"
+    };
+    let submit_label = if is_edit {
+        "Save changes"
+    } else {
+        "Create tunnel"
+    };
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
     let error_title = if is_edit {
         "Couldn't update tunnel"
