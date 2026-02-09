@@ -1,6 +1,6 @@
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
-use lib::{Advertisment, ProxyState, TcpProxyData, TunnelSummary};
+use lib::{TcpProxyData, TunnelSummary};
 
 use crate::{
     components::{
@@ -49,11 +49,9 @@ fn validate_tunnel_address(s: &str) -> Option<String> {
 
 #[component]
 pub fn AddTunnelDialog(
-    /// Pass a signal so the effect re-runs when open/initial_proxy/initial_tunnel change and populates the form.
+    /// Pass a signal so the effect re-runs when open/initial_tunnel change and populates the form.
     open: ReadSignal<bool>,
     on_open_change: EventHandler<bool>,
-    /// When set, the dialog is in edit mode (legacy proxy path).
-    initial_proxy: ReadSignal<Option<ProxyState>>,
     /// When set, the dialog is in edit mode (tunnel path, e.g. from TunnelBandwidth).
     #[props(optional)]
     initial_tunnel: Option<Signal<Option<TunnelSummary>>>,
@@ -79,9 +77,6 @@ pub fn AddTunnelDialog(
         if let Some(t) = tunnel_opt {
             label.set(t.label.clone());
             address.set(strip_http_scheme(&t.endpoint));
-        } else if let Some(p) = initial_proxy() {
-            label.set(p.info.label().to_string());
-            address.set(strip_http_scheme(&p.info.service().address()));
         } else {
             // Create mode: empty form
             label.set(String::new());
@@ -109,40 +104,6 @@ pub fn AddTunnelDialog(
         n0_error::Ok(())
     });
 
-    let mut save_proxy = use_action(move |existing: Option<ProxyState>| async move {
-        let state = consume_context::<AppState>();
-        let service =
-            TcpProxyData::from_host_port_str(address().trim()).context("Invalid address")?;
-        let proxy = match existing {
-            Some(proxy) => {
-                let info = Advertisment {
-                    resource_id: proxy.info.resource_id.clone(),
-                    label: Some(label().trim().to_string()),
-                    data: service,
-                };
-                ProxyState {
-                    info,
-                    enabled: proxy.enabled,
-                }
-            }
-            None => {
-                let info = Advertisment::new(service, Some(label().trim().to_string()));
-                ProxyState {
-                    info,
-                    enabled: true,
-                }
-            }
-        };
-        state
-            .listen_node()
-            .set_proxy(proxy)
-            .await
-            .context("Failed to save proxy")?;
-        on_save_success.call(());
-        on_open_change.call(false);
-        n0_error::Ok(())
-    });
-
     // Edit tunnel (same logic as edit_proxy.rs)
     let mut save_tunnel = use_action(move |tunnel_id: String| async move {
         let state = consume_context::<AppState>();
@@ -159,8 +120,7 @@ pub fn AddTunnelDialog(
     });
 
     let is_edit_tunnel = initial_tunnel.as_ref().and_then(|s| s()).is_some();
-    let is_edit_proxy = initial_proxy().is_some();
-    let is_edit = is_edit_tunnel || is_edit_proxy;
+    let is_edit = is_edit_tunnel;
     let title = if is_edit {
         "Edit tunnel"
     } else {
@@ -210,10 +170,9 @@ pub fn AddTunnelDialog(
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
-                    if let Some(err) = save_proxy
+                    if let Some(err) = save_tunnel
                         .value()
                         .and_then(|r| r.err())
-                        .or_else(|| save_tunnel.value().and_then(|r| r.err()))
                         .or_else(|| save_create_tunnel.value().and_then(|r| r.err()))
                     {
                         div { class: "rounded-md border border-red-200 bg-red-50 p-4 text-red-800",
@@ -224,8 +183,7 @@ pub fn AddTunnelDialog(
                     div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
-                            class: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending()
-    || address_invalid() { Some("opacity-60".to_string()) } else { None },
+                            class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid() { Some("opacity-60".to_string()) } else { None },
                             onclick: move |_| {
                                 if address_invalid() {
                                     return;
@@ -236,13 +194,11 @@ pub fn AddTunnelDialog(
                                     .map(|t| t.id.clone())
                                 {
                                     save_tunnel.call(tunnel_id);
-                                } else if initial_proxy().is_some() {
-                                    save_proxy.call(initial_proxy().clone());
                                 } else {
                                     save_create_tunnel.call(());
                                 }
                             },
-                            text: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
+                            text: if save_tunnel.pending() || save_create_tunnel.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
                         }
                         Button {
                             kind: ButtonKind::Ghost,
