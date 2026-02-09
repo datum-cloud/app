@@ -1,23 +1,28 @@
 use crate::{
     components::{
         dropdown_menu::{
-            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+            DropdownMenuTrigger,
+        },
+        select::{
+            Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize,
+            SelectTrigger, SelectValue,
         },
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource, InviteUserDialog,
-        select::{Select, SelectAlign, SelectItemIndicator, SelectList, SelectOptionItem, SelectSize, SelectTrigger, SelectValue},
     },
     state::AppState,
     Route,
 };
-use lib::datum_cloud::{LoginState, OrganizationWithProjects};
 use dioxus::events::MouseEvent;
 use dioxus::prelude::*;
 use dioxus_desktop::DesktopContext;
+use lib::datum_cloud::{LoginState, OrganizationWithProjects};
 use open::that;
 
 /// Provided by Sidebar so child routes (e.g. TunnelBandwidth) can open the Add/Edit tunnel dialog.
 #[derive(Clone)]
 pub struct OpenEditTunnelDialog {
+    #[allow(unused)]
     pub editing_proxy: Signal<Option<lib::ProxyState>>,
     pub editing_tunnel: Signal<Option<lib::TunnelSummary>>,
     pub dialog_open: Signal<bool>,
@@ -156,7 +161,7 @@ pub fn Sidebar() -> Element {
 pub fn HeaderBar() -> Element {
     let window = || consume_context::<DesktopContext>();
     let state = consume_context::<AppState>();
-    let mut auth_changed = consume_context::<Signal<u32>>();
+    let auth_changed = consume_context::<Signal<u32>>();
     let _ = auth_changed();
     let auth_state = state.datum().auth_state();
     let nav = use_navigator();
@@ -210,8 +215,12 @@ pub fn HeaderBar() -> Element {
         Ok(auth) => auth.profile.email.clone(),
         Err(_) => "Not logged in".to_string(),
     };
+    let user_avatar_url = match auth_state.get() {
+        Ok(auth) => auth.profile.avatar_url.clone(),
+        Err(_) => None,
+    };
     let mut logout = use_action(move |_: ()| {
-        let mut auth_changed = auth_changed.clone();
+        let mut auth_changed = auth_changed;
         async move {
             let state = consume_context::<AppState>();
             state.datum().auth().logout().await?;
@@ -244,7 +253,9 @@ pub fn HeaderBar() -> Element {
         selected_org_snapshot
             .as_ref()
             .and_then(|org_id| {
-                orgs_snapshot.iter().find(|org| &org.org.resource_id == org_id)
+                orgs_snapshot
+                    .iter()
+                    .find(|org| &org.org.resource_id == org_id)
             })
             .map(|org| {
                 org.projects
@@ -393,22 +404,30 @@ pub fn HeaderBar() -> Element {
                             default_open: false,
                             on_open_change: move |v| profile_menu_open.set(Some(v)),
                             disabled: use_signal(|| false),
-                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-default mt-0.5 focus:outline-2 focus:outline-app-border/50",
-                                svg {
-                                    width: "18",
-                                    height: "18",
-                                    view_box: "0 0 24 24",
-                                    fill: "none",
-                                    path {
-                                        d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
-                                        stroke: "currentColor",
-                                        stroke_width: "1.6",
+                            DropdownMenuTrigger { class: "w-6 h-6 rounded-md border border-app-border bg-white flex items-center justify-center cursor-default mt-0.5 focus:outline-2 focus:outline-app-border/50 overflow-hidden",
+                                if let Some(avatar_url) = user_avatar_url.as_ref() {
+                                    img {
+                                        src: "{avatar_url}",
+                                        alt: "User avatar",
+                                        class: "w-full h-full object-cover",
                                     }
-                                    path {
-                                        d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
-                                        stroke: "currentColor",
-                                        stroke_width: "1.6",
-                                        stroke_linecap: "round",
+                                } else {
+                                    svg {
+                                        width: "18",
+                                        height: "18",
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        path {
+                                            d: "M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.6",
+                                        }
+                                        path {
+                                            d: "M4 21c1.6-3.5 4.6-5 8-5s6.4 1.5 8 5",
+                                            stroke: "currentColor",
+                                            stroke_width: "1.6",
+                                            stroke_linecap: "round",
+                                        }
                                     }
                                 }
                             }
@@ -439,5 +458,3 @@ pub fn HeaderBar() -> Element {
         }
     }
 }
-
-

@@ -16,17 +16,21 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use crate::ListenNode;
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
     ConnectorConnectionType, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
 };
 use crate::datum_apis::lease::Lease;
 use crate::datum_cloud::{DatumCloudClient, LoginState};
-use crate::ListenNode;
 
 type ProjectRunner = Arc<
-    dyn Fn(String, DatumCloudClient, Arc<dyn HeartbeatDetailsProvider>, CancellationToken)
-            -> tokio::task::JoinHandle<()>
+    dyn Fn(
+            String,
+            DatumCloudClient,
+            Arc<dyn HeartbeatDetailsProvider>,
+            CancellationToken,
+        ) -> tokio::task::JoinHandle<()>
         + Send
         + Sync,
 >;
@@ -91,10 +95,10 @@ impl HeartbeatAgent {
         let mut login_rx = this.inner.datum.auth().login_state_watch();
         let mut projects_rx = this.inner.datum.orgs_projects_watch();
         let task = tokio::spawn(async move {
-            if *login_rx.borrow() != LoginState::Missing {
-                if let Err(err) = this.refresh_projects().await {
-                    warn!("heartbeat: bootstrap failed: {err:#}");
-                }
+            if *login_rx.borrow() != LoginState::Missing
+                && let Err(err) = this.refresh_projects().await
+            {
+                warn!("heartbeat: bootstrap failed: {err:#}");
             }
             loop {
                 tokio::select! {
@@ -102,7 +106,7 @@ impl HeartbeatAgent {
                         if res.is_err() {
                             return;
                         }
-                        let login_state = login_rx.borrow().clone();
+                        let login_state = *login_rx.borrow();
                         match login_state {
                             LoginState::Missing => {
                                 this.clear_projects().await;
@@ -119,11 +123,10 @@ impl HeartbeatAgent {
                         if res.is_err() {
                             return;
                         }
-                        if *login_rx.borrow() != LoginState::Missing {
-                            if let Err(err) = this.refresh_projects().await {
+                        if *login_rx.borrow() != LoginState::Missing
+                            && let Err(err) = this.refresh_projects().await {
                                 warn!("heartbeat: bootstrap failed: {err:#}");
                             }
-                        }
                     }
                 }
             }
@@ -362,11 +365,7 @@ async fn run_project(
         if cached.last_details.as_ref() != Some(&details_value) {
             let patch = json!({ "status": { "connectionDetails": details_value } });
             if let Err(err) = connectors
-                .patch_status(
-                    &cached.name,
-                    &PatchParams::default(),
-                    &Patch::Merge(&patch),
-                )
+                .patch_status(&cached.name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
             {
                 warn!(
@@ -590,10 +589,12 @@ mod tests {
     #[tokio::test]
     async fn register_project_idempotent() {
         let repo = crate::Repo::open_or_create(test_repo_path()).await.unwrap();
-        let datum =
-            crate::datum_cloud::DatumCloudClient::with_repo(crate::datum_cloud::ApiEnv::Staging, repo)
-                .await
-                .unwrap();
+        let datum = crate::datum_cloud::DatumCloudClient::with_repo(
+            crate::datum_cloud::ApiEnv::Staging,
+            repo,
+        )
+        .await
+        .unwrap();
         let provider = Arc::new(TestProvider {
             endpoint_id: "test-endpoint".to_string(),
         });

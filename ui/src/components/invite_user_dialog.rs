@@ -11,16 +11,13 @@ use crate::{
 };
 
 #[component]
-pub fn InviteUserDialog(
-    open: ReadSignal<bool>,
-    on_open_change: EventHandler<bool>,
-) -> Element {
+pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<bool>) -> Element {
     let state = consume_context::<AppState>();
-    let mut email = use_signal(|| String::new());
-    
+    let mut email = use_signal(String::new);
+
     // Get selected context (org and project)
     let selected_context = use_memo(move || state.selected_context());
-    
+
     // Reset form when dialog closes
     use_effect(move || {
         if !open() {
@@ -46,15 +43,13 @@ pub fn InviteUserDialog(
     // Placeholder for invite action - can be implemented later
     let mut invite_user = use_action(move |_| async move {
         let state = consume_context::<AppState>();
-        let ctx = state
-            .selected_context()
-            .context("No project selected")?;
-        
+        let _ctx = state.selected_context().context("No project selected")?;
+
         // TODO: Implement actual invite API call using:
         // - ctx.org_id
         // - ctx.project_id
         // - email().trim()
-        
+
         // For now, just close the dialog
         on_open_change.call(false);
         n0_error::Ok(())

@@ -880,6 +880,9 @@
   .object-contain {
     object-fit: contain;
   }
+  .object-cover {
+    object-fit: cover;
+  }
   .p-0\.5 {
     padding: calc(var(--spacing) * 0.5);
   }
