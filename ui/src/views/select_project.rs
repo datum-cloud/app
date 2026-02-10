@@ -4,6 +4,7 @@ use tracing::warn;
 
 use lib::datum_cloud::OrganizationWithProjects;
 use lib::SelectedContext;
+use open::that;
 
 use crate::{
     components::{
@@ -11,7 +12,7 @@ use crate::{
             Select, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue,
         },
         skeleton::Skeleton,
-        Button,
+        Button, ButtonKind, IconSource,
     },
     state::AppState,
     Route,
@@ -22,15 +23,18 @@ pub fn SelectProject() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
     let state_for_load = state.clone();
-    let mut orgs = use_signal(Vec::<OrganizationWithProjects>::new);
-    let mut load_error = use_signal(|| None::<String>);
+    let orgs = use_signal(Vec::<OrganizationWithProjects>::new);
+    let load_error = use_signal(|| None::<String>);
     let mut selected_org = use_signal(|| None::<String>);
     let mut selected_project = use_signal(|| None::<String>);
     let saving = use_signal(|| false);
     let save_error = use_signal(|| None::<String>);
+    let refreshing = use_signal(|| false);
 
     use_future(move || {
         let state = state_for_load.clone();
+        let mut orgs = orgs;
+        let mut load_error = load_error;
         async move {
             match state.datum().orgs_and_projects().await {
                 Ok(list) => {
@@ -41,6 +45,28 @@ pub fn SelectProject() -> Element {
                     load_error.set(Some(err.to_string()));
                 }
             }
+        }
+    });
+
+    let state_for_refresh = state.clone();
+    let mut refresh_action = use_action(move |_: ()| {
+        let state = state_for_refresh.clone();
+        let mut orgs = orgs;
+        let mut load_error = load_error;
+        let mut refreshing = refreshing;
+        async move {
+            refreshing.set(true);
+            match state.datum().orgs_and_projects().await {
+                Ok(list) => {
+                    orgs.set(list);
+                    load_error.set(None);
+                }
+                Err(err) => {
+                    load_error.set(Some(err.to_string()));
+                }
+            }
+            refreshing.set(false);
+            n0_error::Ok(())
         }
     });
 
@@ -179,6 +205,13 @@ pub fn SelectProject() -> Element {
         } else {
             "Select a project".to_string()
         };
+        let has_no_projects = project_options.is_empty() && selected_org_id.is_some();
+        let create_project_url = if has_no_projects {
+            let org_slug = selected_org_id.clone().unwrap_or_default();
+            format!("{}/org/{org_slug}/projects", state.datum().web_url())
+        } else {
+            String::new()
+        };
         rsx! {
             div { class: "space-y-4",
                 div { class: "flex flex-col gap-2",
@@ -228,39 +261,70 @@ pub fn SelectProject() -> Element {
                         }
                     }
                 }
-                div { class: "flex flex-col gap-2",
-                    label { class: "text-xs text-form-label/80", "Project" }
-                    Select {
-                        value: selected_project_id.clone(),
-                        on_value_change: move |value: Option<String>| {
-                            let Some(value) = value else { return };
-                            selected_project.set(Some(value));
-                        },
-                        placeholder: project_placeholder.clone(),
-                        disabled: project_disabled,
-                        SelectTrigger { SelectValue {} }
-                        SelectList {
-                            if project_options.is_empty() {
-                                SelectOptionItem {
-                                    value: "".to_string(),
-                                    text_value: "No results".to_string(),
-                                    index: 0,
-                                    disabled: true,
-                                    "No results"
+                if has_no_projects {
+                    // Show link to create project when org is selected but has no projects
+                    div { class: "flex flex-col gap-2",
+                        label { class: "text-xs text-form-label/80", "Project" }
+                        div { class: "rounded-md border border-app-border bg-content-background p-4",
+                            div { class: "text-sm text-foreground mb-3",
+                                "No projects found in this organization."
+                            }
+                            div { class: "flex gap-2",
+                                Button {
+                                    text: "Create a project".to_string(),
+                                    kind: ButtonKind::Primary,
+                                    onclick: move |_| {
+                                        let _ = that(&create_project_url);
+                                    },
+                                    trailing_icon: Some(IconSource::Named("external-link".into())),
                                 }
-                            } else {
-                                for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                Button {
+                                    text: "Refresh".to_string(),
+                                    kind: ButtonKind::Outline,
+                                    class: if refreshing() { Some("opacity-60 pointer-events-none".to_string()) } else { None },
+                                    onclick: move |_| {
+                                        refresh_action.call(());
+                                    },
+                                    trailing_icon: if refreshing() { Some(IconSource::Named("loader-circle".into())) } else { None },
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    div { class: "flex flex-col gap-2",
+                        label { class: "text-xs text-form-label/80", "Project" }
+                        Select {
+                            value: selected_project_id.clone(),
+                            on_value_change: move |value: Option<String>| {
+                                let Some(value) = value else { return };
+                                selected_project.set(Some(value));
+                            },
+                            placeholder: project_placeholder.clone(),
+                            disabled: project_disabled,
+                            SelectTrigger { SelectValue {} }
+                            SelectList {
+                                if project_options.is_empty() {
                                     SelectOptionItem {
-                                        value: id.clone(),
-                                        text_value: label.clone(),
-                                        index: i,
-                                        div { class: "flex w-full justify-between items-center",
-                                            span { class: "truncate", "{label}" }
-                                            div { class: "text-1xs text-foreground/50 font-mono",
-                                                "{id}"
+                                        value: "".to_string(),
+                                        text_value: "No results".to_string(),
+                                        index: 0,
+                                        disabled: true,
+                                        "No results"
+                                    }
+                                } else {
+                                    for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                        SelectOptionItem {
+                                            value: id.clone(),
+                                            text_value: label.clone(),
+                                            index: i,
+                                            div { class: "flex w-full justify-between items-center",
+                                                span { class: "truncate", "{label}" }
+                                                div { class: "text-1xs text-foreground/50 font-mono",
+                                                    "{id}"
+                                                }
                                             }
+                                            SelectItemIndicator {}
                                         }
-                                        SelectItemIndicator {}
                                     }
                                 }
                             }
