@@ -49,7 +49,10 @@ pub async fn serve(endpoint: Endpoint, listener: TcpListener) -> Result<()> {
 /// Serves the gateway on a Unix Domain Socket.
 #[cfg(unix)]
 pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()> {
-    let uds_path = listener.local_addr().ok().and_then(|a| a.as_pathname().map(|p| p.to_path_buf()));
+    let uds_path = listener
+        .local_addr()
+        .ok()
+        .and_then(|a| a.as_pathname().map(|p| p.to_path_buf()));
     info!(
         ?uds_path,
         endpoint_id = %endpoint.id().fmt_short(),
