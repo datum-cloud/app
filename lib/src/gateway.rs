@@ -55,16 +55,13 @@ struct HeaderResolver;
 impl RequestHandler for HeaderResolver {
     async fn handle_request(
         &self,
-        src_addr: SrcAddr,
+        _src_addr: SrcAddr,
         req: &mut HttpRequest,
     ) -> Result<EndpointId, Deny> {
         match req.classify()? {
             HttpRequestKind::Tunnel => {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
-                // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
-                // If not, just remove the next line.
-                req.set_forwarded_for_if_tcp(src_addr)
-                    .remove_headers(DATUM_HEADERS);
+                req.remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
             HttpRequestKind::Origin | HttpRequestKind::Http1Absolute => {
@@ -75,9 +72,6 @@ impl RequestHandler for HeaderResolver {
                     .map_err(|_| Deny::bad_request("invalid x-datum-target-port header"))?;
                 // Rewrite the request target.
                 req.set_absolute_http_authority(Authority::new(host.to_string(), port))?
-                    // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
-                    // If not, just remove the next line.
-                    .set_forwarded_for_if_tcp(src_addr)
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
