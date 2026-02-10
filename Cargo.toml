@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "hyper" }
+iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "main" }
 lib = { path = "lib" }
 arc-swap = "1.8.0"
 axum = "0.7"

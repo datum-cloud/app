@@ -10,7 +10,9 @@ use hyper::{
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_proxy_utils::{
     Authority, HttpRequest, HttpRequestKind,
-    downstream::{Deny, DownstreamProxy, ErrorResponder, HttpProxyOpts, ProxyMode, RequestHandler},
+    downstream::{
+        Deny, DownstreamProxy, ErrorResponder, HttpProxyOpts, ProxyMode, RequestHandler, SrcAddr,
+    },
 };
 use n0_error::Result;
 use tokio::net::TcpListener;
@@ -53,7 +55,7 @@ struct HeaderResolver;
 impl RequestHandler for HeaderResolver {
     async fn handle_request(
         &self,
-        src_addr: SocketAddr,
+        src_addr: SrcAddr,
         req: &mut HttpRequest,
     ) -> Result<EndpointId, Deny> {
         match req.classify()? {
@@ -61,7 +63,7 @@ impl RequestHandler for HeaderResolver {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
                 // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
                 // If not, just remove the next line.
-                req.set_forwarded_for(src_addr)
+                req.set_forwarded_for_if_tcp(src_addr)
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
@@ -75,7 +77,7 @@ impl RequestHandler for HeaderResolver {
                 req.set_absolute_http_authority(Authority::new(host.to_string(), port))?
                     // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
                     // If not, just remove the next line.
-                    .set_forwarded_for(src_addr)
+                    .set_forwarded_for_if_tcp(src_addr)
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
