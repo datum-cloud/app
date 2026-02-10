@@ -16,6 +16,8 @@ use iroh_proxy_utils::{
 };
 use n0_error::Result;
 use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tracing::info;
 
 use crate::build_endpoint;
@@ -42,6 +44,38 @@ pub async fn serve(endpoint: Endpoint, listener: TcpListener) -> Result<()> {
     let mode =
         ProxyMode::Http(HttpProxyOpts::new(HeaderResolver).error_responder(ErrorResponseWriter));
     proxy.forward_tcp_listener(listener, mode).await
+}
+
+/// Serves the gateway on a Unix Domain Socket.
+#[cfg(unix)]
+pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()> {
+    let uds_path = listener.local_addr().ok().and_then(|a| a.as_pathname().map(|p| p.to_path_buf()));
+    info!(
+        ?uds_path,
+        endpoint_id = %endpoint.id().fmt_short(),
+        "UDS proxy gateway started"
+    );
+
+    let proxy = DownstreamProxy::new(endpoint, Default::default());
+    let mode =
+        ProxyMode::Http(HttpProxyOpts::new(HeaderResolver).error_responder(ErrorResponseWriter));
+    proxy.forward_uds_listener(listener, mode).await
+}
+
+/// Binds the gateway to a Unix Domain Socket at `path` and serves.
+#[cfg(unix)]
+pub async fn bind_and_serve_uds(
+    secret_key: SecretKey,
+    config: crate::config::GatewayConfig,
+    path: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    let endpoint = build_endpoint(secret_key, &config.common).await?;
+    serve_uds(endpoint, listener).await
 }
 
 const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
