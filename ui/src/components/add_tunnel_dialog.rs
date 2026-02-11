@@ -6,6 +6,7 @@ use crate::{
     components::{
         dialog::{DialogContent, DialogRoot, DialogTitle},
         input::Input,
+        switch::{Switch, SwitchThumb},
         Button, ButtonKind,
     },
     state::AppState,
@@ -60,12 +61,14 @@ pub fn AddTunnelDialog(
 ) -> Element {
     let mut address = use_signal(String::new);
     let mut label = use_signal(String::new);
+    let mut basic_auth_enabled = use_signal(|| false);
 
     // Reset form when dialog closes (after success or cancel) so next open starts clean
     use_effect(move || {
         if !open() {
             label.set(String::new());
             address.set(String::new());
+            basic_auth_enabled.set(false);
         }
     });
 
@@ -81,6 +84,7 @@ pub fn AddTunnelDialog(
             // Create mode: empty form
             label.set(String::new());
             address.set(String::new());
+            basic_auth_enabled.set(false);
         }
     });
 
@@ -153,7 +157,7 @@ pub fn AddTunnelDialog(
                     Input {
                         id: Some("tunnel-name".into()),
                         label: Some("Display name".into()),
-                        description: Some("Your tunnel will also get an auto-generated codename.".into()),
+                        description: Some("Your tunnel will also get an auto-generated resource name.".into()),
                         value: "{label}",
                         onchange: move |e: FormEvent| label.set(e.value()),
                     }
@@ -169,6 +173,19 @@ pub fn AddTunnelDialog(
                         oninput: move |e: FormEvent| address.set(e.value()),
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
+                    }
+                    div { class: "flex flex-col gap-2",
+                        div { class: "flex items-center justify-between",
+                            label { class: "text-xs text-form-label/90", "Basic authentication" }
+                            Switch {
+                                checked: basic_auth_enabled(),
+                                on_checked_change: move |checked| basic_auth_enabled.set(checked),
+                                SwitchThumb {}
+                            }
+                        }
+                        div { class: "text-1xs text-form-description",
+                            "We'll automatically generate a username and password for you."
+                        }
                     }
                     if let Some(err) = save_tunnel
                         .value()

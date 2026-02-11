@@ -55,13 +55,13 @@ pub fn Input(
         "border-app-border focus:ring-app-border focus:ring-2"
     };
     let input_class = match &leading_icon {
-        None => format!("w-full rounded-lg border bg-white px-2 h-9 text-foreground placeholder:text-form-description focus:outline-none focus:ring-1 {border_class} text-xs placeholder:text-xs disabled:bg-content-background"),
+        None => format!("w-full rounded-lg border bg-card-background px-2 h-9 text-foreground placeholder:text-form-description focus:outline-none focus:ring-1 {border_class} text-xs placeholder:text-xs disabled:bg-content-background"),
         Some(_) => "flex-1 min-w-0 border-0 bg-transparent py-0 px-2 h-9 text-foreground placeholder:text-form-description focus:outline-none focus:ring-0 text-xs placeholder:text-xs rounded-none disabled:bg-content-background".to_string(),
     };
     let wrapper_class = if leading_icon.is_some() && has_error {
-        "flex items-center rounded-lg border border-red-500 bg-white h-9 focus-within:ring-1 focus-within:ring-red-500"
+        "flex items-center rounded-lg border border-red-500 bg-card-background h-9 focus-within:ring-1 focus-within:ring-red-500"
     } else if leading_icon.is_some() {
-        "flex items-center rounded-lg border border-app-border bg-white h-9 focus-within:ring-1 focus-within:ring-app-border"
+        "flex items-center rounded-lg border border-app-border bg-card-background h-9 focus-within:ring-1 focus-within:ring-app-border"
     } else {
         ""
     };
@@ -71,7 +71,7 @@ pub fn Input(
             if let Some(ref label_text) = label {
                 label {
                     r#for: id.as_deref().unwrap_or(""),
-                    class: "text-xs text-form-label/80",
+                    class: "text-xs text-form-label/90",
                     {label_text.clone()}
                 }
             }

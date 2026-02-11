@@ -215,7 +215,7 @@ pub fn SelectProject() -> Element {
         rsx! {
             div { class: "space-y-4",
                 div { class: "flex flex-col gap-2",
-                    label { class: "text-xs text-form-label/80", "Organization" }
+                    label { class: "text-xs text-form-label/90", "Organization" }
                     Select {
                         value: selected_org_id.clone(),
                         on_value_change: move |value: Option<String>| {
@@ -264,7 +264,7 @@ pub fn SelectProject() -> Element {
                 if has_no_projects {
                     // Show link to create project when org is selected but has no projects
                     div { class: "flex flex-col gap-2",
-                        label { class: "text-xs text-form-label/80", "Project" }
+                        label { class: "text-xs text-form-label/90", "Project" }
                         div { class: "rounded-md border border-app-border bg-content-background p-4",
                             div { class: "text-sm text-foreground mb-3",
                                 "No projects found in this organization."
@@ -336,18 +336,12 @@ pub fn SelectProject() -> Element {
     };
 
     rsx! {
-        div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
-            // Content row with sidebar and main content
+        div { class: "h-full overflow-hidden flex flex-col bg-content-background text-foreground",
+            // Content row with main content
             div { class: "flex flex-1 min-h-0 relative",
-                // Sidebar skeleton
-                div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
-                    div { class: "w-full",
-                        div { class: "h-9 w-full rounded-md bg-foreground/10" }
-                    }
-                }
                 // Main content area with skeleton tunnel cards
-                div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
-                    div { class: "max-w-5xl mx-auto space-y-5",
+                div { class: "flex-1 min-h-0 overflow-y-auto bg-content-background",
+                    div { class: "max-w-4xl mx-auto space-y-5",
                         // Tunnel card skeletons
                         for _ in 0..3 {
                             div { class: "bg-foreground/10 rounded-lg border border-app-border shadow-card h-48" }
@@ -355,10 +349,10 @@ pub fn SelectProject() -> Element {
                     }
                 }
             }
-            // Overlay (same as dialog overlay, but below header bar)
-            div { class: "bg-foreground/30 absolute top-10 left-0 w-full bottom-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            // Overlay (full screen backdrop)
+            div { class: "bg-foreground/30 mt-[32px] fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
                 // Form dialog centered on top
-                div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card relative z-50",
+                div { class: "w-full max-w-lg mx-auto p-8 bg-card-background rounded-lg border border-card-border shadow-card relative z-50",
                     div { class: "mb-6",
                         h1 { class: "text-xl font-medium text-foreground",
                             "Where to manage your tunnels"

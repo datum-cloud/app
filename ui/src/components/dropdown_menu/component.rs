@@ -7,7 +7,7 @@ use crate::components::icon::{Icon, IconSource};
 
 /// Dark backdrop when dropdown is open (same style as dialog). Only visible when using controlled `open` state.
 const BACKDROP_CLASS: &str =
-    "fixed inset-0 bg-foreground/30 z-40 mt-10 rounded-b-md animate-in fade-in duration-100";
+    "fixed inset-0 bg-foreground/30 mt-[32px] z-40 rounded-b-md animate-in fade-in duration-100";
 
 #[component]
 pub fn DropdownMenu(props: DropdownMenuProps) -> Element {
@@ -44,7 +44,7 @@ pub fn DropdownMenuContent(props: DropdownMenuContentProps) -> Element {
         dropdown_menu::DropdownMenuContent {
             id: props.id,
             attributes: props.attributes,
-            class: "absolute right-0 min-w-36 top-0 rounded-md border-[#dfe3ea] bg-white shadow-card overflow-hidden z-9999999 p-1 animate-in fade-in duration-300",
+            class: "absolute right-0 min-w-36 top-0 rounded-md border-app-border bg-card-background shadow-card overflow-hidden z-9999999 p-1 animate-in fade-in duration-300",
             {props.children}
         }
     }
@@ -63,7 +63,7 @@ pub fn DropdownMenuSeparator() -> Element {
 }
 
 const ITEM_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-default";
-const ITEM_DESTRUCTIVE_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-red-50 text-alert-red-dark rounded-md cursor-default";
+const ITEM_DESTRUCTIVE_CLASS: &str = "w-full text-left px-2 py-2 text-xs hover:bg-red-50/20 text-alert-red-dark rounded-md cursor-default";
 
 /// Props for our DropdownMenuItem wrapper (adds `destructive` and optional `icon` over the primitive).
 #[derive(Props, Clone, PartialEq)]

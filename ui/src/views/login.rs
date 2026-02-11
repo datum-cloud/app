@@ -101,14 +101,18 @@ pub fn Login() -> Element {
 
     rsx! {
         div {
-            class: "w-full h-screen bg-bottom bg-no-repeat bg-contain bg-foreground flex items-center justify-center ",
-            style: "background-image: url(\"{HERO_ILLUSTRATION}\");",
+            class: "w-full h-screen bg-bottom bg-no-repeat bg-contain flex items-center justify-center",
+            style: "background-image: url(\"{HERO_ILLUSTRATION}\"); background-color: var(--midnight-fjord);",
             div { class: "flex flex-col items-center justify-center w-64 mx-auto gap-8 -mt-[20%]",
-                h1 { class: "text-2xl font-semibold text-center text-background font-sans",
+                h1 {
+                    class: "text-2xl font-semibold text-center font-sans",
+                    style: "color: var(--glacier-mist-700);",
                     "{title_text}"
                 }
                 if registration_pending {
-                    div { class: "rounded-lg border border-button-secondary-background bg-button-secondary-background/80 p-4 text-button-secondary-foreground w-full",
+                    div {
+                        class: "rounded-lg border border-button-secondary-background bg-button-secondary-background/80 p-4 w-full",
+                        style: "color: var(--glacier-mist-700);",
                         div { class: "text-sm font-semibold text-center", "Registration Pending" }
                         div { class: "text-sm mt-1 text-center",
                             "Your registration is still in progress."
@@ -123,7 +127,9 @@ pub fn Login() -> Element {
                         text: if login.pending() { "Waiting for log in confirmation".to_string() } else { "Take me to datum.net".to_string() },
                         trailing_icon: if login.pending() { Some(IconSource::Named("loader-circle".into())) } else { Some(IconSource::Named("external-link".into())) },
                     }
-                    div { class: "text-center text-background/70 leading-4 text-xs",
+                    div {
+                        class: "text-center leading-4 text-xs",
+                        style: "color: var(--glacier-mist-700);",
                         "Once you've logged in, return back here to continue."
                     }
                 }
