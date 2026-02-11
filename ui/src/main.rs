@@ -73,17 +73,15 @@ fn main() {
 
     #[cfg(feature = "desktop")]
     {
-        use dioxus_desktop::{
-            Config, LogicalSize, WindowBuilder, WindowCloseBehaviour,
-        };
-        
+        use dioxus_desktop::{Config, LogicalSize, WindowBuilder, WindowCloseBehaviour};
+
         #[cfg(target_os = "macos")]
         use dioxus_desktop::tao::platform::macos::WindowBuilderExtMacOS;
 
         let mut window_builder = WindowBuilder::new()
             .with_title("")
-            .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
-            .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
+            .with_inner_size(LogicalSize::new(630, 600)) // default width, height (logical pixels)
+            .with_min_inner_size(LogicalSize::new(630, 600)) // prevent resizing smaller
             .with_decorations(true)
             .with_transparent(true)
             .with_window_icon(Some(window_icon()));
