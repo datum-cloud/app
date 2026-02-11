@@ -73,29 +73,36 @@ fn main() {
 
     #[cfg(feature = "desktop")]
     {
-        // Use a custom titlebar so we can theme the top chrome (height + color).
         use dioxus_desktop::{
-            tao::platform::macos::WindowBuilderExtMacOS, Config, LogicalSize, WindowBuilder,
-            WindowCloseBehaviour,
+            Config, LogicalSize, WindowBuilder, WindowCloseBehaviour,
         };
+        
+        #[cfg(target_os = "macos")]
+        use dioxus_desktop::tao::platform::macos::WindowBuilderExtMacOS;
+
+        let mut window_builder = WindowBuilder::new()
+            .with_title("")
+            .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
+            .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
+            .with_decorations(true)
+            .with_transparent(true)
+            .with_window_icon(Some(window_icon()));
+
+        // macOS-specific window options
+        #[cfg(target_os = "macos")]
+        {
+            window_builder = window_builder
+                .with_titlebar_transparent(true)
+                .with_has_shadow(true)
+                .with_fullsize_content_view(true);
+        }
 
         dioxus::LaunchBuilder::desktop()
             .with_cfg(desktop! {
                 Config::new()
                     // Make "close" behave like hide, so the tray icon can restore it.
                     .with_close_behaviour(WindowCloseBehaviour::WindowHides)
-                    .with_window(
-                        WindowBuilder::new()
-                            .with_title("")
-                            .with_inner_size(LogicalSize::new(630, 600))  // default width, height (logical pixels)
-                            .with_min_inner_size(LogicalSize::new(630, 600))  // prevent resizing smaller
-                            .with_decorations(true)
-                            .with_transparent(true)
-                            .with_titlebar_transparent(true)
-                            .with_has_shadow(true)
-                            .with_fullsize_content_view(true)
-                            .with_window_icon(Some(window_icon())),
-                    )
+                    .with_window(window_builder)
             })
             .launch(App);
     }

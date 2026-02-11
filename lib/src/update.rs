@@ -220,7 +220,7 @@ impl UpdateChecker {
         // This handles both "2026.02.11-abc" and "2026.2.11-abc" as equivalent
         let normalized_v1 = Self::normalize_version(version1);
         let normalized_v2 = Self::normalize_version(version2);
-        
+
         // Simple comparison: if normalized versions are different, consider version1 newer
         // For more sophisticated comparison, we could parse semantic versions
         normalized_v1 != normalized_v2
