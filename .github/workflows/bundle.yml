@@ -120,6 +120,11 @@ jobs:
             (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
           }
 
+      - name: Update Cargo.lock
+        if: runner.os == 'macOS'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui
@@ -158,6 +163,11 @@ jobs:
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
 
+      - name: Update Cargo.lock
+        if: runner.os == 'Linux'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (Linux)
         if: runner.os == 'Linux'
         working-directory: ./ui
@@ -168,6 +178,11 @@ jobs:
         env:
           NO_STRIP: true
         run: dx bundle --locked --desktop --release --package-types appimage
+
+      - name: Update Cargo.lock
+        if: runner.os == 'Windows'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
 
       - name: Bundle (Windows)
         working-directory: ./ui
