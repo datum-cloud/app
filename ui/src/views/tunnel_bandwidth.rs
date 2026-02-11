@@ -168,7 +168,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                 }
 
                 // TunnelCard skeleton
-                div { class: "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none",
+                div { class: "bg-tunnel-card-background rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none",
                     // Header skeleton
                     div { class: "px-4 py-2.5 flex items-center justify-between",
                         Skeleton { class: "h-5 w-48".to_string() }
@@ -177,7 +177,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                     // Divider
                     div { class: "border-t border-tunnel-card-border" }
                     // Body skeleton
-                    div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                    div { class: "p-4 flex items-start justify-between bg-tunnel-card-background/50",
                         div { class: "flex flex-col gap-1.5 flex-1",
                             Skeleton { class: "h-4 w-64".to_string() }
                             Skeleton { class: "h-4 w-56".to_string() }
@@ -188,7 +188,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                 }
 
                 // Panel skeleton
-                div { class: "bg-white rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
+                div { class: "bg-tunnel-card-background rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
                     div { class: "border border-app-border rounded-lg p-6",
                         // Stats skeleton
                         div { class: "flex items-center justify-start gap-5 mb-4",
@@ -327,7 +327,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
             }
 
             // Panel
-            div { class: "bg-white rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
+            div { class: "bg-card-background rounded-b-lg border border-t-tunnel-card-border border-app-border shadow-card p-5 sm:p-10",
                 div { class: "border border-app-border rounded-lg p-6",
                     div { class: "flex items-center justify-start gap-5 mb-4",
                         div { class: "space-y-1.5 min-w-22",
