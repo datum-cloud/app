@@ -350,7 +350,7 @@ pub fn SelectProject() -> Element {
                 }
             }
             // Overlay (full screen backdrop)
-            div { class: "bg-foreground/30 fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            div { class: "bg-foreground/30 mt-[32px] fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
                 // Form dialog centered on top
                 div { class: "w-full max-w-lg mx-auto p-8 bg-card-background rounded-lg border border-card-border shadow-card relative z-50",
                     div { class: "mb-6",
