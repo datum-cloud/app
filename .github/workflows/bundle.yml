@@ -90,7 +90,9 @@ jobs:
           FULL_SHA: ${{ github.sha }}
         run: |
           SHORT_SHA=${FULL_SHA::7}
-          BUILD_DATE=$(date +'%Y.%m.%d')
+          # Use date format without leading zeros (%-m and %-d remove leading zeros on GNU date)
+          # Fallback to sed if %- doesn't work (macOS/BSD date)
+          BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
           VERSION="${BUILD_DATE}-${SHORT_SHA}"
           echo "Setting version to: $VERSION"
           # Update Cargo.toml version
@@ -108,7 +110,8 @@ jobs:
         shell: pwsh
         run: |
           $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
-          $BUILD_DATE = Get-Date -Format "yyyy.MM.dd"
+          # Use date format without leading zeros (M and d instead of MM and dd)
+          $BUILD_DATE = Get-Date -Format "yyyy.M.d"
           $VERSION = "$BUILD_DATE-$SHORT_SHA"
           Write-Host "Setting version to: $VERSION"
           # Update Cargo.toml version
@@ -192,7 +195,9 @@ jobs:
           echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
           echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
           SHORT_SHA=${FULL_SHA::7}
-          echo "RELEASE_VERSION=$(date +'%Y.%m.%d')-$SHORT_SHA" >> $GITHUB_ENV
+          # Remove leading zeros from date format for Cargo compatibility
+          RELEASE_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
+          echo "RELEASE_VERSION=${RELEASE_DATE}-${SHORT_SHA}" >> $GITHUB_ENV
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v7

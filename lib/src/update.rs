@@ -214,10 +214,43 @@ impl UpdateChecker {
     }
 
     /// Compare version strings - returns true if version1 > version2
+    /// Normalizes versions by removing leading zeros from numeric components for comparison
     fn is_newer_version(version1: &str, version2: &str) -> bool {
-        // Simple comparison: if versions are different, consider version1 newer
+        // Normalize versions by removing leading zeros from numeric components
+        // This handles both "2026.02.11-abc" and "2026.2.11-abc" as equivalent
+        let normalized_v1 = Self::normalize_version(version1);
+        let normalized_v2 = Self::normalize_version(version2);
+        
+        // Simple comparison: if normalized versions are different, consider version1 newer
         // For more sophisticated comparison, we could parse semantic versions
-        version1 != version2
+        normalized_v1 != normalized_v2
+    }
+
+    /// Normalize version string by removing leading zeros from numeric components
+    /// Example: "2026.02.11-abc" -> "2026.2.11-abc"
+    fn normalize_version(version: &str) -> String {
+        // Use regex to remove leading zeros from numeric components
+        // Pattern: replace ".0" followed by digits with "." followed by those digits
+        version
+            .split('-')
+            .next()
+            .unwrap_or(version)
+            .split('.')
+            .map(|part| {
+                // Remove leading zeros from numeric parts
+                if let Ok(num) = part.parse::<u32>() {
+                    num.to_string()
+                } else {
+                    part.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(".")
+            + if version.contains('-') {
+                &version[version.find('-').unwrap()..]
+            } else {
+                ""
+            }
     }
 
     /// Find the appropriate binary asset for the current platform
