@@ -83,6 +83,7 @@ pub struct UserProfile {
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub registration_approval: Option<String>,
 }
 
 impl UserProfile {
@@ -348,12 +349,19 @@ impl StatelessClient {
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
 
+            let registration_approval = status
+                .and_then(|s| s.get("registrationApproval"))
+                .or_else(|| status.and_then(|s| s.get("registration_approval")))
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+
             Some(UserProfile {
                 user_id,
                 email: email?,
                 first_name,
                 last_name,
                 avatar_url,
+                registration_approval,
             })
         }
 
@@ -622,7 +630,11 @@ impl AuthClient {
         let auth = auth.get()?;
         let new_auth = match self.client.refresh(&auth.tokens).await {
             Ok(auth) => auth,
-            Err(err) => Err(err).context("Failed to refresh auth tokens, needs login")?,
+            Err(err) => {
+                warn!("Failed to refresh auth tokens, logging out: {err:#}");
+                self.state.set(None).await?;
+                Err(err).context("Failed to refresh auth tokens, needs login")?
+            }
         };
         self.state.set(Some(new_auth)).await?;
         Ok(())

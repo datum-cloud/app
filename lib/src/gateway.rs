@@ -10,10 +10,14 @@ use hyper::{
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_proxy_utils::{
     Authority, HttpRequest, HttpRequestKind,
-    downstream::{Deny, DownstreamProxy, ErrorResponder, HttpProxyOpts, ProxyMode, RequestHandler},
+    downstream::{
+        Deny, DownstreamProxy, ErrorResponder, HttpProxyOpts, ProxyMode, RequestHandler, SrcAddr,
+    },
 };
 use n0_error::Result;
 use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tracing::info;
 
 use crate::build_endpoint;
@@ -42,6 +46,41 @@ pub async fn serve(endpoint: Endpoint, listener: TcpListener) -> Result<()> {
     proxy.forward_tcp_listener(listener, mode).await
 }
 
+/// Serves the gateway on a Unix Domain Socket.
+#[cfg(unix)]
+pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()> {
+    let uds_path = listener
+        .local_addr()
+        .ok()
+        .and_then(|a| a.as_pathname().map(|p| p.to_path_buf()));
+    info!(
+        ?uds_path,
+        endpoint_id = %endpoint.id().fmt_short(),
+        "UDS proxy gateway started"
+    );
+
+    let proxy = DownstreamProxy::new(endpoint, Default::default());
+    let mode =
+        ProxyMode::Http(HttpProxyOpts::new(HeaderResolver).error_responder(ErrorResponseWriter));
+    proxy.forward_uds_listener(listener, mode).await
+}
+
+/// Binds the gateway to a Unix Domain Socket at `path` and serves.
+#[cfg(unix)]
+pub async fn bind_and_serve_uds(
+    secret_key: SecretKey,
+    config: crate::config::GatewayConfig,
+    path: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    let endpoint = build_endpoint(secret_key, &config.common).await?;
+    serve_uds(endpoint, listener).await
+}
+
 const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
 const HEADER_TARGET_HOST: &str = "x-datum-target-host";
 const HEADER_TARGET_PORT: &str = "x-datum-target-port";
@@ -53,16 +92,13 @@ struct HeaderResolver;
 impl RequestHandler for HeaderResolver {
     async fn handle_request(
         &self,
-        src_addr: SocketAddr,
+        _src_addr: SrcAddr,
         req: &mut HttpRequest,
     ) -> Result<EndpointId, Deny> {
         match req.classify()? {
             HttpRequestKind::Tunnel => {
                 let endpoint_id = endpoint_id_from_headers(&req.headers)?;
-                // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
-                // If not, just remove the next line.
-                req.set_forwarded_for(src_addr)
-                    .remove_headers(DATUM_HEADERS);
+                req.remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
             HttpRequestKind::Origin | HttpRequestKind::Http1Absolute => {
@@ -73,9 +109,6 @@ impl RequestHandler for HeaderResolver {
                     .map_err(|_| Deny::bad_request("invalid x-datum-target-port header"))?;
                 // Rewrite the request target.
                 req.set_absolute_http_authority(Authority::new(host.to_string(), port))?
-                    // TODO: This exposes the client's IP addr to the upstream proxy. Not sure if that is desired or not.
-                    // If not, just remove the next line.
-                    .set_forwarded_for(src_addr)
                     .remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
