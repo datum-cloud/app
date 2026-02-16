@@ -83,6 +83,48 @@ jobs:
           echo "Updated signing identity in Dioxus.toml"
           grep signing_identity Dioxus.toml
 
+      - name: Set Version (Unix)
+        if: runner.os != 'Windows'
+        working-directory: ./ui
+        env:
+          FULL_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=${FULL_SHA::7}
+          # Use date format without leading zeros (%-m and %-d remove leading zeros on GNU date)
+          # Fallback to sed if %- doesn't work (macOS/BSD date)
+          BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
+          VERSION="${BUILD_DATE}-${SHORT_SHA}"
+          echo "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Also update lib/Cargo.toml if it exists
+          if [ -f ../lib/Cargo.toml ]; then
+            sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" ../lib/Cargo.toml
+          fi
+
+      - name: Set Version (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ./ui
+        env:
+          FULL_SHA: ${{ github.sha }}
+        shell: pwsh
+        run: |
+          $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
+          # Use date format without leading zeros (M and d instead of MM and dd)
+          $BUILD_DATE = Get-Date -Format "yyyy.M.d"
+          $VERSION = "$BUILD_DATE-$SHORT_SHA"
+          Write-Host "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          if (Test-Path ../lib/Cargo.toml) {
+            (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
+          }
+
+      - name: Update Cargo.lock
+        if: runner.os == 'macOS'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui
@@ -121,6 +163,11 @@ jobs:
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
 
+      - name: Update Cargo.lock
+        if: runner.os == 'Linux'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (Linux)
         if: runner.os == 'Linux'
         working-directory: ./ui
@@ -131,6 +178,11 @@ jobs:
         env:
           NO_STRIP: true
         run: dx bundle --locked --desktop --release --package-types appimage
+
+      - name: Update Cargo.lock
+        if: runner.os == 'Windows'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
 
       - name: Bundle (Windows)
         working-directory: ./ui
@@ -158,7 +210,9 @@ jobs:
           echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
           echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
           SHORT_SHA=${FULL_SHA::7}
-          echo "RELEASE_VERSION=$(date +'%Y.%m.%d')-$SHORT_SHA" >> $GITHUB_ENV
+          # Remove leading zeros from date format for Cargo compatibility
+          RELEASE_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
+          echo "RELEASE_VERSION=${RELEASE_DATE}-${SHORT_SHA}" >> $GITHUB_ENV
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v7

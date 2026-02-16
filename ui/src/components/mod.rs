@@ -11,6 +11,7 @@ mod icon;
 mod invite_user_dialog;
 mod splash;
 mod typography;
+mod update_dialog;
 
 pub use add_tunnel_dialog::AddTunnelDialog;
 pub use button::Button;
@@ -22,6 +23,7 @@ pub use invite_user_dialog::InviteUserDialog;
 pub use splash::Splash;
 #[allow(unused)]
 pub use typography::Subhead;
+pub use update_dialog::UpdateDialog;
 pub mod dialog;
 pub mod input;
 pub mod switch;

@@ -24,9 +24,108 @@
   --white: oklch(1 0 0);
 }
 
+.theme-alpha {
+  /* Base Colors */
+  --background: var(--glacier-mist-800);
+  --foreground: var(--midnight-fjord);
+  --content-background: var(--glacier-mist-700);
+  --alert-red: oklch(0.621 0.151 22.5);
+  --alert-red-dark: oklch(0.746 0.122 20.4);
+
+  /* Button Colors */
+  --button-primary-background: var(--app-dark-utility-2);
+  --button-primary-foreground: var(--glacier-mist-700);
+  --button-secondary-background: var(--aurora-moss);
+  --button-secondary-foreground: var(--midnight-fjord);
+  --button-outline-background: var(--app-dark-utility-5);
+  --button-outline-foreground: var(--midnight-fjord);
+  --button-link-foreground: var(--canyon-clay);
+
+  /* Border Colors */
+  --app-border: var(--glacier-mist-900);
+  --card-border: var(--app-dark-utility-5);
+  --tunnel-card-border: var(--glacier-mist-800);
+
+  /* Select Dropdown Colors */
+  --select-dropdown-border: var(--app-dark-utility-5);
+
+  /* Shadow Colors */
+  --shadow-card: 0px 2px 4px 2px rgba(12, 29, 49, 0.03);
+  --shadow-dialog:
+    0px 2px 4px 2px rgba(12, 29, 49, 0.03),
+    0px 10px 15px 0px rgba(12, 29, 49, 0.25);
+
+  /* Forms */
+  --form-label: var(--foreground);
+  --form-description: var(--app-dark-utility-4);
+
+  /* Switch Colors */
+  --switch-thumb: var(--white);
+  --switch-checked: #86a182;
+  --switch-disabled: var(--alert-red-dark);
+
+  /* Icon Colors */
+  --icon-tunnel: var(--canyon-clay);
+  --icon-select: var(--app-dark-utility-3);
+
+  /* Cards */
+  --card-background: var(--white);
+  --tunnel-card-background: var(--glacier-mist-700);
+}
+
+.dark {
+  /* Base Colors */
+  --background: var(--midnight-fjord);
+  --foreground: var(--glacier-mist-700);
+  --content-background: var(--app-dark-utility-1);
+  --alert-red: oklch(0.621 0.151 22.5);
+  --alert-red-dark: oklch(0.746 0.122 20.4);
+
+  /* Button Colors */
+  --button-primary-background: var(--aurora-moss);
+  --button-primary-foreground: var(--midnight-fjord);
+  --button-secondary-background: var(--app-dark-utility-2);
+  --button-secondary-foreground: var(--glacier-mist-800);
+  --button-outline-background: var(--app-dark-utility-5);
+  --button-outline-foreground: var(--glacier-mist-700);
+  --button-link-foreground: var(--canyon-clay);
+
+  /* Border Colors */
+  --app-border: var(--app-dark-utility-2);
+  --card-border: var(--app-dark-utility-2);
+  --tunnel-card-border: var(--app-dark-utility-2);
+
+  /* Select Dropdown Colors */
+  --select-dropdown-border: var(--app-dark-utility-1);
+
+  /* Shadow Colors */
+  --shadow-card: 0px 2px 4px 2px rgba(12, 29, 49, 0.03);
+  --shadow-dialog:
+    0px 2px 4px 2px rgba(12, 29, 49, 0.03),
+    0px 10px 15px 0px rgba(12, 29, 49, 0.25);
+
+  /* Forms */
+  --form-label: var(--foreground);
+  --form-description: var(--app-dark-utility-5);
+
+  /* Switch Colors */
+  --switch-thumb: var(--white);
+  --switch-checked: #86a182;
+  --switch-disabled: var(--alert-red-dark);
+
+  /* Icon Colors */
+  --icon-tunnel: var(--canyon-clay);
+  --icon-select: var(--app-dark-utility-3);
+
+  /* Cards */
+  --card-background: var(--midnight-fjord);
+  --tunnel-card-background: var(--app-dark-utility-1);
+}
+
 @theme inline {
-  --font-sans: "Alliance No1", ui-sans-serif, system-ui, sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-sans:
+    "Alliance No1", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: "Menlo", "Consolas", "Monaco", "DejaVu Sans Mono", monospace;
 
   /* Font Sizes */
@@ -81,46 +180,51 @@
   --spacing-scale-384px: 24rem;
 
   /* Base Colors */
-  --color-background: var(--glacier-mist-800);
-  --color-foreground: var(--midnight-fjord);
-  --color-content-background: var(--glacier-mist-700);
-  --color-alert-red: var(--alert-red-light);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-content-background: var(--content-background);
+  --color-alert-red: var(--alert-red);
   --color-alert-red-dark: var(--alert-red-dark);
 
   /* Button Colors */
-  --color-button-primary-background: var(--app-dark-utility-2);
-  --color-button-primary-foreground: var(--glacier-mist-700);
-  --color-button-secondary-background: var(--aurora-moss);
-  --color-button-secondary-foreground: var(--midnight-fjord);
-  --color-button-outline-background: var(--app-dark-utility-5);
-  --color-button-outline-foreground: var(--midnight-fjord);
-  --color-button-link-foreground: var(--canyon-clay);
+  --color-button-primary-background: var(--button-primary-background);
+  --color-button-primary-foreground: var(--button-primary-foreground);
+  --color-button-secondary-background: var(--button-secondary-background);
+  --color-button-secondary-foreground: var(--button-secondary-foreground);
+  --color-button-outline-background: var(--button-outline-background);
+  --color-button-outline-foreground: var(--button-outline-foreground);
+  --color-button-link-foreground: var(--button-link-foreground);
 
   /* Border Colors */
-  --color-app-border: var(--glacier-mist-900);
-  --color-card-border: var(--app-dark-utility-5);
-  --color-tunnel-card-border: var(--glacier-mist-800);
+  --color-app-border: var(--app-border);
+  --color-card-border: var(--card-border);
+  --color-tunnel-card-border: var(--tunnel-card-border);
 
   /* Select Dropdown Colors */
-  --color-select-dropdown-border: var(--app-dark-utility-5);
+  --color-select-dropdown-border: var(--select-dropdown-border);
 
   /* Shadow Colors */
   --shadow-card: 0px 2px 4px 2px rgba(12, 29, 49, 0.03);
-  --shadow-dialog: 0px 2px 4px 2px rgba(12, 29, 49, 0.03),
+  --shadow-dialog:
+    0px 2px 4px 2px rgba(12, 29, 49, 0.03),
     0px 10px 15px 0px rgba(12, 29, 49, 0.25);
 
   /* Forms */
-  --color-form-label: var(--foreground);
-  --color-form-description: var(--app-dark-utility-4);
+  --color-form-label: var(--form-label);
+  --color-form-description: var(--form-description);
 
   /* Switch Colors */
-  --color-switch-thumb: var(--white);
-  --color-switch-checked: #86a182;
-  --color-switch-disabled: var(--alert-red-dark);
+  --color-switch-thumb: var(--switch-thumb);
+  --color-switch-checked: var(--switch-checked);
+  --color-switch-disabled: var(--switch-disabled);
 
   /* Icon Colors */
-  --color-icon-tunnel: var(--canyon-clay);
-  --color-icon-select: var(--app-dark-utility-3);
+  --color-icon-tunnel: var(--icon-tunnel);
+  --color-icon-select: var(--icon-select);
+
+  /* Cards */
+  --color-card-background: var(--card-background);
+  --color-tunnel-card-background: var(--tunnel-card-background);
 }
 
 @layer base {

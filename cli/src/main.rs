@@ -11,6 +11,7 @@ use lib::{
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 use tracing::info;
 
@@ -133,13 +134,9 @@ pub struct ConnectArgs {
     #[clap(long)]
     pub bind: SocketAddr,
 
-    /// three-word-name for a tunnel to connect to.
-    #[clap(long, conflicts_with = "ticket")]
-    pub codename: Option<String>,
-
     /// provide a ticket to drive connection directly.
     #[clap(long, conflicts_with = "codename")]
-    pub ticket: Option<AdvertismentTicket>,
+    pub ticket: AdvertismentTicket,
 }
 
 #[derive(Parser, Debug)]
@@ -148,6 +145,10 @@ pub struct ServeArgs {
     pub bind_addr: IpAddr,
     #[clap(long, default_value = "8080")]
     pub port: u16,
+    /// Also listen on a Unix domain socket at this path (e.g. for Envoy to forward via UDS).
+    #[cfg(unix)]
+    #[clap(long)]
+    pub uds: Option<PathBuf>,
     /// Discovery mode for connection details.
     #[clap(long, value_enum)]
     pub discovery: Option<DiscoveryModeArg>,
@@ -263,19 +264,8 @@ async fn main() -> n0_error::Result<()> {
             println!()
         }
         Commands::Connect(args) => {
-            let ConnectArgs {
-                bind,
-                codename,
-                ticket,
-            } = args;
+            let ConnectArgs { bind, ticket } = args;
             let node = ConnectNode::new(repo).await?;
-            let ticket = if let Some(codename) = codename {
-                node.tickets.get(&codename).await?
-            } else if let Some(ticket) = ticket {
-                ticket
-            } else {
-                n0_error::bail_any!("either --codename or --ticket is required");
-            };
 
             let handle = node
                 .connect_and_bind_local(ticket.endpoint, &ticket.data.data, bind)
@@ -306,6 +296,18 @@ async fn main() -> n0_error::Result<()> {
             }
             if let Some(resolver) = args.dns_resolver {
                 config.common.dns_resolver = Some(resolver);
+            }
+            #[cfg(unix)]
+            if let Some(uds_path) = &args.uds {
+                let sk = secret_key.clone();
+                let cfg = config.clone();
+                let path = uds_path.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = lib::gateway::bind_and_serve_uds(sk, cfg, path).await {
+                        tracing::warn!(%e, "UDS gateway task failed");
+                    }
+                });
+                println!("UDS gateway at {}", uds_path.display());
             }
             println!("serving on port {bind_addr}");
             tokio::select! {

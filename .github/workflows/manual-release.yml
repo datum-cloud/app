@@ -89,6 +89,38 @@ jobs:
           echo "Updated signing identity in Dioxus.toml"
           grep signing_identity Dioxus.toml
 
+      - name: Set Version (Unix)
+        if: runner.os != 'Windows'
+        working-directory: ./ui
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        run: |
+          # Extract version from tag (remove 'v' prefix if present)
+          VERSION="${VERSION_TAG#v}"
+          echo "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Also update lib/Cargo.toml if it exists
+          if [ -f ../lib/Cargo.toml ]; then
+            sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" ../lib/Cargo.toml
+          fi
+
+      - name: Set Version (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ./ui
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        shell: pwsh
+        run: |
+          $VERSION_TAG = $env:VERSION_TAG
+          $VERSION = $VERSION_TAG -replace '^v', ''
+          Write-Host "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          if (Test-Path ../lib/Cargo.toml) {
+            (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
+          }
+
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui

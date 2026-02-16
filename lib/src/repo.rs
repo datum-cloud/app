@@ -174,4 +174,9 @@ impl Repo {
             Ok(state)
         }
     }
+
+    /// Get the base directory path of this repo
+    pub fn path(&self) -> &PathBuf {
+        &self.0
+    }
 }

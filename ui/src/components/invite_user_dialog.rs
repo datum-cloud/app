@@ -85,11 +85,11 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
                                 "The Org and Project you’re inviting them to:"
                             }
                             div { class: "flex items-center gap-2",
-                                div { class: "w-fit h-6 min-w-0 rounded-md border border-app-border bg-white px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default",
+                                div { class: "w-fit h-6 min-w-0 rounded-md border border-app-border bg-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default",
                                     "{ctx.org_name}"
                                 }
                                 span { class: "text-foreground/10 text-md", "/" }
-                                div { class: "w-fit h-6 min-w-0 rounded-md border border-app-border bg-white px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default",
+                                div { class: "w-fit h-6 min-w-0 rounded-md border border-app-border bg-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default",
                                     "{ctx.project_name}"
                                 }
                             }

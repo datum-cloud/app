@@ -64,6 +64,10 @@ impl DatumCloudClient {
         self.env.api_url()
     }
 
+    pub fn web_url(&self) -> &'static str {
+        self.env.web_url()
+    }
+
     pub fn auth(&self) -> &AuthClient {
         &self.auth
     }

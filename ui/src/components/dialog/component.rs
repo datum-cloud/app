@@ -7,7 +7,7 @@ use dioxus_primitives::dialog::{
 pub fn DialogRoot(props: DialogRootProps) -> Element {
     rsx! {
         dialog::DialogRoot {
-            class: "bg-foreground/30 absolute top-0 left-0 w-full h-full inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            class: "bg-foreground/30 absolute mt-[32px] top-0 left-0 w-full h-full inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
             id: props.id,
             is_modal: props.is_modal,
             open: props.open,
@@ -23,7 +23,7 @@ pub fn DialogRoot(props: DialogRootProps) -> Element {
 pub fn DialogContent(props: DialogContentProps) -> Element {
     rsx! {
         dialog::DialogContent {
-            class: "bg-white rounded-md p-6.5 py-7 shadow-dialog animate-in fade-in duration-300",
+            class: "bg-card-background rounded-md p-6.5 py-7 shadow-dialog animate-in fade-in duration-300",
             id: props.id,
             attributes: props.attributes,
             {props.children}

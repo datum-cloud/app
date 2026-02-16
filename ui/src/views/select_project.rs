@@ -4,6 +4,7 @@ use tracing::warn;
 
 use lib::datum_cloud::OrganizationWithProjects;
 use lib::SelectedContext;
+use open::that;
 
 use crate::{
     components::{
@@ -11,7 +12,7 @@ use crate::{
             Select, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger, SelectValue,
         },
         skeleton::Skeleton,
-        Button,
+        Button, ButtonKind, IconSource,
     },
     state::AppState,
     Route,
@@ -22,15 +23,18 @@ pub fn SelectProject() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
     let state_for_load = state.clone();
-    let mut orgs = use_signal(Vec::<OrganizationWithProjects>::new);
-    let mut load_error = use_signal(|| None::<String>);
+    let orgs = use_signal(Vec::<OrganizationWithProjects>::new);
+    let load_error = use_signal(|| None::<String>);
     let mut selected_org = use_signal(|| None::<String>);
     let mut selected_project = use_signal(|| None::<String>);
     let saving = use_signal(|| false);
     let save_error = use_signal(|| None::<String>);
+    let refreshing = use_signal(|| false);
 
     use_future(move || {
         let state = state_for_load.clone();
+        let mut orgs = orgs;
+        let mut load_error = load_error;
         async move {
             match state.datum().orgs_and_projects().await {
                 Ok(list) => {
@@ -41,6 +45,28 @@ pub fn SelectProject() -> Element {
                     load_error.set(Some(err.to_string()));
                 }
             }
+        }
+    });
+
+    let state_for_refresh = state.clone();
+    let mut refresh_action = use_action(move |_: ()| {
+        let state = state_for_refresh.clone();
+        let mut orgs = orgs;
+        let mut load_error = load_error;
+        let mut refreshing = refreshing;
+        async move {
+            refreshing.set(true);
+            match state.datum().orgs_and_projects().await {
+                Ok(list) => {
+                    orgs.set(list);
+                    load_error.set(None);
+                }
+                Err(err) => {
+                    load_error.set(Some(err.to_string()));
+                }
+            }
+            refreshing.set(false);
+            n0_error::Ok(())
         }
     });
 
@@ -179,10 +205,17 @@ pub fn SelectProject() -> Element {
         } else {
             "Select a project".to_string()
         };
+        let has_no_projects = project_options.is_empty() && selected_org_id.is_some();
+        let create_project_url = if has_no_projects {
+            let org_slug = selected_org_id.clone().unwrap_or_default();
+            format!("{}/org/{org_slug}/projects", state.datum().web_url())
+        } else {
+            String::new()
+        };
         rsx! {
             div { class: "space-y-4",
                 div { class: "flex flex-col gap-2",
-                    label { class: "text-xs text-form-label/80", "Organization" }
+                    label { class: "text-xs text-form-label/90", "Organization" }
                     Select {
                         value: selected_org_id.clone(),
                         on_value_change: move |value: Option<String>| {
@@ -228,39 +261,70 @@ pub fn SelectProject() -> Element {
                         }
                     }
                 }
-                div { class: "flex flex-col gap-2",
-                    label { class: "text-xs text-form-label/80", "Project" }
-                    Select {
-                        value: selected_project_id.clone(),
-                        on_value_change: move |value: Option<String>| {
-                            let Some(value) = value else { return };
-                            selected_project.set(Some(value));
-                        },
-                        placeholder: project_placeholder.clone(),
-                        disabled: project_disabled,
-                        SelectTrigger { SelectValue {} }
-                        SelectList {
-                            if project_options.is_empty() {
-                                SelectOptionItem {
-                                    value: "".to_string(),
-                                    text_value: "No results".to_string(),
-                                    index: 0,
-                                    disabled: true,
-                                    "No results"
+                if has_no_projects {
+                    // Show link to create project when org is selected but has no projects
+                    div { class: "flex flex-col gap-2",
+                        label { class: "text-xs text-form-label/90", "Project" }
+                        div { class: "rounded-md border border-app-border bg-content-background p-4",
+                            div { class: "text-sm text-foreground mb-3",
+                                "No projects found in this organization."
+                            }
+                            div { class: "flex gap-2",
+                                Button {
+                                    text: "Create a project".to_string(),
+                                    kind: ButtonKind::Primary,
+                                    onclick: move |_| {
+                                        let _ = that(&create_project_url);
+                                    },
+                                    trailing_icon: Some(IconSource::Named("external-link".into())),
                                 }
-                            } else {
-                                for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                Button {
+                                    text: "Refresh".to_string(),
+                                    kind: ButtonKind::Outline,
+                                    class: if refreshing() { Some("opacity-60 pointer-events-none".to_string()) } else { None },
+                                    onclick: move |_| {
+                                        refresh_action.call(());
+                                    },
+                                    trailing_icon: if refreshing() { Some(IconSource::Named("loader-circle".into())) } else { None },
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    div { class: "flex flex-col gap-2",
+                        label { class: "text-xs text-form-label/80", "Project" }
+                        Select {
+                            value: selected_project_id.clone(),
+                            on_value_change: move |value: Option<String>| {
+                                let Some(value) = value else { return };
+                                selected_project.set(Some(value));
+                            },
+                            placeholder: project_placeholder.clone(),
+                            disabled: project_disabled,
+                            SelectTrigger { SelectValue {} }
+                            SelectList {
+                                if project_options.is_empty() {
                                     SelectOptionItem {
-                                        value: id.clone(),
-                                        text_value: label.clone(),
-                                        index: i,
-                                        div { class: "flex w-full justify-between items-center",
-                                            span { class: "truncate", "{label}" }
-                                            div { class: "text-1xs text-foreground/50 font-mono",
-                                                "{id}"
+                                        value: "".to_string(),
+                                        text_value: "No results".to_string(),
+                                        index: 0,
+                                        disabled: true,
+                                        "No results"
+                                    }
+                                } else {
+                                    for (i , (id , label)) in project_options.clone().into_iter().enumerate() {
+                                        SelectOptionItem {
+                                            value: id.clone(),
+                                            text_value: label.clone(),
+                                            index: i,
+                                            div { class: "flex w-full justify-between items-center",
+                                                span { class: "truncate", "{label}" }
+                                                div { class: "text-1xs text-foreground/50 font-mono",
+                                                    "{id}"
+                                                }
                                             }
+                                            SelectItemIndicator {}
                                         }
-                                        SelectItemIndicator {}
                                     }
                                 }
                             }
@@ -272,18 +336,12 @@ pub fn SelectProject() -> Element {
     };
 
     rsx! {
-        div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
-            // Content row with sidebar and main content
+        div { class: "h-full overflow-hidden flex flex-col bg-content-background text-foreground",
+            // Content row with main content
             div { class: "flex flex-1 min-h-0 relative",
-                // Sidebar skeleton
-                div { class: "min-w-[190px] max-w-[190px] shrink-0 flex-none bg-background border-r border-app-border pt-5 pb-6 px-6 flex flex-col",
-                    div { class: "w-full",
-                        div { class: "h-9 w-full rounded-md bg-foreground/10" }
-                    }
-                }
                 // Main content area with skeleton tunnel cards
-                div { class: "flex-1 min-h-0 overflow-y-auto py-4.5 px-4.5 bg-content-background",
-                    div { class: "max-w-5xl mx-auto space-y-5",
+                div { class: "flex-1 min-h-0 overflow-y-auto bg-content-background",
+                    div { class: "max-w-4xl mx-auto space-y-5",
                         // Tunnel card skeletons
                         for _ in 0..3 {
                             div { class: "bg-foreground/10 rounded-lg border border-app-border shadow-card h-48" }
@@ -291,10 +349,10 @@ pub fn SelectProject() -> Element {
                     }
                 }
             }
-            // Overlay (same as dialog overlay, but below header bar)
-            div { class: "bg-foreground/30 absolute top-10 left-0 w-full bottom-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            // Overlay (full screen backdrop)
+            div { class: "bg-foreground/30 mt-[32px] fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
                 // Form dialog centered on top
-                div { class: "w-full max-w-lg mx-auto p-8 bg-white rounded-lg border border-card-border shadow-card relative z-50",
+                div { class: "w-full max-w-lg mx-auto p-8 bg-card-background rounded-lg border border-card-border shadow-card relative z-50",
                     div { class: "mb-6",
                         h1 { class: "text-xl font-medium text-foreground",
                             "Where to manage your tunnels"

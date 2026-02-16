@@ -5,6 +5,7 @@ use super::auth::AuthProvider;
 const STAGING_API_URL: &str = "https://api.staging.env.datum.net";
 const STAGING_ISSUER_URL: &str = "https://auth.staging.env.datum.net";
 const STAGING_CLIENT_ID: &str = "351641555150375458";
+const WEB_URL: &str = "https://cloud.staging.env.datum.net";
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ApiEnv {
@@ -15,6 +16,12 @@ impl ApiEnv {
     pub fn api_url(&self) -> &'static str {
         match self {
             ApiEnv::Staging => STAGING_API_URL,
+        }
+    }
+
+    pub fn web_url(&self) -> &'static str {
+        match self {
+            ApiEnv::Staging => WEB_URL,
         }
     }
 

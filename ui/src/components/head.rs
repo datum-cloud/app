@@ -20,6 +20,33 @@ pub fn Head() -> Element {
 @font-face {{ font-family: "Alliance No1"; src: url("{FONT_MEDIUM}") format("truetype"); font-weight: 500; font-style: normal; font-display: swap; }}
 @font-face {{ font-family: "Alliance No1"; src: url("{FONT_SEMIBOLD}") format("truetype"); font-weight: 600; font-style: normal; font-display: swap; }}"#
     );
+    let dark_mode_script = r#"
+        (function() {
+            function updateDarkClass() {
+                const darkModeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                const rootElement = document.querySelector('.theme-alpha') || document.documentElement;
+                
+                if (darkModeQuery.matches) {
+                    rootElement.classList.add('dark');
+                } else {
+                    rootElement.classList.remove('dark');
+                }
+            }
+            
+            // Set initial state immediately
+            updateDarkClass();
+            
+            // Listen for changes
+            const darkModeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+            if (darkModeQuery.addEventListener) {
+                darkModeQuery.addEventListener('change', updateDarkClass);
+            } else {
+                // Fallback for older browsers
+                darkModeQuery.addListener(updateDarkClass);
+            }
+        })();
+    "#;
+
     rsx! {
         // Light mode favicon (default)
         document::Link { rel: "icon", href: FAVICON_LIGHT }
@@ -32,5 +59,6 @@ pub fn Head() -> Element {
         document::Style { "{font_face_css}" }
         document::Stylesheet { rel: "stylesheet", href: TAILWIND_CSS }
         document::Stylesheet { rel: "stylesheet", href: MAIN_CSS }
+        document::Script { "{dark_mode_script}" }
     }
 }

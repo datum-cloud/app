@@ -160,13 +160,13 @@ pub fn ProxiesList() -> Element {
         rsx! {
             div { class: "space-y-5",
                 for _ in 0..3 {
-                    div { class: "bg-white rounded-lg border border-app-border shadow-card",
+                    div { class: "bg-card-background rounded-lg border border-app-border shadow-card",
                         div { class: "px-4 py-2.5 flex items-center justify-between",
                             Skeleton { class: Some("h-5 w-32".to_string()) }
                             Skeleton { class: Some("h-4 w-4 rounded-full".to_string()) }
                         }
                         div { class: "border-t border-tunnel-card-border" }
-                        div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                        div { class: "p-4 flex items-start justify-between bg-tunnel-card-background/50",
                             div { class: "flex flex-col gap-1.5",
                                 div { class: "flex items-center gap-2.5",
                                     Skeleton { class: Some("h-3.5 w-3.5".to_string()) }
@@ -193,7 +193,7 @@ pub fn ProxiesList() -> Element {
         // Empty state: show empty message
         rsx! {
             div { class: "space-y-5",
-                div { class: "relative rounded-lg border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
+                div { class: "relative rounded-lg border border-card-border bg-card-background h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
                     img {
                         class: "absolute right-0 top-0 h-20 w-auto object-contain pointer-events-none",
                         src: "{EMPTY_MOON}",
@@ -204,11 +204,13 @@ pub fn ProxiesList() -> Element {
                         src: "{EMPTY_ROCKS}",
                         alt: "",
                     }
-                    div { class: "text-sm mt-2", "Hey {first_name}, let's create your first tunnel" }
+                    div { class: "text-sm mt-2 max-w-xs",
+                        "Hey {first_name}, Want to safely expose a local service on the internet?"
+                    }
                     Button {
                         kind: ButtonKind::Outline,
                         class: "w-fit text-foreground",
-                        text: "Add tunnel",
+                        text: "Add New",
                         leading_icon: Some(IconSource::Named("plus".into())),
                         onclick: move |_| dialog_open.set(true),
                     }
@@ -368,9 +370,9 @@ pub fn TunnelCard(
     let display_endpoint_href = display_endpoint.clone();
 
     let wrapper_class = if show_bandwidth {
-        "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
+        "bg-tunnel-card-background rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
     } else {
-        "bg-white rounded-lg border border-app-border shadow-card"
+        "bg-tunnel-card-background rounded-lg border border-app-border shadow-card"
     };
 
     // Clone tunnel_id and tunnel before they're moved into closures
@@ -400,13 +402,13 @@ pub fn TunnelCard(
     });
 
     rsx! {
-        div { class: "{wrapper_class} relative",
+        div { class: "{wrapper_class} relative rounded-lg",
             if is_disabled() {
-                div { class: "absolute inset-0 bg-white/30 rounded-lg z-10 pointer-events-none" }
+                div { class: "absolute inset-0 bg-tunnel-card-background/30 rounded-lg z-10 pointer-events-none" }
             }
             div { class: if is_disabled() { "opacity-90" } else { "" },
                 // header row: title + toggle
-                div { class: "px-4 py-2.5 flex items-center justify-between",
+                div { class: "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg",
                     h2 { class: "text-md font-normal text-foreground", {tunnel.label.clone()} }
                     if is_ready && !is_deleting() {
                         Switch {
@@ -428,7 +430,7 @@ pub fn TunnelCard(
                 div { class: "border-t border-tunnel-card-border" }
 
                 // body: rows + kebab aligned to the right like Figma
-                div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                div { class: "p-4 flex items-start justify-between bg-tunnel-card-background rounded-b-lg",
                     div { class: "flex flex-col gap-1.5",
                         div { class: "flex items-center gap-2.5 text-icon-tunnel",
                             Icon {
