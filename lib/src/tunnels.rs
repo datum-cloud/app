@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use iroh_proxy_utils::Authority;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, ResourceExt};
@@ -41,6 +42,16 @@ pub struct TunnelSummary {
     pub enabled: bool,
     pub accepted: bool,
     pub programmed: bool,
+}
+
+impl TunnelSummary {
+    // TODO(Frando): this should all be cleared up and use more common types instead of
+    // converting around wildly.
+    pub fn origin_authority(&self) -> Option<Authority> {
+        TcpProxyData::from_host_port_str(&strip_scheme(&self.endpoint))
+            .ok()
+            .map(Authority::from)
+    }
 }
 
 #[derive(Debug, Clone)]

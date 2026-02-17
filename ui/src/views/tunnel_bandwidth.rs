@@ -1,6 +1,9 @@
+use std::{sync::Arc, time::Duration};
+
 use chrono::{DateTime, Local};
 use dioxus::prelude::*;
 use lib::TunnelSummary;
+use tokio::sync::Notify;
 
 use super::{OpenEditTunnelDialog, TunnelCard};
 use crate::{
@@ -9,6 +12,8 @@ use crate::{
     util::humanize_bytes,
     Route,
 };
+
+const SAMPLING_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -32,14 +37,17 @@ pub fn TunnelBandwidth(id: String) -> Element {
     let mut points = use_signal(Vec::<RatePoint>::new);
     let mut latest_send = use_signal(|| 0u64);
     let mut latest_recv = use_signal(|| 0u64);
+    let notify_loaded = Arc::new(Notify::new());
 
     // Load tunnel metadata and keep it in sync when state updates (e.g. after edit/save).
     let state_for_future = state.clone();
     use_future({
         let id = id.clone();
+        let notify_loaded = notify_loaded.clone();
         move || {
             let id = id.clone();
             let state = state_for_future.clone();
+            let notify_loaded = notify_loaded.clone();
             async move {
                 let refresh = state.tunnel_refresh();
 
@@ -55,6 +63,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                             title.set(tunnel.label.clone());
                             codename.set(tunnel.id.clone());
                             tunnel_loaded.set(Some(tunnel));
+                            notify_loaded.notify_waiters();
                         }
                         Ok(None) => {
                             loading.set(false);
@@ -74,8 +83,9 @@ pub fn TunnelBandwidth(id: String) -> Element {
 
     use_future(move || {
         let state = consume_context::<AppState>();
+        let notify_loaded = notify_loaded.clone();
         async move {
-            let mut metrics_sub = state.node().listen.metrics();
+            let metrics = state.node().listen.metrics().clone();
 
             // We compute bytes/sec over the interval between *plotted* samples (not per-metric tick),
             // otherwise bursty traffic can happen between samples and we'd plot a flatline.
@@ -90,16 +100,34 @@ pub fn TunnelBandwidth(id: String) -> Element {
             // higher = more responsive, lower = smoother
             let alpha: f64 = 0.12;
 
-            while let Ok(metric) = metrics_sub.recv().await {
-                let now = std::time::Instant::now();
+            loop {
+                let notified = notify_loaded.notified();
+                let Some(tunnel) = tunnel_loaded() else {
+                    notified.await;
+                    continue;
+                };
+                let Some(authority) = tunnel.origin_authority() else {
+                    warn!(?tunnel, "failed to parse authority from tunnel summary");
+                    break;
+                };
+
+                let tunnel_metric = metrics.get(&authority).unwrap_or_default();
+
+                let send = tunnel_metric.bytes_from_origin();
+                let recv = tunnel_metric.bytes_to_origin();
+
                 // First metric just initializes the baseline.
+                let now = std::time::Instant::now();
                 let (Some(prev_send), Some(prev_recv)) = (last_sample_send, last_sample_recv)
                 else {
-                    last_sample_send = Some(metric.send);
-                    last_sample_recv = Some(metric.recv);
+                    last_sample_send = Some(send);
+                    last_sample_recv = Some(recv);
                     last_sample_at = now;
                     continue;
                 };
+
+                tokio::time::sleep(SAMPLING_INTERVAL).await;
+                let now = std::time::Instant::now();
 
                 // Downsample to ~2Hz so the UI stays smooth.
                 let dt = now.duration_since(last_sample_at);
@@ -108,8 +136,8 @@ pub fn TunnelBandwidth(id: String) -> Element {
                 }
 
                 let dt_s = dt.as_secs_f64().max(0.001);
-                let raw_send = (metric.send.saturating_sub(prev_send)) as f64 / dt_s;
-                let raw_recv = (metric.recv.saturating_sub(prev_recv)) as f64 / dt_s;
+                let raw_send = (send.saturating_sub(prev_send)) as f64 / dt_s;
+                let raw_recv = (recv.saturating_sub(prev_recv)) as f64 / dt_s;
 
                 // EMA update
                 ema_send = if ema_send == 0.0 {
@@ -142,8 +170,8 @@ pub fn TunnelBandwidth(id: String) -> Element {
                 }
                 points.set(next);
 
-                last_sample_send = Some(metric.send);
-                last_sample_recv = Some(metric.recv);
+                last_sample_send = Some(send);
+                last_sample_recv = Some(recv);
                 last_sample_at = now;
             }
         }

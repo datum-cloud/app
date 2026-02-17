@@ -1,23 +1,21 @@
-use std::{fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc};
 
 use iroh::{
     Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
     protocol::Router,
 };
 use iroh_n0des::ApiSecret;
-use iroh_proxy_utils::{ALPN as IROH_HTTP_CONNECT_ALPN, HttpProxyRequest, HttpProxyRequestKind};
+use iroh_proxy_utils::upstream::Metrics;
+use iroh_proxy_utils::{
+    ALPN as IROH_HTTP_CONNECT_ALPN, Authority, HttpProxyRequest, HttpProxyRequestKind,
+};
 use iroh_proxy_utils::{
     downstream::{DownstreamProxy, EndpointAuthority, ProxyMode},
     upstream::{AuthError, AuthHandler, UpstreamProxy},
 };
 use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use n0_error::{Result, StackResultExt, StdResultExt};
-use n0_future::task::AbortOnDropHandle;
-use tokio::{
-    net::TcpListener,
-    sync::{broadcast, futures::Notified},
-    task::JoinHandle,
-};
+use tokio::{net::TcpListener, sync::futures::Notified, task::JoinHandle};
 use tracing::{Instrument, debug, error_span, info, instrument, warn};
 
 use crate::{ProxyState, Repo, StateWrapper, TcpProxyData, config::Config};
@@ -47,9 +45,8 @@ pub struct ListenNode {
     router: Router,
     state: StateWrapper,
     repo: Repo,
+    metrics: Arc<Metrics>,
     _n0des: Option<Arc<iroh_n0des::Client>>,
-    metrics_tx: broadcast::Sender<MetricsUpdate>,
-    _metrics_task: Arc<AbortOnDropHandle<()>>,
 }
 
 impl ListenNode {
@@ -70,43 +67,17 @@ impl ListenNode {
         let state = repo.load_state().await?;
 
         let upstream_proxy = UpstreamProxy::new(state.clone())?;
+        let metrics = upstream_proxy.metrics();
 
         let router = Router::builder(endpoint)
             .accept(IROH_HTTP_CONNECT_ALPN, upstream_proxy)
             .spawn();
 
-        let (metrics_tx, _) = broadcast::channel(1);
-
-        let metrics_update_interval = Duration::from_millis(100);
-        let metrics_task = tokio::spawn(
-            {
-                let endpoint = router.endpoint().clone();
-                let metrics_tx = metrics_tx.clone();
-                async move {
-                    loop {
-                        let metrics = endpoint.metrics();
-                        let recv_total = metrics.magicsock.recv_data_ipv4.get()
-                            + metrics.magicsock.recv_data_ipv6.get()
-                            + metrics.magicsock.recv_data_relay.get();
-                        let send_total = metrics.magicsock.send_data.get();
-                        let update = MetricsUpdate {
-                            send: send_total,
-                            recv: recv_total,
-                        };
-                        metrics_tx.send(update).ok();
-                        n0_future::time::sleep(metrics_update_interval).await;
-                    }
-                }
-            }
-            .instrument(error_span!("metrics")),
-        );
-
         let this = Self {
             repo,
             router,
             state,
-            metrics_tx,
-            _metrics_task: Arc::new(AbortOnDropHandle::new(metrics_task)),
+            metrics,
             _n0des: n0des,
         };
         Ok(this)
@@ -120,8 +91,8 @@ impl ListenNode {
         &self.state
     }
 
-    pub fn metrics(&self) -> broadcast::Receiver<MetricsUpdate> {
-        self.metrics_tx.subscribe()
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
     }
 
     pub fn proxies(&self) -> Vec<ProxyState> {
@@ -221,41 +192,17 @@ impl AuthHandler for StateWrapper {
             }
             HttpProxyRequestKind::Absolute { target, .. } => {
                 // Parse host:port from absolute URL (e.g., "http://localhost:5173/path")
-                if let Some((host, port)) = parse_host_port_from_url(target) {
-                    if self.tcp_proxy_exists(&host, port) {
+                if let Ok(authority) = Authority::from_absolute_uri(&target) {
+                    if self.tcp_proxy_exists(&authority.host, authority.port) {
                         Ok(())
                     } else {
                         Err(AuthError::Forbidden)
                     }
                 } else {
-                    debug!(target, "failed to parse host:port from absolute URL");
+                    debug!(%target, "failed to parse host:port from absolute URL");
                     Err(AuthError::Forbidden)
                 }
             }
-        }
-    }
-}
-
-/// Parse host and port from an absolute URL (e.g., "http://localhost:5173/path")
-fn parse_host_port_from_url(url: &str) -> Option<(String, u16)> {
-    // Remove scheme
-    let without_scheme = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))?;
-
-    // Split off the path
-    let authority = without_scheme.split('/').next()?;
-
-    // Split host and port
-    if let Some((host, port_str)) = authority.rsplit_once(':') {
-        let port = port_str.parse().ok()?;
-        Some((host.to_string(), port))
-    } else {
-        // Default ports
-        if url.starts_with("https://") {
-            Some((authority.to_string(), 443))
-        } else {
-            Some((authority.to_string(), 80))
         }
     }
 }

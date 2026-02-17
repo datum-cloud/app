@@ -1558,7 +1558,7 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
- "iroh-metrics 0.38.1",
+ "iroh-metrics 0.38.2",
  "iroh-quinn",
  "lib",
  "n0-error",
@@ -4270,9 +4270,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics"
-version = "0.38.1"
+version = "0.38.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5828152c482cf9d95f3039848ac2be5e6e47c41dbf3695a453e6c02739c50d2c"
+checksum = "c946095f060e6e59b9ff30cc26c75cdb758e7fb0cde8312c89e2144654989fcb"
 dependencies = [
  "iroh-metrics-derive",
  "itoa",
@@ -4285,9 +4285,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics-derive"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4e12bd0763fd16062f5cc5e8db15dd52d26e75a8af4c7fb57ccee3589b344b8"
+checksum = "cab063c2bfd6c3d5a33a913d4fdb5252f140db29ec67c704f20f3da7e8f92dbf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -4342,7 +4342,7 @@ dependencies = [
 [[package]]
 name = "iroh-proxy-utils"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=main#a7a4d7ad9a508f548982be7bf2f0a9f945f0aff2"
+source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=feat%2Fmetrics#51d4f0f9ae733e8030a2e80b19de125fb80c9e82"
 dependencies = [
  "bytes",
  "derive_more 2.1.1",
@@ -4354,6 +4354,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-blobs",
+ "iroh-metrics 0.38.2",
  "n0-error",
  "n0-future",
  "reqwest",
@@ -8157,7 +8158,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
