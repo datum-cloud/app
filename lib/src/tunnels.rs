@@ -17,8 +17,8 @@ use crate::datum_apis::connector_advertisement::{
     ConnectorAdvertisementSpec, Layer4ServiceAddress, Layer4ServicePort, Protocol,
 };
 use crate::datum_apis::http_proxy::{
-    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
-    HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
+    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED,
+    HTTPProxy, HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
 use crate::datum_cloud::DatumCloudClient;
 use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
@@ -31,6 +31,22 @@ const DEFAULT_CONNECTOR_CLASS_NAME: &str = "datum-connect";
 const CONNECTOR_SELECTOR_FIELD: &str = "status.connectionDetails.publicKey.id";
 const ADVERTISEMENT_CONNECTOR_FIELD: &str = "spec.connectorRef.name";
 const DISPLAY_NAME_ANNOTATION: &str = "app.kubernetes.io/name";
+
+/// Returns true if any rule in the HTTPProxy has a backend that references the given connector by name.
+fn proxy_uses_connector(proxy: &HTTPProxy, connector_name: &str) -> bool {
+    proxy
+        .spec
+        .rules
+        .iter()
+        .flat_map(|rule| rule.backends.iter().flatten())
+        .any(|backend| {
+            backend
+                .connector
+                .as_ref()
+                .map(|c| c.name == connector_name)
+                .unwrap_or(false)
+        })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TunnelSummary {
@@ -176,14 +192,7 @@ impl TunnelService {
             let Some(name) = proxy.metadata.name.clone() else {
                 continue;
             };
-            let matches_connector = proxy
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|annotations| annotations.get(CONNECTOR_NAME_ANNOTATION))
-                .map(|value| value == &connector_name)
-                .unwrap_or(false);
-            if !matches_connector {
+            if !proxy_uses_connector(&proxy, &connector_name) {
                 continue;
             }
             let label = proxy
@@ -621,15 +630,7 @@ impl TunnelService {
         let mut remaining_for_connector = remaining
             .items
             .into_iter()
-            .filter(|proxy| {
-                proxy
-                    .metadata
-                    .annotations
-                    .as_ref()
-                    .and_then(|annotations| annotations.get(CONNECTOR_NAME_ANNOTATION))
-                    .map(|value| value == &connector_name)
-                    .unwrap_or(false)
-            })
+            .filter(|proxy| proxy_uses_connector(proxy, &connector_name))
             .peekable();
         if remaining_for_connector.peek().is_none() {
             let ad_selector = format!("{ADVERTISEMENT_CONNECTOR_FIELD}={connector_name}");
