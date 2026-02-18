@@ -3,6 +3,8 @@ name: bundle
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -89,12 +91,16 @@ jobs:
         working-directory: ./ui
         env:
           FULL_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
         run: |
-          SHORT_SHA=${FULL_SHA::7}
-          # Use date format without leading zeros (%-m and %-d remove leading zeros on GNU date)
-          # Fallback to sed if %- doesn't work (macOS/BSD date)
-          BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
-          VERSION="${BUILD_DATE}-${SHORT_SHA}"
+          if echo "$REF" | grep -q '^refs/tags/'; then
+            VERSION="${REF#refs/tags/v}"
+            VERSION="${VERSION#refs/tags/}"
+          else
+            SHORT_SHA=${FULL_SHA::7}
+            BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
+            VERSION="${BUILD_DATE}-${SHORT_SHA}"
+          fi
           echo "Setting version to: $VERSION"
           # Update Cargo.toml version
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
@@ -108,12 +114,16 @@ jobs:
         working-directory: ./ui
         env:
           FULL_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
         shell: pwsh
         run: |
-          $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
-          # Use date format without leading zeros (M and d instead of MM and dd)
-          $BUILD_DATE = Get-Date -Format "yyyy.M.d"
-          $VERSION = "$BUILD_DATE-$SHORT_SHA"
+          if ($env:REF -match '^refs/tags/') {
+            $VERSION = $env:REF -replace '^refs/tags/v?', ''
+          } else {
+            $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
+            $BUILD_DATE = Get-Date -Format "yyyy.M.d"
+            $VERSION = "$BUILD_DATE-$SHORT_SHA"
+          }
           Write-Host "Setting version to: $VERSION"
           # Update Cargo.toml version
           (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
@@ -132,7 +142,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Notarize macOS App
-        if: runner.os == 'macOS' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.os == 'macOS' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -201,19 +211,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Only create releases for v* tags (no rolling release on main)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Set Version Info and Paths
         id: set_paths
-        env:
-          FULL_SHA: ${{ github.sha }}
         run: |
-          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
-          echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
-          SHORT_SHA=${FULL_SHA::7}
-          # Remove leading zeros from date format for Cargo compatibility
-          RELEASE_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
-          echo "RELEASE_VERSION=${RELEASE_DATE}-${SHORT_SHA}" >> $GITHUB_ENV
+          TAG_NAME="${{ github.ref_name }}"
+          echo "RELEASE_VERSION=${TAG_NAME#v}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=${TAG_NAME}" >> $GITHUB_ENV
+          echo "RELEASE_NAME=DatumConnect ${TAG_NAME}" >> $GITHUB_ENV
+          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v7
@@ -236,26 +244,20 @@ jobs:
             cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
           fi
 
-      - name: Prepare Release Body Data
-        id: release_data
-        run: |
-          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
-
-      - name: Create Main Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Continuous release (${{ env.RELEASE_VERSION }})
-          tag_name: rolling
+          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ env.RELEASE_TAG }}
           make_latest: true
           prerelease: false
           body: |
-            This is a rolling release of DatumConnect, published automatically on every commit to main.
-
             Version: ${{ env.RELEASE_VERSION }}
+            Tag: ${{ env.RELEASE_TAG }}
             Commit: ${{ github.sha }}
             Built: ${{ env.CURRENT_DATE_STR }}
             Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            See the release assets for SHA256 checksums.
+            Assets: Datum.dmg, Datum.AppImage, Datum-setup.exe (see SHA256 checksums below).
           files: artifacts/**/*
           generate_release_notes: false
