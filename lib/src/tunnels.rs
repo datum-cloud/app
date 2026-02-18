@@ -7,7 +7,6 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use serde_json::json;
 use tracing::{debug, warn};
 
-use crate::datum_apis::connector::CONNECTOR_NAME_ANNOTATION;
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
     ConnectorConnectionType, ConnectorSpec, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
@@ -271,13 +270,10 @@ impl TunnelService {
         let mut proxy = HTTPProxy {
             metadata: ObjectMeta {
                 generate_name: Some("tunnel-".to_string()),
-                annotations: Some(BTreeMap::from([
-                    (DISPLAY_NAME_ANNOTATION.to_string(), label.to_string()),
-                    (
-                        CONNECTOR_NAME_ANNOTATION.to_string(),
-                        connector_name.clone(),
-                    ),
-                ])),
+                annotations: Some(BTreeMap::from([(
+                    DISPLAY_NAME_ANNOTATION.to_string(),
+                    label.to_string(),
+                )])),
                 ..Default::default()
             },
             spec: HTTPProxySpec {
@@ -399,7 +395,6 @@ impl TunnelService {
             "metadata": {
                 "annotations": {
                     DISPLAY_NAME_ANNOTATION: label,
-                    CONNECTOR_NAME_ANNOTATION: connector_name,
                 }
             },
             "spec": {
