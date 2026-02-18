@@ -187,7 +187,7 @@ async fn main() -> n0_error::Result<()> {
 
     match args.command {
         Commands::List => {
-            let datum = DatumCloudClient::with_repo(ApiEnv::Staging, repo.clone()).await?;
+            let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
             let orgs = datum.orgs_and_projects().await?;
             for org in orgs {
                 println!("org: {} {}", org.org.resource_id, org.org.display_name);
