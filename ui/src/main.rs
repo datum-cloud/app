@@ -60,6 +60,11 @@ enum Route {
 }
 
 fn main() {
+    // Required before any TLS use (e.g. iroh, reqwest). Without this, the app panics when run from Applications.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("rustls default crypto provider");
+
     init_tracing();
     if let Ok(path) = dotenv::dotenv() {
         info!("Loaded environment variables from {}", path.display());
