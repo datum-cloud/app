@@ -423,6 +423,7 @@ impl MaybeAuth {
 struct AuthStateWrapper {
     inner: Arc<ArcSwap<MaybeAuth>>,
     repo: Option<Repo>,
+    oauth_key: String,
     login_state_tx: watch::Sender<LoginState>,
     auth_update_tx: watch::Sender<u64>,
     auth_update_counter: Arc<AtomicU64>,
@@ -435,19 +436,21 @@ impl AuthStateWrapper {
         Self {
             inner: Arc::new(ArcSwap::new(Default::default())),
             repo: None,
+            oauth_key: String::new(),
             login_state_tx,
             auth_update_tx,
             auth_update_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    async fn from_repo(repo: Repo) -> Result<Self> {
-        let state = repo.read_oauth().await?;
+    async fn from_repo(repo: Repo, oauth_key: &str) -> Result<Self> {
+        let state = repo.read_oauth_for_key(oauth_key).await?;
         let (login_state_tx, _) = watch::channel(login_state_for(state.as_ref()));
         let (auth_update_tx, _) = watch::channel(0);
         Ok(Self {
             inner: Arc::new(ArcSwap::new(Arc::new(MaybeAuth(state)))),
             repo: Some(repo),
+            oauth_key: oauth_key.to_string(),
             login_state_tx,
             auth_update_tx,
             auth_update_counter: Arc::new(AtomicU64::new(0)),
@@ -468,7 +471,8 @@ impl AuthStateWrapper {
 
     async fn set(&self, auth: Option<AuthState>) -> Result<()> {
         if let Some(repo) = self.repo.as_ref() {
-            repo.write_oauth(auth.as_ref()).await?;
+            repo.write_oauth_for_key(&self.oauth_key, auth.as_ref())
+                .await?;
         }
         self.inner.store(Arc::new(MaybeAuth(auth)));
         let _ = self
@@ -496,7 +500,7 @@ pub struct AuthClient {
 
 impl AuthClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
-        let auth = AuthStateWrapper::from_repo(repo).await?;
+        let auth = AuthStateWrapper::from_repo(repo, env.oauth_storage_key()).await?;
         let auth_client = StatelessClient::new(env).await?;
         let mut client = Self {
             state: auth,
