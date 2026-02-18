@@ -154,25 +154,50 @@ impl Repo {
         Ok(key)
     }
 
+    /// OAuth state is stored per env (e.g. oauth.staging.yml, oauth.production.yml).
+    pub fn oauth_file_path(&self, key: &str) -> PathBuf {
+        self.0.join(format!("oauth.{key}.yml"))
+    }
+
     pub async fn write_oauth(&self, state: Option<&AuthState>) -> Result<()> {
-        let path = self.0.join(Self::OAUTH_FILE);
+        self.write_oauth_for_key("staging", state).await
+    }
+
+    pub async fn write_oauth_for_key(&self, key: &str, state: Option<&AuthState>) -> Result<()> {
+        let path = self.oauth_file_path(key);
         let data = serde_yml::to_string(&state).anyerr()?;
         tokio::fs::write(path, data).await?;
         Ok(())
     }
 
     pub async fn read_oauth(&self) -> Result<Option<AuthState>> {
-        let path = self.0.join(Self::OAUTH_FILE);
-        if !path.exists() {
-            Ok(None)
-        } else {
+        self.read_oauth_for_key("staging").await
+    }
+
+    /// Read OAuth state for an env key. For "staging", falls back to legacy oauth.yml if present.
+    pub async fn read_oauth_for_key(&self, key: &str) -> Result<Option<AuthState>> {
+        let path = self.oauth_file_path(key);
+        let legacy = key == "staging";
+        if path.exists() {
             let data = tokio::fs::read_to_string(path)
                 .await
                 .context("failed to read oauth file")?;
             let state: Option<AuthState> =
                 serde_yml::from_str(&data).std_context("failed to parse oauth file")?;
-            Ok(state)
+            return Ok(state);
         }
+        if legacy {
+            let legacy_path = self.0.join(Self::OAUTH_FILE);
+            if legacy_path.exists() {
+                let data = tokio::fs::read_to_string(legacy_path)
+                    .await
+                    .context("failed to read legacy oauth file")?;
+                let state: Option<AuthState> =
+                    serde_yml::from_str(&data).std_context("failed to parse oauth file")?;
+                return Ok(state);
+            }
+        }
+        Ok(None)
     }
 
     /// Get the base directory path of this repo
