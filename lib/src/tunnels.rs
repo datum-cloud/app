@@ -16,8 +16,8 @@ use crate::datum_apis::connector_advertisement::{
     ConnectorAdvertisementSpec, Layer4ServiceAddress, Layer4ServicePort, Protocol,
 };
 use crate::datum_apis::http_proxy::{
-    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED,
-    HTTPProxy, HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
+    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
+    HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
 use crate::datum_cloud::DatumCloudClient;
 use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
