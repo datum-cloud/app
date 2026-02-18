@@ -17,6 +17,7 @@ jobs:
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
+      DATUM_API_ENV: production
 
     steps:
       - uses: actions/checkout@v4

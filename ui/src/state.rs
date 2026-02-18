@@ -22,7 +22,7 @@ impl AppState {
         let repo = Repo::open_or_create(repo_path).await?;
         let (node, datum) = tokio::try_join! {
             Node::new(repo.clone()),
-            DatumCloudClient::with_repo(ApiEnv::Staging, repo)
+            DatumCloudClient::with_repo(ApiEnv::default(), repo)
         }?;
         let heartbeat = HeartbeatAgent::new(datum.clone(), node.listen.clone());
         heartbeat.start().await;
