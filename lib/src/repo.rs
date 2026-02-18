@@ -163,11 +163,7 @@ impl Repo {
         self.write_oauth_for_key("staging", state).await
     }
 
-    pub async fn write_oauth_for_key(
-        &self,
-        key: &str,
-        state: Option<&AuthState>,
-    ) -> Result<()> {
+    pub async fn write_oauth_for_key(&self, key: &str, state: Option<&AuthState>) -> Result<()> {
         let path = self.oauth_file_path(key);
         let data = serde_yml::to_string(&state).anyerr()?;
         tokio::fs::write(path, data).await?;
