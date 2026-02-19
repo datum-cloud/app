@@ -24,6 +24,8 @@ pub struct OpenEditTunnelDialog {
 pub fn Chrome() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
+    let auth_changed = consume_context::<Signal<u32>>();
+    let _ = auth_changed();
     let mut add_tunnel_dialog_open = use_signal(|| false);
     let mut invite_user_dialog_open = use_signal(|| false);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
