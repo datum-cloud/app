@@ -11,7 +11,6 @@ use crate::Repo;
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const REPO_OWNER: &str = "datum-cloud";
 const REPO_NAME: &str = "app";
-const RELEASE_TAG: &str = "rolling";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateSettings {
@@ -66,6 +65,12 @@ pub struct UpdateInfo {
     pub published_at: DateTime<Utc>,
     pub download_url: String,
     pub download_size: u64,
+}
+
+struct VersionParts {
+    major: u32,
+    minor: u32,
+    patch: u32,
 }
 
 pub struct UpdateChecker {
@@ -135,9 +140,11 @@ impl UpdateChecker {
             return Ok(None);
         }
 
+        // Fetch all releases and filter out "rolling" tag
+        // We want the latest tagged release (like v0.0.3), not the rolling release
         let url = format!(
-            "{}/repos/{}/{}/releases/tags/{}",
-            GITHUB_API_BASE, REPO_OWNER, REPO_NAME, RELEASE_TAG
+            "{}/repos/{}/{}/releases",
+            GITHUB_API_BASE, REPO_OWNER, REPO_NAME
         );
 
         let client = reqwest::Client::builder()
@@ -155,7 +162,19 @@ impl UpdateChecker {
             .anyerr();
         }
 
-        let release: GitHubRelease = response.json().await.anyerr()?;
+        let releases: Vec<GitHubRelease> = response.json().await.anyerr()?;
+
+        // Find the latest release that is not "rolling"
+        let release = releases
+            .into_iter()
+            .find(|r| r.tag_name != "rolling")
+            .ok_or_else(|| {
+                IoError::new(
+                    ErrorKind::NotFound,
+                    "No non-rolling release found",
+                )
+            })
+            .anyerr()?;
 
         // Update last check time
         let mut settings = settings;
@@ -167,9 +186,8 @@ impl UpdateChecker {
         );
         self.save_settings(&settings).await?;
 
-        // Extract version from release name (format: "Continuous release (2026.02.11-4bd199c)")
-        // or fall back to tag_name if name doesn't contain version
-        let latest_version = Self::extract_version_from_release(&release.name, &release.tag_name);
+        // Extract version from tag_name (format: "v0.0.3" or "0.0.3")
+        let latest_version = Self::extract_version(&release.tag_name);
         let current_version = Self::extract_version(&self.current_version);
 
         // Compare versions - if latest is newer, return update info
@@ -193,64 +211,58 @@ impl UpdateChecker {
         }
     }
 
-    /// Extract version string from release name or tag
-    /// Release name format: "Continuous release (2026.02.11-4bd199c)"
-    /// Tag format: "rolling" or "v0.1.0"
-    fn extract_version_from_release(release_name: &str, tag_name: &str) -> String {
-        // Try to extract version from release name (e.g., "Continuous release (2026.02.11-4bd199c)")
-        if let Some(start) = release_name.find('(') {
-            if let Some(end) = release_name.find(')') {
-                return release_name[start + 1..end].to_string();
-            }
-        }
-        // Fall back to tag name, removing 'v' prefix if present
-        tag_name.trim_start_matches('v').to_string()
-    }
-
-    /// Extract version string from tag (handles formats like "2026.02.11-4bd199c" or "v0.1.0")
+    /// Extract version string from tag (handles formats like "v0.0.3" or "0.0.3")
     fn extract_version(tag: &str) -> String {
         // Remove 'v' prefix if present
         tag.trim_start_matches('v').to_string()
     }
 
-    /// Compare version strings - returns true if version1 > version2
-    /// Normalizes versions by removing leading zeros from numeric components for comparison
+    /// Compare semantic version strings - returns true if version1 > version2
+    /// Handles semantic versions like "0.0.3", "0.1.0", "1.0.0", etc.
     fn is_newer_version(version1: &str, version2: &str) -> bool {
-        // Normalize versions by removing leading zeros from numeric components
-        // This handles both "2026.02.11-abc" and "2026.2.11-abc" as equivalent
-        let normalized_v1 = Self::normalize_version(version1);
-        let normalized_v2 = Self::normalize_version(version2);
+        let v1_parts = Self::parse_semantic_version(version1);
+        let v2_parts = Self::parse_semantic_version(version2);
 
-        // Simple comparison: if normalized versions are different, consider version1 newer
-        // For more sophisticated comparison, we could parse semantic versions
-        normalized_v1 != normalized_v2
+        // Compare major, minor, patch versions
+        match v1_parts.major.cmp(&v2_parts.major) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+
+        match v1_parts.minor.cmp(&v2_parts.minor) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+
+        match v1_parts.patch.cmp(&v2_parts.patch) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                // If versions are equal, check for pre-release/build metadata
+                // For now, if versions are equal, consider it not newer
+                false
+            }
+        }
     }
 
-    /// Normalize version string by removing leading zeros from numeric components
-    /// Example: "2026.02.11-abc" -> "2026.2.11-abc"
-    fn normalize_version(version: &str) -> String {
-        // Use regex to remove leading zeros from numeric components
-        // Pattern: replace ".0" followed by digits with "." followed by those digits
-        version
-            .split('-')
-            .next()
-            .unwrap_or(version)
-            .split('.')
-            .map(|part| {
-                // Remove leading zeros from numeric parts
-                if let Ok(num) = part.parse::<u32>() {
-                    num.to_string()
-                } else {
-                    part.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(".")
-            + if version.contains('-') {
-                &version[version.find('-').unwrap()..]
-            } else {
-                ""
-            }
+    /// Parse semantic version string (e.g., "0.0.3" or "0.0.3-beta")
+    fn parse_semantic_version(version: &str) -> VersionParts {
+        // Remove any pre-release or build metadata (everything after '-')
+        let version = version.split('-').next().unwrap_or(version);
+        
+        let parts: Vec<&str> = version.split('.').collect();
+        
+        let major = parts.get(0).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let minor = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let patch = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+
+        VersionParts {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Find the appropriate binary asset for the current platform
