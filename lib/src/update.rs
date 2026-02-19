@@ -164,11 +164,25 @@ impl UpdateChecker {
 
         let releases: Vec<GitHubRelease> = response.json().await.anyerr()?;
 
-        // Find the latest release that is not "rolling"
+        // Find the latest release that is not "rolling" and not a pre-release (beta, rc, etc.)
+        // Pre-release tags contain a hyphen after the version (e.g., "v0.0.3-beta", "0.1.0-rc.1")
+        // We check if the tag (after removing 'v' prefix) contains a hyphen
         let release = releases
             .into_iter()
-            .find(|r| r.tag_name != "rolling")
-            .ok_or_else(|| IoError::new(ErrorKind::NotFound, "No non-rolling release found"))
+            .find(|r| {
+                if r.tag_name == "rolling" {
+                    return false;
+                }
+                // Remove 'v' prefix if present, then check for hyphens (pre-release indicator)
+                let version_part = r.tag_name.trim_start_matches('v');
+                !version_part.contains('-')
+            })
+            .ok_or_else(|| {
+                IoError::new(
+                    ErrorKind::NotFound,
+                    "No stable release found (excluding rolling and pre-releases)",
+                )
+            })
             .anyerr()?;
 
         // Update last check time
