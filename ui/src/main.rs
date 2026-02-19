@@ -282,9 +282,24 @@ fn App() -> Element {
         };
     }
 
-    // Signal bumped on login/logout so title bar and other auth-dependent UI re-render.
+    // Signal bumped on login/logout and auth state transitions so auth-dependent UI re-renders.
     let auth_changed = use_signal(|| 0u32);
     provide_context(auth_changed);
+
+    let state_for_auth_watch = consume_context::<AppState>();
+    use_future(move || {
+        let state_for_auth_watch = state_for_auth_watch.clone();
+        let mut auth_changed = auth_changed;
+        async move {
+            let mut login_rx = state_for_auth_watch.datum().auth().login_state_watch();
+            loop {
+                if login_rx.changed().await.is_err() {
+                    return;
+                }
+                auth_changed.set(auth_changed().wrapping_add(1));
+            }
+        }
+    });
 
     // Provide manual update check trigger for Settings page
     provide_context(manual_update_check);
