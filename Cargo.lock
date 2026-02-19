@@ -4857,6 +4857,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
+ "iroh-metrics 0.37.0",
  "iroh-n0des",
  "iroh-proxy-utils",
  "iroh-quinn",

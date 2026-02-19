@@ -145,6 +145,12 @@ pub struct ServeArgs {
     pub bind_addr: IpAddr,
     #[clap(long, default_value = "8080")]
     pub port: u16,
+    /// Optional bind address for Prometheus metrics server.
+    #[clap(long)]
+    pub metrics_addr: Option<IpAddr>,
+    /// Optional port for Prometheus metrics server.
+    #[clap(long)]
+    pub metrics_port: Option<u16>,
     /// Also listen on a Unix domain socket at this path (e.g. for Envoy to forward via UDS).
     #[cfg(unix)]
     #[clap(long)]
@@ -282,6 +288,12 @@ async fn main() -> n0_error::Result<()> {
         }
         Commands::Gateway(args) => {
             let bind_addr: SocketAddr = (args.bind_addr, args.port).into();
+            let metrics_bind_addr = match (args.metrics_addr, args.metrics_port) {
+                (None, None) => None,
+                (Some(addr), Some(port)) => Some((addr, port).into()),
+                (Some(addr), None) => Some((addr, 9090).into()),
+                (None, Some(port)) => Some((args.bind_addr, port).into()),
+            };
             let secret_key = repo.gateway_key().await?;
             let mut config = repo.gateway_config().await?;
             if let Some(discovery) = args.discovery {
@@ -311,7 +323,7 @@ async fn main() -> n0_error::Result<()> {
             }
             println!("serving on port {bind_addr}");
             tokio::select! {
-                res = lib::gateway::bind_and_serve(secret_key, config, bind_addr) => res?,
+                res = lib::gateway::bind_and_serve(secret_key, config, bind_addr, metrics_bind_addr) => res?,
                 _ = tokio::signal::ctrl_c() => {}
             }
         }
