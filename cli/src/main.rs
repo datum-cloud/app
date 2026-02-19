@@ -292,7 +292,7 @@ async fn main() -> n0_error::Result<()> {
                 (None, None) => None,
                 (Some(addr), Some(port)) => Some((addr, port).into()),
                 (Some(addr), None) => Some((addr, 9090).into()),
-                (None, Some(port)) => Some((IpAddr::from([127, 0, 0, 1]), port).into()),
+                (None, Some(port)) => Some((args.bind_addr, port).into()),
             };
             let secret_key = repo.gateway_key().await?;
             let mut config = repo.gateway_config().await?;
