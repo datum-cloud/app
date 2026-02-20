@@ -22,7 +22,7 @@ use tracing::info;
 
 mod metrics;
 
-use self::metrics::{GatewayMetrics, MetricsHttpState, serve_metrics_http};
+use self::metrics::{GatewayMetrics, MetricsHttpState, serve_metrics_http, shared_gateway_metrics};
 use crate::build_endpoint;
 
 pub async fn bind_and_serve(
@@ -52,7 +52,9 @@ pub async fn serve_with_metrics(
         "TCP proxy gateway started"
     );
 
-    let metrics = Arc::new(GatewayMetrics::default());
+    // Use one shared metrics instance so both TCP and UDS listeners contribute
+    // to the same /metrics output in this process.
+    let metrics = shared_gateway_metrics();
     if let Some(metrics_bind_addr) = metrics_bind_addr {
         let state = MetricsHttpState::new(endpoint.clone(), metrics.clone());
         tokio::spawn(async move {
@@ -83,7 +85,7 @@ pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()>
         "UDS proxy gateway started"
     );
 
-    let metrics = Arc::new(GatewayMetrics::default());
+    let metrics = shared_gateway_metrics();
     let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
         HttpProxyOpts::new(HeaderResolver::new(metrics.clone()))
@@ -121,9 +123,14 @@ struct HeaderResolver {
 impl RequestHandler for HeaderResolver {
     async fn handle_request(
         &self,
-        _src_addr: SrcAddr,
+        src_addr: SrcAddr,
         req: &mut HttpRequest,
     ) -> Result<EndpointId, Deny> {
+        match src_addr {
+            SrcAddr::Tcp(_) => self.metrics.inc_tcp_requests(),
+            #[cfg(unix)]
+            SrcAddr::Unix(_) => self.metrics.inc_uds_requests(),
+        }
         match req.classify()? {
             HttpRequestKind::Tunnel => {
                 self.metrics.inc_tunnel_requests();

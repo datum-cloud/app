@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -18,11 +18,21 @@ use tracing::info;
 pub(super) struct GatewayMetrics {
     requests_tunnel_total: AtomicU64,
     requests_origin_total: AtomicU64,
+    requests_tcp_total: AtomicU64,
+    requests_uds_total: AtomicU64,
     denied_missing_header_total: AtomicU64,
     denied_invalid_endpoint_total: AtomicU64,
     denied_invalid_target_port_total: AtomicU64,
     responses_4xx_total: AtomicU64,
     responses_5xx_total: AtomicU64,
+}
+
+static SHARED_METRICS: OnceLock<Arc<GatewayMetrics>> = OnceLock::new();
+
+pub(super) fn shared_gateway_metrics() -> Arc<GatewayMetrics> {
+    SHARED_METRICS
+        .get_or_init(|| Arc::new(GatewayMetrics::default()))
+        .clone()
 }
 
 impl GatewayMetrics {
@@ -32,6 +42,15 @@ impl GatewayMetrics {
 
     pub(super) fn inc_origin_requests(&self) {
         self.requests_origin_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn inc_tcp_requests(&self) {
+        self.requests_tcp_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(unix)]
+    pub(super) fn inc_uds_requests(&self) {
+        self.requests_uds_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn inc_denied_missing_header(&self) {
@@ -82,6 +101,10 @@ impl GatewayMetrics {
                 "# TYPE iroh_gateway_requests_total counter\n",
                 "iroh_gateway_requests_total{{kind=\"tunnel\"}} {}\n",
                 "iroh_gateway_requests_total{{kind=\"origin\"}} {}\n",
+                "# HELP iroh_gateway_requests_by_source_total Gateway request count by ingress source.\n",
+                "# TYPE iroh_gateway_requests_by_source_total counter\n",
+                "iroh_gateway_requests_by_source_total{{source=\"tcp\"}} {}\n",
+                "iroh_gateway_requests_by_source_total{{source=\"uds\"}} {}\n",
                 "# HELP iroh_gateway_denied_requests_total Gateway denied request count by reason.\n",
                 "# TYPE iroh_gateway_denied_requests_total counter\n",
                 "iroh_gateway_denied_requests_total{{reason=\"missing_header\"}} {}\n",
@@ -112,6 +135,8 @@ impl GatewayMetrics {
             ),
             self.requests_tunnel_total.load(Ordering::Relaxed),
             self.requests_origin_total.load(Ordering::Relaxed),
+            self.requests_tcp_total.load(Ordering::Relaxed),
+            self.requests_uds_total.load(Ordering::Relaxed),
             self.denied_missing_header_total.load(Ordering::Relaxed),
             self.denied_invalid_endpoint_total.load(Ordering::Relaxed),
             self.denied_invalid_target_port_total
