@@ -64,10 +64,12 @@ pub async fn serve_with_metrics(
         });
     }
 
+    let resolver_endpoint = endpoint.clone();
+    let error_endpoint = endpoint.clone();
     let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
-        HttpProxyOpts::new(HeaderResolver::new(metrics.clone()))
-            .error_responder(ErrorResponseWriter::new(metrics)),
+        HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
+            .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
     );
     proxy.forward_tcp_listener(listener, mode).await
 }
@@ -86,10 +88,12 @@ pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()>
     );
 
     let metrics = shared_gateway_metrics();
+    let resolver_endpoint = endpoint.clone();
+    let error_endpoint = endpoint.clone();
     let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
-        HttpProxyOpts::new(HeaderResolver::new(metrics.clone()))
-            .error_responder(ErrorResponseWriter::new(metrics)),
+        HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
+            .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
     );
     proxy.forward_uds_listener(listener, mode).await
 }
@@ -117,6 +121,7 @@ const HEADER_TARGET_PORT: &str = "x-datum-target-port";
 const DATUM_HEADERS: [&str; 3] = [HEADER_NODE_ID, HEADER_TARGET_HOST, HEADER_TARGET_PORT];
 
 struct HeaderResolver {
+    endpoint: Endpoint,
     metrics: Arc<GatewayMetrics>,
 }
 
@@ -126,6 +131,7 @@ impl RequestHandler for HeaderResolver {
         src_addr: SrcAddr,
         req: &mut HttpRequest,
     ) -> Result<EndpointId, Deny> {
+        let is_tcp = matches!(src_addr, SrcAddr::Tcp(_));
         match src_addr {
             SrcAddr::Tcp(_) => self.metrics.inc_tcp_requests(),
             #[cfg(unix)]
@@ -134,12 +140,28 @@ impl RequestHandler for HeaderResolver {
         match req.classify()? {
             HttpRequestKind::Tunnel => {
                 self.metrics.inc_tunnel_requests();
+                self.metrics
+                    .inc_tunnel_reuse_attempt(has_existing_peer_conn(&self.endpoint));
+                if is_tcp {
+                    self.metrics.inc_tunnel_tcp_requests();
+                } else {
+                    #[cfg(unix)]
+                    self.metrics.inc_tunnel_uds_requests();
+                }
                 let endpoint_id = self.endpoint_id_from_headers(&req.headers)?;
                 req.remove_headers(DATUM_HEADERS);
                 Ok(endpoint_id)
             }
             HttpRequestKind::Origin | HttpRequestKind::Http1Absolute => {
                 self.metrics.inc_origin_requests();
+                self.metrics
+                    .inc_origin_reuse_attempt(has_existing_peer_conn(&self.endpoint));
+                if is_tcp {
+                    self.metrics.inc_origin_tcp_requests();
+                } else {
+                    #[cfg(unix)]
+                    self.metrics.inc_origin_uds_requests();
+                }
                 let endpoint_id = self.endpoint_id_from_headers(&req.headers)?;
                 let host = self.header_value(&req.headers, HEADER_TARGET_HOST)?;
                 let port = self
@@ -159,8 +181,8 @@ impl RequestHandler for HeaderResolver {
 }
 
 impl HeaderResolver {
-    fn new(metrics: Arc<GatewayMetrics>) -> Self {
-        Self { metrics }
+    fn new(endpoint: Endpoint, metrics: Arc<GatewayMetrics>) -> Self {
+        Self { endpoint, metrics }
     }
 
     fn endpoint_id_from_headers(
@@ -183,7 +205,7 @@ impl HeaderResolver {
             .get(name)
             .and_then(|value| value.to_str().ok())
             .ok_or_else(|| {
-                self.metrics.inc_denied_missing_header();
+                self.metrics.inc_denied_missing_header_name(name);
                 Deny::bad_request(format!("Missing header {name}"))
             })
     }
@@ -197,6 +219,7 @@ struct GatewayErrorTemplate<'a> {
 }
 
 struct ErrorResponseWriter {
+    endpoint: Endpoint,
     metrics: Arc<GatewayMetrics>,
 }
 
@@ -206,6 +229,10 @@ impl ErrorResponder for ErrorResponseWriter {
         status: StatusCode,
     ) -> hyper::Response<BoxBody<Bytes, io::Error>> {
         self.metrics.inc_status_code(status);
+        if status.is_server_error() {
+            self.metrics
+                .inc_5xx_failure_by_peer_conn_state(has_existing_peer_conn(&self.endpoint));
+        }
         let title = format!(
             "{} {}",
             status.as_u16(),
@@ -251,7 +278,22 @@ impl ErrorResponder for ErrorResponseWriter {
 }
 
 impl ErrorResponseWriter {
-    fn new(metrics: Arc<GatewayMetrics>) -> Self {
-        Self { metrics }
+    fn new(endpoint: Endpoint, metrics: Arc<GatewayMetrics>) -> Self {
+        Self { endpoint, metrics }
     }
+}
+
+fn has_existing_peer_conn(endpoint: &Endpoint) -> bool {
+    let endpoint_metrics = endpoint.metrics();
+    let direct_current = endpoint_metrics
+        .magicsock
+        .num_direct_conns_added
+        .get()
+        .saturating_sub(endpoint_metrics.magicsock.num_direct_conns_removed.get());
+    let relay_current = endpoint_metrics
+        .magicsock
+        .num_relay_conns_added
+        .get()
+        .saturating_sub(endpoint_metrics.magicsock.num_relay_conns_removed.get());
+    direct_current + relay_current > 0
 }
