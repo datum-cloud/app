@@ -30,8 +30,6 @@ pub(super) struct GatewayMetrics {
     origin_reuse_attempts_without_existing_peer_conn_total: AtomicU64,
     denied_missing_header_total: AtomicU64,
     denied_missing_header_node_id_total: AtomicU64,
-    denied_missing_header_target_host_total: AtomicU64,
-    denied_missing_header_target_port_total: AtomicU64,
     denied_invalid_endpoint_total: AtomicU64,
     denied_invalid_target_port_total: AtomicU64,
     responses_4xx_total: AtomicU64,
@@ -120,20 +118,9 @@ impl GatewayMetrics {
 
     pub(super) fn inc_denied_missing_header_name(&self, name: &str) {
         self.inc_denied_missing_header();
-        match name {
-            "x-iroh-endpoint-id" => {
-                self.denied_missing_header_node_id_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            "x-datum-target-host" => {
-                self.denied_missing_header_target_host_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            "x-datum-target-port" => {
-                self.denied_missing_header_target_port_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
+        if name == "x-iroh-endpoint-id" {
+            self.denied_missing_header_node_id_total
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -242,8 +229,6 @@ impl GatewayMetrics {
                 "# TYPE iroh_gateway_denied_requests_total counter\n",
                 "iroh_gateway_denied_requests_total{{reason=\"missing_header\"}} {}\n",
                 "iroh_gateway_denied_requests_total{{reason=\"missing_header_node_id\"}} {}\n",
-                "iroh_gateway_denied_requests_total{{reason=\"missing_header_target_host\"}} {}\n",
-                "iroh_gateway_denied_requests_total{{reason=\"missing_header_target_port\"}} {}\n",
                 "iroh_gateway_denied_requests_total{{reason=\"invalid_endpoint_id\"}} {}\n",
                 "iroh_gateway_denied_requests_total{{reason=\"invalid_target_port\"}} {}\n",
                 "# HELP iroh_gateway_error_responses_total Gateway error response count grouped by status class.\n",
@@ -308,10 +293,6 @@ impl GatewayMetrics {
                 .load(Ordering::Relaxed),
             self.denied_missing_header_total.load(Ordering::Relaxed),
             self.denied_missing_header_node_id_total
-                .load(Ordering::Relaxed),
-            self.denied_missing_header_target_host_total
-                .load(Ordering::Relaxed),
-            self.denied_missing_header_target_port_total
                 .load(Ordering::Relaxed),
             self.denied_invalid_endpoint_total.load(Ordering::Relaxed),
             self.denied_invalid_target_port_total
