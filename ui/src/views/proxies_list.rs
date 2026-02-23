@@ -449,7 +449,7 @@ pub fn TunnelCard(
                             } else {
                                 a {
                                     class: "text-xs text-foreground",
-                                    href: format!("http://{}", display_endpoint_href),
+                                    href: display_endpoint_href.clone(),
                                     {display_endpoint}
                                 }
                             }
