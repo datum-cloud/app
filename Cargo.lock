@@ -1589,7 +1589,7 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
- "iroh-metrics 0.38.1",
+ "iroh-metrics 0.38.2",
  "iroh-quinn",
  "lib",
  "n0-error",
@@ -3175,8 +3175,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.1.3",
- "windows-result 0.3.4",
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
 ]
 
 [[package]]
@@ -3869,7 +3869,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4308,9 +4308,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics"
-version = "0.38.1"
+version = "0.38.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5828152c482cf9d95f3039848ac2be5e6e47c41dbf3695a453e6c02739c50d2c"
+checksum = "c946095f060e6e59b9ff30cc26c75cdb758e7fb0cde8312c89e2144654989fcb"
 dependencies = [
  "iroh-metrics-derive",
  "itoa",
@@ -4323,9 +4323,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics-derive"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4e12bd0763fd16062f5cc5e8db15dd52d26e75a8af4c7fb57ccee3589b344b8"
+checksum = "cab063c2bfd6c3d5a33a913d4fdb5252f140db29ec67c704f20f3da7e8f92dbf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -4380,7 +4380,7 @@ dependencies = [
 [[package]]
 name = "iroh-proxy-utils"
 version = "0.1.0"
-source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=main#dc0dcc67154fce4ba6b3e67a642c4de18d26cea3"
+source = "git+https://github.com/n0-computer/iroh-proxy-utils?branch=main#38ef14f7bc215348d47987563bb1b5198cc91f40"
 dependencies = [
  "bytes",
  "derive_more 2.1.1",
@@ -4392,8 +4392,10 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-blobs",
+ "iroh-metrics 0.38.2",
  "n0-error",
  "n0-future",
+ "pin-project",
  "reqwest",
  "tokio",
  "tokio-util",
@@ -4858,7 +4860,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "iroh-metrics 0.37.0",
+ "iroh-metrics 0.38.2",
  "iroh-n0des",
  "iroh-proxy-utils",
  "iroh-quinn",
@@ -5780,7 +5782,7 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff32365de1b6743cb203b710788263c44a03de03802daf96092f2da4fe6ba4d7"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 2.0.2",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -7278,7 +7280,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "rustix",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8199,7 +8201,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
