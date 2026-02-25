@@ -61,11 +61,7 @@ pub async fn serve_with_metrics(
     let proxy = DownstreamProxy::new(endpoint.clone(), Default::default());
 
     if let Some(metrics_bind_addr) = metrics_bind_addr {
-        let state = MetricsHttpState::new(
-            endpoint,
-            metrics.clone(),
-            proxy.metrics().clone(),
-        );
+        let state = MetricsHttpState::new(endpoint, metrics.clone(), proxy.metrics().clone());
         tokio::spawn(async move {
             if let Err(err) = serve_metrics_http(metrics_bind_addr, state).await {
                 tracing::warn!(%err, "gateway metrics server failed");
