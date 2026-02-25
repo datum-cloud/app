@@ -321,11 +321,13 @@ pub fn TunnelCard(
     // Read the tunnel from cache using the ID - this ensures we always have fresh data
     // when the cache is updated (e.g., after edit or hostname provisioning)
     let tunnel_cache = state.tunnel_cache();
+    let health_map = state.tunnel_health_signal();
     let tunnel = tunnel_cache()
         .into_iter()
         .find(|t| t.id == tunnel_id)
         .unwrap_or(tunnel);
 
+    let health_state = state.clone();
     let tunnel_id_for_toggle = tunnel_id.clone();
     let mut toggle_action = use_action(move |next_enabled: bool| {
         let state = state.clone();
@@ -358,6 +360,33 @@ pub fn TunnelCard(
         .cloned()
         .or_else(|| tunnel.hostnames.first().cloned());
     let public_hostname_click = public_hostname.clone();
+
+    let health_tunnel_id = tunnel_id.clone();
+    let health_hostname = public_hostname.clone();
+    use_future(move || {
+        let hostname = health_hostname.clone();
+        let tid = health_tunnel_id.clone();
+        let st = health_state.clone();
+        async move {
+            let Some(h) = hostname else { return };
+            let mut consecutive_failures: u8 = 0;
+            loop {
+                let probe_ok = lib::check_tunnel_health(&h).await;
+                if probe_ok {
+                    consecutive_failures = 0;
+                    st.set_tunnel_health(&tid, true);
+                } else {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    if consecutive_failures >= 2 {
+                        st.set_tunnel_health(&tid, false);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    });
+    let endpoint_healthy = health_map().get(&tunnel_id).copied();
+
     let short_id = public_hostname
         .as_ref()
         .and_then(|h| h.split('.').next())
@@ -461,15 +490,49 @@ pub fn TunnelCard(
                                     size: 14,
                                 }
                                 if is_ready {
-                                    a {
-                                        class: "text-xs text-foreground hover:underline cursor-pointer",
-                                        onclick: move |_| {
-                                            if let Some(h) = public_hostname_click.as_ref() {
-                                                let url = format!("https://{}", h);
-                                                let _ = that(&url);
+                                    div { class: "flex items-center gap-1.5",
+                                        a {
+                                            class: "text-xs text-foreground hover:underline cursor-pointer",
+                                            onclick: move |_| {
+                                                if let Some(h) = public_hostname_click.as_ref() {
+                                                    let url = format!("https://{}", h);
+                                                    let _ = that(&url);
+                                                }
+                                            },
+                                            {format!("datum://{}", id)}
+                                        }
+                                        if endpoint_healthy == Some(true) {
+                                            span {
+                                                class: "relative flex",
+                                                style: "width: 8px; height: 8px",
+                                                span {
+                                                    class: "animate-ping absolute inline-flex rounded-full",
+                                                    style: "width: 8px; height: 8px; background-color: #34d399; opacity: 0.75",
+                                                }
+                                                span {
+                                                    class: "relative inline-flex rounded-full",
+                                                    style: "width: 8px; height: 8px; background-color: #10b981",
+                                                }
                                             }
-                                        },
-                                        {format!("datum://{}", id)}
+                                        } else if endpoint_healthy == Some(false) {
+                                            span {
+                                                class: "relative flex",
+                                                style: "width: 8px; height: 8px",
+                                                span {
+                                                    class: "relative inline-flex rounded-full",
+                                                    style: "width: 8px; height: 8px; background-color: #f87171",
+                                                }
+                                            }
+                                        } else {
+                                            span {
+                                                class: "relative flex",
+                                                style: "width: 8px; height: 8px",
+                                                span {
+                                                    class: "animate-pulse relative inline-flex rounded-full",
+                                                    style: "width: 8px; height: 8px; background-color: #a1a1aa",
+                                                }
+                                            }
+                                        }
                                     }
                                 } else {
                                     span { class: "text-xs text-foreground/80",

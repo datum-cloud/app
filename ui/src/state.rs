@@ -1,4 +1,6 @@
-use dioxus::prelude::WritableExt;
+use std::collections::HashMap;
+
+use dioxus::prelude::{Readable, ReadableExt, WritableExt};
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
     HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelService, TunnelSummary,
@@ -13,6 +15,7 @@ pub struct AppState {
     heartbeat: HeartbeatAgent,
     tunnel_refresh: std::sync::Arc<Notify>,
     tunnel_cache: dioxus::signals::Signal<Vec<TunnelSummary>>,
+    tunnel_health: dioxus::signals::Signal<HashMap<String, bool>>,
 }
 
 impl AppState {
@@ -32,6 +35,7 @@ impl AppState {
             heartbeat,
             tunnel_refresh: std::sync::Arc::new(Notify::new()),
             tunnel_cache: dioxus::signals::Signal::new(Vec::new()),
+            tunnel_health: dioxus::signals::Signal::new(HashMap::new()),
         };
         Ok(app_state)
     }
@@ -89,6 +93,21 @@ impl AppState {
         let mut list = cache();
         list.retain(|item| item.id != tunnel_id);
         cache.set(list);
+    }
+
+    pub fn tunnel_health(&self, tunnel_id: &str) -> Option<bool> {
+        self.tunnel_health.read().get(tunnel_id).copied()
+    }
+
+    pub fn set_tunnel_health(&self, tunnel_id: &str, healthy: bool) {
+        let mut cache = self.tunnel_health;
+        let mut map = cache();
+        map.insert(tunnel_id.to_string(), healthy);
+        cache.set(map);
+    }
+
+    pub fn tunnel_health_signal(&self) -> dioxus::signals::Signal<HashMap<String, bool>> {
+        self.tunnel_health
     }
 
     pub fn selected_context(&self) -> Option<SelectedContext> {
