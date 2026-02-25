@@ -200,9 +200,7 @@ impl GatewayMetrics {
 
         let mut downstream_openmetrics = String::new();
         let mut registry = Registry::default();
-        registry
-            .sub_registry_with_prefix("iroh_gateway_downstream")
-            .register(downstream_metrics.clone());
+        registry.register(downstream_metrics.clone());
         let _ = registry.encode_openmetrics_to_writer(&mut downstream_openmetrics);
 
         format!(
