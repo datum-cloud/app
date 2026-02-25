@@ -15,6 +15,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 iroh-base.workspace = true
+iroh-metrics = "0.37"
 iroh-n0des.workspace = true
 iroh-proxy-utils.workspace = true
 iroh-tickets.workspace = true

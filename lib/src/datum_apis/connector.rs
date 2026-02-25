@@ -102,5 +102,3 @@ pub struct ConnectorStatus {
     pub connection_details: Option<ConnectorConnectionDetails>,
     pub lease_ref: Option<v1::LocalObjectReference>,
 }
-
-pub const CONNECTOR_NAME_ANNOTATION: &str = "networking.datum.org/connector-name";

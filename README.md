@@ -59,6 +59,8 @@ dig +norecurse @127.0.0.1 -p 53535 TXT _iroh.<z32>.datumconnect.test
 ```
 cargo run -p datum-connect -- gateway \
   --port 8080 \
+  --metrics-addr 127.0.0.1 \
+  --metrics-port 9090 \
   --mode forward \
   --discovery dns \
   --dns-origin datumconnect.test \
@@ -68,6 +70,7 @@ Discovery modes:
 - `default`: iroh defaults (n0 preset).
 - `dns`: only the provided DNS origin/resolver.
 - `hybrid`: default + custom DNS.
+- metrics endpoint: `GET http://127.0.0.1:9090/metrics` (when `--metrics-addr` or `--metrics-port` is set)
 ```
 
 #### 5) Send a CONNECT request
@@ -131,6 +134,8 @@ and run it via `cargo run -p datum-connect -- ...` (quote IPv6 addresses).
 export DATUM_CONNECT_REPO=$(pwd)/.datum-connect-dev
 cargo run -p datum-connect -- gateway \
   --port 8080 \
+  --metrics-addr 127.0.0.1 \
+  --metrics-port 9090 \
   --mode forward \
   --discovery dns \
   --dns-origin datumconnect.test \
