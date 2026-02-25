@@ -58,6 +58,22 @@ pub struct TunnelSummary {
     pub programmed: bool,
 }
 
+/// Probe a tunnel's public hostname with a lightweight HEAD request.
+/// Returns `true` if the endpoint responds (any HTTP status), `false` on
+/// connection or timeout failure.
+pub async fn check_tunnel_health(hostname: &str) -> bool {
+    let url = format!("https://{hostname}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build();
+    let Ok(client) = client else {
+        return false;
+    };
+    client.head(&url).send().await.is_ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct TunnelDeleteOutcome {
     pub project_id: String,
