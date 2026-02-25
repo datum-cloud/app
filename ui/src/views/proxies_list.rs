@@ -469,11 +469,11 @@ pub fn TunnelCard(
                                                 let _ = that(&url);
                                             }
                                         },
-                                        {format!("datum://{}", id)}
+                                        {format!("https://{}", public_hostname.clone().unwrap_or_default())}
                                     }
                                 } else {
                                     span { class: "text-xs text-foreground/80",
-                                        {format!("datum://{}", id)}
+                                        {format!("https://{}", public_hostname.clone().unwrap_or_default())}
                                     }
                                 }
                             }

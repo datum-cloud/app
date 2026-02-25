@@ -717,6 +717,7 @@ impl TunnelService {
                         .std_context("Failed to reload connector after patch")?;
                 }
             }
+            patch_device_annotations(&connectors, &mut connector).await;
             return Ok(Some(connector));
         }
         if list.items.len() > 1 {
@@ -726,7 +727,9 @@ impl TunnelService {
                 "Multiple connectors found for endpoint, using first"
             );
         }
-        Ok(list.items.into_iter().next())
+        let mut connector = list.items.into_iter().next().unwrap();
+        patch_device_annotations(&connectors, &mut connector).await;
+        Ok(Some(connector))
     }
 
     async fn ensure_connector(&self, project_id: &str) -> Result<Connector> {
@@ -741,6 +744,7 @@ impl TunnelService {
         let mut connector = Connector {
             metadata: ObjectMeta {
                 generate_name: Some("datum-connect-".to_string()),
+                annotations: Some(device_annotations()),
                 ..Default::default()
             },
             spec: ConnectorSpec {
@@ -917,6 +921,66 @@ fn default_match() -> crate::datum_apis::http_proxy::HTTPRouteMatch {
             value: Some("/".to_string()),
         }),
         ..Default::default()
+    }
+}
+
+fn friendly_device_name() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("scutil")
+            .arg("--get")
+            .arg("ComputerName")
+            .output()
+        {
+            if output.status.success() {
+                let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+    }
+    let hostname = gethostname::gethostname()
+        .to_string_lossy()
+        .into_owned();
+    hostname.strip_suffix(".local").unwrap_or(&hostname).to_string()
+}
+
+const DEVICE_NAME_ANNOTATION: &str = "datum.net/device-name";
+const DEVICE_OS_ANNOTATION: &str = "datum.net/device-os";
+
+fn device_annotations() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (DEVICE_NAME_ANNOTATION.to_string(), friendly_device_name()),
+        (DEVICE_OS_ANNOTATION.to_string(), std::env::consts::OS.to_string()),
+    ])
+}
+
+async fn patch_device_annotations(api: &Api<Connector>, connector: &mut Connector) {
+    let expected = device_annotations();
+    let current = connector.metadata.annotations.as_ref();
+    let needs_patch = expected.iter().any(|(k, v)| {
+        current.and_then(|a| a.get(k)).map(|cv| cv != v).unwrap_or(true)
+    });
+    if !needs_patch {
+        return;
+    }
+    let patch = json!({ "metadata": { "annotations": expected } });
+    match api
+        .patch(
+            &connector.name_any(),
+            &PatchParams::default(),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        Ok(patched) => *connector = patched,
+        Err(err) => {
+            warn!(
+                connector = %connector.name_any(),
+                "Failed to patch device annotations: {err:#}"
+            );
+        }
     }
 }
 
