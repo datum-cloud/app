@@ -220,15 +220,15 @@ impl AuthHandler for StateWrapper {
                 }
             }
             HttpProxyRequestKind::Absolute { target, .. } => {
-                // Parse host:port from absolute URL (e.g., "http://localhost:5173/path")
-                if let Some((host, port)) = parse_host_port_from_url(target) {
+                let target_str = target.to_string();
+                if let Some((host, port)) = parse_host_port_from_url(&target_str) {
                     if self.tcp_proxy_exists(&host, port) {
                         Ok(())
                     } else {
                         Err(AuthError::Forbidden)
                     }
                 } else {
-                    debug!(target, "failed to parse host:port from absolute URL");
+                    debug!(%target, "failed to parse host:port from absolute URL");
                     Err(AuthError::Forbidden)
                 }
             }
