@@ -940,10 +940,11 @@ fn friendly_device_name() -> String {
             }
         }
     }
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .into_owned();
-    hostname.strip_suffix(".local").unwrap_or(&hostname).to_string()
+    let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    hostname
+        .strip_suffix(".local")
+        .unwrap_or(&hostname)
+        .to_string()
 }
 
 const DEVICE_NAME_ANNOTATION: &str = "datum.net/device-name";
@@ -952,7 +953,10 @@ const DEVICE_OS_ANNOTATION: &str = "datum.net/device-os";
 fn device_annotations() -> BTreeMap<String, String> {
     BTreeMap::from([
         (DEVICE_NAME_ANNOTATION.to_string(), friendly_device_name()),
-        (DEVICE_OS_ANNOTATION.to_string(), std::env::consts::OS.to_string()),
+        (
+            DEVICE_OS_ANNOTATION.to_string(),
+            std::env::consts::OS.to_string(),
+        ),
     ])
 }
 
@@ -960,7 +964,10 @@ async fn patch_device_annotations(api: &Api<Connector>, connector: &mut Connecto
     let expected = device_annotations();
     let current = connector.metadata.annotations.as_ref();
     let needs_patch = expected.iter().any(|(k, v)| {
-        current.and_then(|a| a.get(k)).map(|cv| cv != v).unwrap_or(true)
+        current
+            .and_then(|a| a.get(k))
+            .map(|cv| cv != v)
+            .unwrap_or(true)
     });
     if !needs_patch {
         return;
