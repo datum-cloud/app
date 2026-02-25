@@ -55,8 +55,13 @@ pub async fn serve_with_metrics(
     // Use one shared metrics instance so both TCP and UDS listeners contribute
     // to the same /metrics output in this process.
     let metrics = shared_gateway_metrics();
+
+    let resolver_endpoint = endpoint.clone();
+    let error_endpoint = endpoint.clone();
+    let proxy = DownstreamProxy::new(endpoint.clone(), Default::default());
+
     if let Some(metrics_bind_addr) = metrics_bind_addr {
-        let state = MetricsHttpState::new(endpoint.clone(), metrics.clone());
+        let state = MetricsHttpState::new(endpoint, metrics.clone(), proxy.metrics().clone());
         tokio::spawn(async move {
             if let Err(err) = serve_metrics_http(metrics_bind_addr, state).await {
                 tracing::warn!(%err, "gateway metrics server failed");
@@ -64,9 +69,6 @@ pub async fn serve_with_metrics(
         });
     }
 
-    let resolver_endpoint = endpoint.clone();
-    let error_endpoint = endpoint.clone();
-    let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
         HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
             .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
