@@ -61,8 +61,8 @@ pub fn UpdateDialog(props: UpdateDialogProps) -> Element {
                             text: "Download Update",
                             kind: ButtonKind::Primary,
                             onclick: move |_| {
-                                // Link to the GitHub releases page for the rolling tag
-                                let releases_url = "https://github.com/datum-cloud/app/releases/tag/rolling";
+                                // Link to the GitHub releases page for tagged releases
+                                let releases_url = "https://github.com/datum-cloud/app/releases";
                                 let _ = that(releases_url);
                                 open.set(false);
                                 on_dismiss.call(());

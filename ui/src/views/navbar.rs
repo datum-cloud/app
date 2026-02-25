@@ -24,6 +24,8 @@ pub struct OpenEditTunnelDialog {
 pub fn Chrome() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
+    let auth_changed = consume_context::<Signal<u32>>();
+    let _ = auth_changed();
     let mut add_tunnel_dialog_open = use_signal(|| false);
     let mut invite_user_dialog_open = use_signal(|| false);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
@@ -34,10 +36,8 @@ pub fn Chrome() -> Element {
     });
 
     use_effect(move || {
-        // Only redirect if not already on login/signup pages (which are outside this layout)
+        let _ = auth_changed();
         if state.datum().login_state() == LoginState::Missing {
-            // Don't redirect if we're already on Login or Signup route
-            // Those routes are outside the Chrome layout, so this effect won't run for them
             nav.push(Route::Login {});
             return;
         }
