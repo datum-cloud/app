@@ -67,7 +67,6 @@ pub fn Button(props: ButtonProps) -> Element {
             }
         }
     };
-    
 
     match (props.to.is_some(), props.onclick.is_some()) {
         (true, false) => {

@@ -88,9 +88,8 @@ async fn read_connect_response(stream: &mut TcpStream) -> Result<()> {
         }
     };
 
-    let header = std::str::from_utf8(&buf[..header_end]).map_err(|_| {
-        n0_error::anyerr!("CONNECT response was not valid UTF-8")
-    })?;
+    let header = std::str::from_utf8(&buf[..header_end])
+        .map_err(|_| n0_error::anyerr!("CONNECT response was not valid UTF-8"))?;
     let status_line = header.lines().next().unwrap_or_default();
     if !status_line.contains(" 200 ") && !status_line.starts_with("HTTP/1.1 200") {
         n0_error::bail_any!("CONNECT failed: {status_line}");

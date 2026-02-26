@@ -1,150 +1,228 @@
 use std::{io, net::SocketAddr, str::FromStr, sync::Arc};
 
 use askama::Template;
-use hyper::StatusCode;
+use http_body_util::{BodyExt, Full, combinators::BoxBody};
+use hyper::{
+    StatusCode,
+    body::Bytes,
+    http::{self, HeaderMap, HeaderValue},
+};
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_proxy_utils::{
-    HttpOriginRequest, HttpProxyRequest, HttpProxyRequestKind, HttpResponse,
+    Authority, HttpRequest, HttpRequestKind,
     downstream::{
-        DownstreamProxy, EndpointAuthority, ExtractError, ForwardProxyResolver, HttpProxyOpts,
-        ProxyMode, ReverseProxyResolver, WriteErrorResponse,
+        Deny, DownstreamProxy, ErrorResponder, HttpProxyOpts, ProxyMode, RequestHandler, SrcAddr,
     },
 };
 use n0_error::Result;
-use tokio::{
-    io::{AsyncWrite, AsyncWriteExt},
-    net::TcpListener,
-};
-use tracing::{debug, info};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
+use tracing::info;
 
-use crate::{
-    FetchTicketError, TicketClient, build_endpoint, build_n0des_client, n0des_api_secret_from_env,
-};
+mod metrics;
+
+use self::metrics::{GatewayMetrics, MetricsHttpState, serve_metrics_http, shared_gateway_metrics};
+use crate::build_endpoint;
 
 pub async fn bind_and_serve(
     secret_key: SecretKey,
     config: crate::config::GatewayConfig,
     tcp_bind_addr: SocketAddr,
+    metrics_bind_addr: Option<SocketAddr>,
+    #[cfg(unix)] uds_listener: Option<UnixListener>,
 ) -> Result<()> {
     let listener = TcpListener::bind(tcp_bind_addr).await?;
     let endpoint = build_endpoint(secret_key, &config.common).await?;
-    let n0des = match config.gateway_mode {
-        crate::config::GatewayMode::Reverse => {
-            let n0des_api_secret = n0des_api_secret_from_env()?;
-            Some(build_n0des_client(&endpoint, n0des_api_secret).await?)
-        }
-        crate::config::GatewayMode::Forward => None,
-    };
-    serve(endpoint, n0des, listener, config).await
+    serve_with_metrics(
+        endpoint,
+        listener,
+        metrics_bind_addr,
+        #[cfg(unix)]
+        uds_listener,
+    )
+    .await
 }
 
-pub async fn serve(
+pub async fn serve(endpoint: Endpoint, listener: TcpListener) -> Result<()> {
+    serve_with_metrics(
+        endpoint,
+        listener,
+        None,
+        #[cfg(unix)]
+        None,
+    )
+    .await
+}
+
+pub async fn serve_with_metrics(
     endpoint: Endpoint,
-    n0des: Option<Arc<iroh_n0des::Client>>,
     listener: TcpListener,
-    config: crate::config::GatewayConfig,
+    metrics_bind_addr: Option<SocketAddr>,
+    #[cfg(unix)] uds_listener: Option<UnixListener>,
 ) -> Result<()> {
     let tcp_bind_addr = listener.local_addr()?;
     info!(
         ?tcp_bind_addr,
         endpoint_id = %endpoint.id().fmt_short(),
-        gateway_mode = ?config.gateway_mode,
         "TCP proxy gateway started"
     );
 
-    let proxy = DownstreamProxy::new(endpoint, Default::default());
-    let mode = match config.gateway_mode {
-        crate::config::GatewayMode::Reverse => {
-            let n0des = n0des.ok_or_else(|| {
-                n0_error::anyerr!("n0des client is required for reverse gateway mode")
-            })?;
-            let tickets = TicketClient::new(n0des);
-            let resolver = Resolver { tickets };
-            let opts = HttpProxyOpts::default()
-                // Right now the gateway functions as a reverse proxy, i.e. incoming requests are regular origin-form HTTP
-                // requests, and we resolve the destination from the host header's subdomain.
-                .reverse(resolver)
-                .error_response_writer(ErrorResponseWriter);
-            ProxyMode::Http(opts)
-        }
-        crate::config::GatewayMode::Forward => {
-            let resolver = ForwardResolver;
-            let opts = HttpProxyOpts::default()
-                // Forward proxy mode accepts CONNECT authority-form requests.
-                .forward(resolver)
-                .error_response_writer(ErrorResponseWriter);
-            ProxyMode::Http(opts)
-        }
-    };
+    let metrics = shared_gateway_metrics();
+    let proxy = DownstreamProxy::new(endpoint.clone(), Default::default());
 
+    if let Some(metrics_bind_addr) = metrics_bind_addr {
+        let state =
+            MetricsHttpState::new(endpoint.clone(), metrics.clone(), proxy.metrics().clone());
+        tokio::spawn(async move {
+            if let Err(err) = serve_metrics_http(metrics_bind_addr, state).await {
+                tracing::warn!(%err, "gateway metrics server failed");
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    if let Some(uds_listener) = uds_listener {
+        let uds_proxy = proxy.clone();
+        let uds_endpoint = endpoint.clone();
+        let uds_metrics = metrics.clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                serve_uds_with_proxy(uds_endpoint, uds_listener, uds_metrics, uds_proxy).await
+            {
+                tracing::warn!(%err, "UDS gateway task failed");
+            }
+        });
+    }
+
+    let resolver_endpoint = endpoint.clone();
+    let error_endpoint = endpoint.clone();
+    let mode = ProxyMode::Http(
+        HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
+            .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
+    );
     proxy.forward_tcp_listener(listener, mode).await
 }
 
-#[derive(Clone)]
-struct Resolver {
-    tickets: TicketClient,
-}
+#[cfg(unix)]
+async fn serve_uds_with_proxy(
+    endpoint: Endpoint,
+    listener: UnixListener,
+    metrics: Arc<GatewayMetrics>,
+    proxy: DownstreamProxy,
+) -> Result<()> {
+    let uds_path = listener
+        .local_addr()
+        .ok()
+        .and_then(|a| a.as_pathname().map(|p| p.to_path_buf()));
+    info!(
+        ?uds_path,
+        endpoint_id = %endpoint.id().fmt_short(),
+        "UDS proxy gateway started"
+    );
 
-/// When operating in reverse-proxy mode we accept origin-form http requests,
-/// and need to resolve their full destination.
-///
-/// This is the currently-deployed version, which uses the subdomain.
-impl ReverseProxyResolver for Resolver {
-    async fn destination<'a>(
-        &'a self,
-        req: &'a HttpOriginRequest,
-    ) -> Result<EndpointAuthority, ExtractError> {
-        let host = req.host().ok_or(ExtractError::BadRequest)?;
-        let codename = extract_subdomain(host).ok_or(ExtractError::NotFound)?;
-
-        debug!(%codename, "extracted codename, resolving ticket...");
-        let ticket = self.tickets.get(codename).await.map_err(|err| {
-            debug!(%codename, "failed to resolve ticket: {err:#}");
-            match err {
-                FetchTicketError::NotFound => ExtractError::NotFound,
-                FetchTicketError::FailedToFetch(_) => ExtractError::ServiceUnavailable,
-            }
-        })?;
-        debug!(?ticket, "resolved ticket");
-        Ok(EndpointAuthority {
-            endpoint_id: ticket.endpoint,
-            authority: ticket.data.data.into(),
-        })
-    }
+    let resolver_endpoint = endpoint.clone();
+    let mode = ProxyMode::Http(
+        HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
+            .error_responder(ErrorResponseWriter::new(endpoint, metrics)),
+    );
+    proxy.forward_uds_listener(listener, mode).await
 }
 
 const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
+const HEADER_TARGET_HOST: &str = "x-datum-target-host";
+const HEADER_TARGET_PORT: &str = "x-datum-target-port";
 
-/// When operating in forward-proxy mode we accept CONNECT requests and resolve the target
-/// endpoint ID from headers injected by Envoy.
-struct ForwardResolver;
+const DATUM_HEADERS: [&str; 3] = [HEADER_NODE_ID, HEADER_TARGET_HOST, HEADER_TARGET_PORT];
 
-impl ForwardProxyResolver for ForwardResolver {
-    async fn destination<'a>(
-        &'a self,
-        req: &'a HttpProxyRequest,
-    ) -> Result<EndpointId, ExtractError> {
-        if !matches!(req.kind, HttpProxyRequestKind::Tunnel { .. }) {
-            return Err(ExtractError::BadRequest);
+struct HeaderResolver {
+    endpoint: Endpoint,
+    metrics: Arc<GatewayMetrics>,
+}
+
+impl RequestHandler for HeaderResolver {
+    async fn handle_request(
+        &self,
+        src_addr: SrcAddr,
+        req: &mut HttpRequest,
+    ) -> Result<EndpointId, Deny> {
+        let is_tcp = matches!(src_addr, SrcAddr::Tcp(_));
+        match src_addr {
+            SrcAddr::Tcp(_) => self.metrics.inc_tcp_requests(),
+            #[cfg(unix)]
+            SrcAddr::Unix(_) => self.metrics.inc_uds_requests(),
         }
-        let node_id = header_value(req, HEADER_NODE_ID).ok_or(ExtractError::BadRequest)?;
-        EndpointId::from_str(node_id).map_err(|_| ExtractError::BadRequest)
+        match req.classify()? {
+            HttpRequestKind::Tunnel => {
+                self.metrics.inc_tunnel_requests();
+                self.metrics
+                    .inc_tunnel_reuse_attempt(has_existing_peer_conn(&self.endpoint));
+                if is_tcp {
+                    self.metrics.inc_tunnel_tcp_requests();
+                } else {
+                    #[cfg(unix)]
+                    self.metrics.inc_tunnel_uds_requests();
+                }
+                let endpoint_id = self.endpoint_id_from_headers(&req.headers)?;
+                req.remove_headers(DATUM_HEADERS);
+                Ok(endpoint_id)
+            }
+            HttpRequestKind::Origin | HttpRequestKind::Http1Absolute => {
+                self.metrics.inc_origin_requests();
+                self.metrics
+                    .inc_origin_reuse_attempt(has_existing_peer_conn(&self.endpoint));
+                if is_tcp {
+                    self.metrics.inc_origin_tcp_requests();
+                } else {
+                    #[cfg(unix)]
+                    self.metrics.inc_origin_uds_requests();
+                }
+                let endpoint_id = self.endpoint_id_from_headers(&req.headers)?;
+                let host = self.header_value(&req.headers, HEADER_TARGET_HOST)?;
+                let port = self
+                    .header_value(&req.headers, HEADER_TARGET_PORT)?
+                    .parse::<u16>()
+                    .map_err(|_| {
+                        self.metrics.inc_denied_invalid_target_port();
+                        Deny::bad_request("invalid x-datum-target-port header")
+                    })?;
+                // Rewrite the request target.
+                req.set_absolute_http_authority(Authority::new(host.to_string(), port))?
+                    .remove_headers(DATUM_HEADERS);
+                Ok(endpoint_id)
+            }
+        }
     }
 }
 
-fn header_value<'a>(req: &'a HttpProxyRequest, name: &str) -> Option<&'a str> {
-    req.headers.get(name).and_then(|value| value.to_str().ok())
-}
+impl HeaderResolver {
+    fn new(endpoint: Endpoint, metrics: Arc<GatewayMetrics>) -> Self {
+        Self { endpoint, metrics }
+    }
 
-pub(super) fn extract_subdomain(host: &str) -> Option<&str> {
-    let host = host
-        .rsplit_once(':')
-        .map(|(host, _port)| host)
-        .unwrap_or(host);
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        None
-    } else {
-        host.split_once(".").map(|(first, _rest)| first)
+    fn endpoint_id_from_headers(
+        &self,
+        headers: &HeaderMap<HeaderValue>,
+    ) -> Result<EndpointId, Deny> {
+        let s = self.header_value(headers, HEADER_NODE_ID)?;
+        EndpointId::from_str(s).map_err(|_| {
+            self.metrics.inc_denied_invalid_endpoint();
+            Deny::bad_request("invalid x-iroh-endpoint-id value")
+        })
+    }
+
+    fn header_value<'a>(
+        &self,
+        headers: &'a HeaderMap<HeaderValue>,
+        name: &str,
+    ) -> Result<&'a str, Deny> {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                self.metrics.inc_denied_missing_header_name(name);
+                Deny::bad_request(format!("Missing header {name}"))
+            })
     }
 }
 
@@ -155,16 +233,27 @@ struct GatewayErrorTemplate<'a> {
     body: &'a str,
 }
 
-struct ErrorResponseWriter;
+struct ErrorResponseWriter {
+    endpoint: Endpoint,
+    metrics: Arc<GatewayMetrics>,
+}
 
-impl WriteErrorResponse for ErrorResponseWriter {
-    async fn write_error_response<'a>(
-        &'a self,
-        res: &'a HttpResponse,
-        writer: &'a mut (dyn AsyncWrite + Send + Unpin),
-    ) -> io::Result<()> {
-        let title = format!("{} {}", res.status.as_u16(), res.reason());
-        let body = match res.status {
+impl ErrorResponder for ErrorResponseWriter {
+    async fn error_response(
+        &self,
+        status: StatusCode,
+    ) -> hyper::Response<BoxBody<Bytes, io::Error>> {
+        self.metrics.inc_status_code(status);
+        if status.is_server_error() {
+            self.metrics
+                .inc_5xx_failure_by_peer_conn_state(has_existing_peer_conn(&self.endpoint));
+        }
+        let title = format!(
+            "{} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or_default()
+        );
+        let body = match status {
             StatusCode::BAD_REQUEST => {
                 "The request could not be understood by the gateway. Please try again."
             }
@@ -186,48 +275,40 @@ impl WriteErrorResponse for ErrorResponseWriter {
             _ => "The service experienced an unexpected error.",
         };
         let html = GatewayErrorTemplate {
-            body: &body,
+            body,
             title: &title,
         }
         .render()
         .unwrap_or(title);
-        writer.write_all(res.status_line().as_bytes()).await?;
-        let headers = format!(
-            "Content-Type: text/html\r\nContent-Length: {}\r\n\r\n",
-            html.len()
-        );
-        writer.write_all(headers.as_bytes()).await?;
-        writer.write_all(html.as_bytes()).await?;
-        Ok(())
+        hyper::Response::builder()
+            .status(status)
+            .header(http::header::CONTENT_LENGTH, html.len().to_string())
+            .body(
+                Full::new(Bytes::from(html))
+                    .map_err(|err| match err {})
+                    .boxed(),
+            )
+            .expect("infallible")
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::extract_subdomain;
-
-    #[test]
-    fn extract_subdomain_from_host_with_port() {
-        assert_eq!(extract_subdomain("alpha.example.test:8080"), Some("alpha"));
+impl ErrorResponseWriter {
+    fn new(endpoint: Endpoint, metrics: Arc<GatewayMetrics>) -> Self {
+        Self { endpoint, metrics }
     }
+}
 
-    #[test]
-    fn extract_subdomain_from_host_without_port() {
-        assert_eq!(extract_subdomain("beta.example.test"), Some("beta"));
-    }
-
-    #[test]
-    fn extract_subdomain_rejects_ip() {
-        assert_eq!(extract_subdomain("127.0.0.1:8080"), None);
-    }
-
-    #[test]
-    fn extract_subdomain_returns_none_without_dot() {
-        assert_eq!(extract_subdomain("localhost:8080"), None);
-    }
-
-    #[test]
-    fn extract_subdomain_rejects_ipv6_literal() {
-        assert_eq!(extract_subdomain("[::1]:8080"), None);
-    }
+fn has_existing_peer_conn(endpoint: &Endpoint) -> bool {
+    let endpoint_metrics = endpoint.metrics();
+    let direct_current = endpoint_metrics
+        .magicsock
+        .num_direct_conns_added
+        .get()
+        .saturating_sub(endpoint_metrics.magicsock.num_direct_conns_removed.get());
+    let relay_current = endpoint_metrics
+        .magicsock
+        .num_relay_conns_added
+        .get()
+        .saturating_sub(endpoint_metrics.magicsock.num_relay_conns_removed.get());
+    direct_current + relay_current > 0
 }

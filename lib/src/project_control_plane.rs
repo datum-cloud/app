@@ -69,8 +69,7 @@ impl ProjectControlPlaneClient {
             .parse()
             .std_context("Invalid project control plane URL")?;
         let mut config = Config::new(uri);
-        config.auth_info.token =
-            Some(SecretString::new(access_token.to_string().into_boxed_str()));
+        config.auth_info.token = Some(SecretString::new(access_token.to_string().into_boxed_str()));
         Client::try_from(config).std_context("Failed to create project control plane client")
     }
 
@@ -82,8 +81,7 @@ impl ProjectControlPlaneClient {
 
         let client = Self::build_kube_client(&self.server_url, access_token)?;
         self.client.store(Arc::new(client));
-        self.access_token
-            .store(Arc::new(access_token.to_string()));
+        self.access_token.store(Arc::new(access_token.to_string()));
         Ok(())
     }
 
@@ -103,10 +101,10 @@ impl ProjectControlPlaneClient {
         let mut login_rx = self.datum.auth().login_state_watch();
         let mut auth_update_rx = self.datum.auth_update_watch();
         let task = tokio::spawn(async move {
-            if *login_rx.borrow() != LoginState::Missing {
-                if let Err(err) = client.refresh_client_from_update().await {
-                    warn!("failed to refresh project control plane client: {err:#}");
-                }
+            if *login_rx.borrow() != LoginState::Missing
+                && let Err(err) = client.refresh_client_from_update().await
+            {
+                warn!("failed to refresh project control plane client: {err:#}");
             }
             loop {
                 tokio::select! {
@@ -121,10 +119,10 @@ impl ProjectControlPlaneClient {
                         }
                     }
                 }
-                if *login_rx.borrow() != LoginState::Missing {
-                    if let Err(err) = client.refresh_client_from_update().await {
-                        warn!("failed to refresh project control plane client: {err:#}");
-                    }
+                if *login_rx.borrow() != LoginState::Missing
+                    && let Err(err) = client.refresh_client_from_update().await
+                {
+                    warn!("failed to refresh project control plane client: {err:#}");
                 }
             }
         });

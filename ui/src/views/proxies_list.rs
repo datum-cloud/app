@@ -1,57 +1,82 @@
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
-use lib::{ProxyState, TunnelSummary};
+use lib::TunnelSummary;
+use open::that;
 
-use super::OpenEditTunnelDialog;
 use crate::{
     components::{
         dropdown_menu::{
-            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+            DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+            DropdownMenuTrigger,
         },
         input::Input,
-        AddTunnelDialog, Button, ButtonKind, Icon, IconSource, Switch, SwitchThumb,
+        skeleton::Skeleton,
+        AddTunnelDialog, Button, ButtonKind, DeleteTunnelDialog, Icon, IconSource, Switch,
+        SwitchThumb,
     },
     state::AppState,
     Route,
 };
 
-
 #[component]
 pub fn ProxiesList() -> Element {
     let state = consume_context::<AppState>();
     let tunnels = state.tunnel_cache();
+    // Check if we already have cached data - if so, we're already "loaded"
+    let has_loaded = use_signal(|| !tunnels().is_empty());
 
     let state_for_future = state.clone();
     use_future(move || {
         let state_for_future = state_for_future.clone();
+        let mut has_loaded_for_future = has_loaded;
         async move {
-        let mut ctx_rx = state_for_future.datum().selected_context_watch();
-        let refresh = state_for_future.tunnel_refresh();
-        loop {
-            let list = state_for_future
-                .tunnel_service()
-                .list_active()
-                .await
-                .unwrap_or_default();
-            state_for_future.set_tunnel_cache(list);
-            tokio::select! {
-                res = ctx_rx.changed() => {
-                    if res.is_err() {
-                        return;
+            let mut ctx_rx = state_for_future.datum().selected_context_watch();
+            let refresh = state_for_future.tunnel_refresh();
+            loop {
+                let list = state_for_future
+                    .tunnel_service()
+                    .list_active()
+                    .await
+                    .unwrap_or_default();
+                // Check if any tunnel is missing a hostname or not yet accepted/programmed.
+                // If so, poll more frequently.
+                // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
+                // resource(s) instead of listing all tunnels each cycle.
+                let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+                let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
+                state_for_future.set_tunnel_cache(list);
+                has_loaded_for_future.set(true);
+
+                if has_pending_hostname || has_pending_status {
+                    // Poll every 3 seconds when waiting for hostname provisioning
+                    tokio::select! {
+                        res = ctx_rx.changed() => {
+                            if res.is_err() {
+                                return;
+                            }
+                        }
+                        _ = refresh.notified() => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                    }
+                } else {
+                    tokio::select! {
+                    res = ctx_rx.changed() => {
+                        if res.is_err() {
+                            return;
+                        }
+                    }
+                    _ = refresh.notified() => {}
                     }
                 }
-                _ = refresh.notified() => {}
             }
-        }
         }
     });
 
     // Important: do async mutations from this parent component scope.
     // If we spawn from inside `TunnelCard` and then optimistically remove the card,
     // Dioxus will drop that scope and cancel the task before it runs.
-    let state_for_delete = state.clone();
     let mut on_delete = use_action(move |tunnel: TunnelSummary| {
-        let state = state_for_delete.clone();
+        let state = state.clone();
         async move {
             debug!("on delete called: {}", tunnel.id);
             let outcome = state
@@ -72,16 +97,31 @@ pub fn ProxiesList() -> Element {
             n0_error::Ok(())
         }
     });
+    let mut delete_confirm_open = use_signal(|| false);
+    let mut tunnel_to_delete = use_signal(|| None::<TunnelSummary>);
+    let mut tunnel_pending_delete = use_signal(|| None::<TunnelSummary>);
+
     let on_delete_handler = move |tunnel: TunnelSummary| {
-        on_delete.call(tunnel);
+        tunnel_pending_delete.set(Some(tunnel));
+        delete_confirm_open.set(true);
     };
 
-    let mut open_edit_dialog = consume_context::<OpenEditTunnelDialog>();
-    let on_edit_handler = move |tunnel_to_edit: TunnelSummary| {
-        open_edit_dialog.editing_tunnel.set(Some(tunnel_to_edit));
-        open_edit_dialog.dialog_open.set(true);
-    };
+    // Set tunnel_to_delete when deletion is confirmed (for showing tunnel as deleting)
+    // This happens when the dialog calls on_delete
+    use_effect(move || {
+        if on_delete.pending() {
+            if let Some(tunnel) = tunnel_pending_delete() {
+                tunnel_to_delete.set(Some(tunnel));
+            }
+        }
+        if let Some(result) = on_delete.value() {
+            if result.is_ok() {
+                tunnel_to_delete.set(None);
+            }
+        }
+    });
 
+    let state = consume_context::<AppState>();
     let first_name = state
         .datum()
         .auth_state()
@@ -94,8 +134,8 @@ pub fn ProxiesList() -> Element {
     const EMPTY_ROCKS: Asset = asset!("/assets/images/empty-card-rocks.png");
 
     let mut dialog_open = use_signal(|| false);
-    let initial_proxy_for_dialog = use_signal(|| None::<ProxyState>);
-    let mut search_query = use_signal(|| String::new());
+    let mut editing_tunnel = use_signal(|| None::<TunnelSummary>);
+    let mut search_query = use_signal(String::new);
 
     let show_search = tunnels().len() > 2;
     let query = search_query().trim().to_lowercase();
@@ -106,17 +146,54 @@ pub fn ProxiesList() -> Element {
             .into_iter()
             .filter(|t| {
                 t.label.to_lowercase().contains(&query)
-                    || t.id.to_lowercase().contains(&query)
+                    || t.hostnames
+                        .iter()
+                        .any(|h| h.to_lowercase().contains(&query))
                     || t.endpoint.to_lowercase().contains(&query)
-                    || t.hostnames.iter().any(|h| h.to_lowercase().contains(&query))
+                    || t.id.to_lowercase().contains(&query)
             })
             .collect()
     };
 
-    let list = if tunnels().is_empty() {
+    let list = if !has_loaded() {
+        // Loading state: show 3 skeleton items
         rsx! {
             div { class: "space-y-5",
-                div { class: "relative rounded-lg border border-card-border bg-white h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
+                for _ in 0..3 {
+                    div { class: "bg-card-background rounded-lg border border-app-border shadow-card",
+                        div { class: "px-4 py-2.5 flex items-center justify-between",
+                            Skeleton { class: Some("h-5 w-32".to_string()) }
+                            Skeleton { class: Some("h-4 w-4 rounded-full".to_string()) }
+                        }
+                        div { class: "border-t border-tunnel-card-border" }
+                        div { class: "p-4 flex items-start justify-between bg-tunnel-card-background/50",
+                            div { class: "flex flex-col gap-1.5",
+                                div { class: "flex items-center gap-2.5",
+                                    Skeleton { class: Some("h-3.5 w-3.5".to_string()) }
+                                    Skeleton { class: Some("h-3 w-24".to_string()) }
+                                }
+                                div { class: "flex items-center gap-2.5",
+                                    Skeleton { class: Some("h-3.5 w-3.5".to_string()) }
+                                    Skeleton { class: Some("h-3 w-32".to_string()) }
+                                }
+                                div { class: "flex items-center gap-2.5",
+                                    Skeleton { class: Some("h-3.5 w-3.5".to_string()) }
+                                    Skeleton { class: Some("h-3 w-28".to_string()) }
+                                }
+                            }
+                            div { class: "relative",
+                                Skeleton { class: Some("h-8 w-8 rounded-lg".to_string()) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if tunnels().is_empty() {
+        // Empty state: show empty message
+        rsx! {
+            div { class: "space-y-5",
+                div { class: "relative rounded-lg border border-card-border bg-card-background h-48 p-10 text-center shadow-card text-foreground flex flex-col items-center justify-center gap-6 overflow-hidden",
                     img {
                         class: "absolute right-0 top-0 h-20 w-auto object-contain pointer-events-none",
                         src: "{EMPTY_MOON}",
@@ -127,11 +204,13 @@ pub fn ProxiesList() -> Element {
                         src: "{EMPTY_ROCKS}",
                         alt: "",
                     }
-                    div { class: "text-sm mt-2", "Hey {first_name}, let's create your first tunnel" }
+                    div { class: "text-sm mt-2 max-w-xs",
+                        "Hey {first_name}, Want to safely expose a local service on the internet?"
+                    }
                     Button {
                         kind: ButtonKind::Outline,
                         class: "w-fit text-foreground",
-                        text: "Add tunnel",
+                        text: "Add New",
                         leading_icon: Some(IconSource::Named("plus".into())),
                         onclick: move |_| dialog_open.set(true),
                     }
@@ -141,6 +220,7 @@ pub fn ProxiesList() -> Element {
             }
         }
     } else {
+        let tunnel_to_delete_for_cards = tunnel_to_delete;
         rsx! {
             div { class: "space-y-5",
                 if show_search {
@@ -157,8 +237,14 @@ pub fn ProxiesList() -> Element {
                     TunnelCard {
                         key: "{tunnel.id}",
                         tunnel,
+                        show_view_item: true,
+                        show_bandwidth: false,
+                        tunnel_to_delete: tunnel_to_delete_for_cards,
                         on_delete: on_delete_handler,
-                        on_edit: on_edit_handler,
+                        on_edit: move |t| {
+                            editing_tunnel.set(Some(t));
+                            dialog_open.set(true);
+                        },
                     }
                 }
             }
@@ -169,11 +255,50 @@ pub fn ProxiesList() -> Element {
         div { class: "max-w-5xl mx-auto", {list} }
         AddTunnelDialog {
             open: dialog_open,
-            on_open_change: move |open| dialog_open.set(open),
-            initial_proxy: initial_proxy_for_dialog,
+            on_open_change: move |open| {
+                dialog_open.set(open);
+                if !open {
+                    editing_tunnel.set(None);
+                }
+            },
+            initial_tunnel: editing_tunnel,
             on_save_success: move |_| {
                 let state = consume_context::<AppState>();
                 state.bump_tunnel_refresh();
+            },
+        }
+        DeleteTunnelDialog {
+            open: delete_confirm_open,
+            on_open_change: move |open| {
+                delete_confirm_open.set(open);
+                if !open {
+                    tunnel_pending_delete.set(None);
+                }
+            },
+            tunnel: tunnel_pending_delete,
+            on_delete: move |tunnel| {
+                on_delete.call(tunnel);
+            },
+            delete_pending: {
+                let mut pending_signal: Signal<bool> = use_signal(|| on_delete.pending());
+                use_effect(move || {
+                    pending_signal.set(on_delete.pending());
+                });
+                let read_signal: ReadSignal<bool> = pending_signal.into();
+                read_signal
+            },
+            delete_result: {
+                let mut error_signal: Signal<Option<String>> = use_signal(|| None::<String>);
+                use_effect(move || {
+                    if let Some(result) = on_delete.value() {
+                        match result {
+                            Ok(_) => error_signal.set(None),
+                            Err(e) => error_signal.set(Some(e.to_string())),
+                        }
+                    }
+                });
+                let read_signal: ReadSignal<Option<String>> = error_signal.into();
+                read_signal
             },
         }
     }
@@ -182,50 +307,61 @@ pub fn ProxiesList() -> Element {
 #[component]
 pub fn TunnelCard(
     tunnel: TunnelSummary,
-    on_delete: EventHandler<TunnelSummary>,
-    #[props(default = true)]
     show_view_item: bool,
-    #[props(default = false)]
     show_bandwidth: bool,
-    #[props(optional)]
-    on_edit: Option<EventHandler<TunnelSummary>>,
+    tunnel_to_delete: ReadSignal<Option<TunnelSummary>>,
+    on_delete: EventHandler<TunnelSummary>,
+    on_edit: EventHandler<TunnelSummary>,
 ) -> Element {
-    let tunnel_initial = tunnel.clone();
-    let tunnel_for_effect = tunnel.clone();
-    let mut tunnel_signal = use_signal(move || tunnel_initial.clone());
-    use_effect(move || tunnel_signal.set(tunnel_for_effect.clone()));
-
+    let tunnel_id = tunnel.id.clone();
     let mut menu_open = use_signal(|| None::<bool>);
     let nav = use_navigator();
     let state = consume_context::<AppState>();
 
+    // Read the tunnel from cache using the ID - this ensures we always have fresh data
+    // when the cache is updated (e.g., after edit or hostname provisioning)
+    let tunnel_cache = state.tunnel_cache();
+    let tunnel = tunnel_cache()
+        .into_iter()
+        .find(|t| t.id == tunnel_id)
+        .unwrap_or(tunnel);
+
+    let tunnel_id_for_toggle = tunnel_id.clone();
     let mut toggle_action = use_action(move |next_enabled: bool| {
         let state = state.clone();
+        let tunnel_id = tunnel_id_for_toggle.clone();
         async move {
-            let tunnel = tunnel_signal().clone();
             let updated = state
                 .tunnel_service()
-                .set_enabled_active(&tunnel.id, next_enabled)
+                .set_enabled_active(&tunnel_id, next_enabled)
                 .await?;
             if next_enabled {
                 if let Some(selected) = state.selected_context() {
-                    state.heartbeat().register_project(selected.project_id).await;
+                    state
+                        .heartbeat()
+                        .register_project(selected.project_id)
+                        .await;
                 }
             }
-            state.upsert_tunnel(updated.clone());
-            tunnel_signal.set(updated);
+            state.upsert_tunnel(updated);
             state.bump_tunnel_refresh();
             n0_error::Ok(())
         }
     });
-
-    let tunnel = tunnel_signal();
-    let display_hostname = tunnel
+    let enabled = tunnel.enabled;
+    let is_ready = tunnel.accepted && tunnel.programmed;
+    let proxy_name = tunnel.id.clone();
+    let public_hostname = tunnel
         .hostnames
-        .first()
+        .iter()
+        .find(|h| !h.starts_with("v4.") && !h.starts_with("v6."))
         .cloned()
-        .unwrap_or_else(|| tunnel.id.clone());
-    let display_hostname_href = display_hostname.clone();
+        .or_else(|| tunnel.hostnames.first().cloned());
+    let public_hostname_click = public_hostname.clone();
+    let short_id = public_hostname
+        .as_ref()
+        .and_then(|h| h.split('.').next())
+        .map(|s| s.to_string());
     let display_endpoint = if tunnel.endpoint.is_empty() {
         "unknown".to_string()
     } else {
@@ -234,23 +370,59 @@ pub fn TunnelCard(
     let display_endpoint_href = display_endpoint.clone();
 
     let wrapper_class = if show_bandwidth {
-        "bg-white rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
+        "bg-tunnel-card-background rounded-lg border border-app-border shadow-none border-b-0 rounded-b-none"
     } else {
-        "bg-white rounded-lg border border-app-border shadow-card"
+        "bg-tunnel-card-background rounded-lg border border-app-border shadow-card"
     };
 
-    rsx! {
-        div { class: "{wrapper_class}",
+    // Clone tunnel_id and tunnel before they're moved into closures
+    let tunnel_id_for_deleting = tunnel_id.clone();
+    let tunnel_id_for_disabled = tunnel_id.clone();
+    let tunnel_id_for_view = tunnel_id.clone();
+    let tunnel_for_edit = tunnel.clone();
+    let tunnel_for_delete = tunnel.clone();
+    let tunnel_for_memo = tunnel.clone();
 
-            div { class: "",
+    // Compute is_deleting reactively based on whether this tunnel is being deleted
+    // Only show as deleting when deletion has been confirmed (tunnel is in tunnel_to_delete)
+    let is_deleting = use_memo(move || {
+        tunnel_to_delete()
+            .as_ref()
+            .map(|t| t.id == tunnel_id_for_deleting)
+            .unwrap_or(false)
+    });
+
+    // Compute is_disabled reactively from tunnel cache and deletion state
+    let is_disabled = use_memo(move || {
+        let tunnel_from_cache = tunnel_cache()
+            .into_iter()
+            .find(|t| t.id == tunnel_id_for_disabled)
+            .unwrap_or(tunnel_for_memo.clone());
+        !(tunnel_from_cache.accepted && tunnel_from_cache.programmed) || is_deleting()
+    });
+
+    rsx! {
+        div { class: "{wrapper_class} relative rounded-lg",
+            if is_disabled() {
+                div { class: "absolute inset-0 bg-tunnel-card-background/30 rounded-lg z-10 pointer-events-none" }
+            }
+            div { class: if is_disabled() { "opacity-90" } else { "" },
                 // header row: title + toggle
-                div { class: "px-4 py-2.5 flex items-center justify-between",
-                    h2 { class: "text-md font-normal text-foreground", {tunnel.label} }
-                    Switch {
-                        checked: tunnel.enabled,
-                        disabled: toggle_action.pending(),
-                        on_checked_change: move |next| toggle_action.call(next),
-                        SwitchThumb {}
+                div { class: "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg",
+                    h2 { class: "text-md font-normal text-foreground", {tunnel.label.clone()} }
+                    if is_ready && !is_deleting() {
+                        Switch {
+                            checked: enabled,
+                            disabled: toggle_action.pending() || is_deleting(),
+                            on_checked_change: move |next| toggle_action.call(next),
+                            SwitchThumb {}
+                        }
+                    } else {
+                        Icon {
+                            source: IconSource::Named("loader-circle".into()),
+                            size: 16,
+                            class: "animate-spin text-icon-tunnel",
+                        }
                     }
                 }
 
@@ -258,37 +430,62 @@ pub fn TunnelCard(
                 div { class: "border-t border-tunnel-card-border" }
 
                 // body: rows + kebab aligned to the right like Figma
-                div { class: "p-4 flex items-start justify-between bg-neutral-100/50",
+                div { class: "p-4 flex items-start justify-between bg-tunnel-card-background rounded-b-lg",
                     div { class: "flex flex-col gap-1.5",
                         div { class: "flex items-center gap-2.5 text-icon-tunnel",
                             Icon {
                                 source: IconSource::Named("globe".into()),
                                 size: 14,
                             }
-                            a {
-                                class: "text-xs text-foreground",
-                                href: format!("http://{}", display_hostname_href),
-                                {display_hostname}
-                            }
+                            span { class: "text-xs text-foreground", {proxy_name} }
                         }
                         div { class: "flex items-center gap-2.5 text-icon-tunnel",
                             Icon {
                                 source: IconSource::Named("down-right-arrow".into()),
                                 size: 14,
                             }
-                            a {
-                                class: "text-xs text-foreground",
-                                href: format!("http://{}", display_endpoint_href),
-                                {display_endpoint}
+                            if is_disabled() {
+                                span { class: "text-xs text-foreground/80", {display_endpoint} }
+                            } else {
+                                a {
+                                    class: "text-xs text-foreground",
+                                    href: display_endpoint_href.clone(),
+                                    {display_endpoint}
+                                }
                             }
                         }
-                        div { class: "flex items-center gap-2.5 text-icon-tunnel",
-                            Icon {
-                                source: IconSource::Named("power-cable".into()),
-                                size: 14,
+                        if let Some(id) = short_id.as_ref() {
+                            div { class: "flex items-center gap-2.5 text-icon-tunnel",
+                                Icon {
+                                    source: IconSource::Named("external-link".into()),
+                                    size: 14,
+                                }
+                                if is_ready {
+                                    a {
+                                        class: "text-xs text-foreground hover:underline cursor-pointer",
+                                        onclick: move |_| {
+                                            if let Some(h) = public_hostname_click.as_ref() {
+                                                let url = format!("https://{}", h);
+                                                let _ = that(&url);
+                                            }
+                                        },
+                                        {format!("https://{}", public_hostname.clone().unwrap_or_default())}
+                                    }
+                                } else {
+                                    span { class: "text-xs text-foreground/80",
+                                        {format!("https://{}", public_hostname.clone().unwrap_or_default())}
+                                    }
+                                }
                             }
-                            span { class: "text-xs text-foreground",
-                                {format!("datum://{}", tunnel.id)}
+                        } else {
+                            div { class: "flex items-center gap-2.5 text-icon-tunnel",
+                                Icon {
+                                    source: IconSource::Named("loader-circle".into()),
+                                    size: 14,
+                                }
+                                span { class: "text-xs text-foreground/90 font-medium",
+                                    "Hostname Provisioning..."
+                                }
                             }
                         }
                     }
@@ -297,8 +494,8 @@ pub fn TunnelCard(
                             open: menu_open,
                             default_open: false,
                             on_open_change: move |v| menu_open.set(Some(v)),
-                            disabled: use_signal(|| false),
-                            DropdownMenuTrigger { class: "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent focus:outline-2 focus:outline-app-border/50",
+                            disabled: is_disabled,
+                            DropdownMenuTrigger { class: if is_disabled() { "w-8 h-8 rounded-lg border border-app-border text-foreground/50 flex items-center justify-center bg-transparent opacity-70 cursor-not-allowed pointer-events-none" } else { "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent focus:outline-2 focus:outline-app-border/50" },
                                 Icon {
                                     source: IconSource::Named("ellipsis".into()),
                                     size: 16,
@@ -311,38 +508,34 @@ pub fn TunnelCard(
                                             DropdownMenuItem::<String> {
                                                 value: use_signal(|| "view".to_string()),
                                                 index: use_signal(|| 0),
-                                                disabled: use_signal(|| false),
+                                                disabled: is_disabled,
                                                 on_select: move |_| {
-                                                    let id = tunnel_signal().id.clone();
-                                                    nav.push(Route::TunnelBandwidth { id });
+                                                    nav.push(Route::TunnelBandwidth {
+                                                        id: tunnel_id_for_view.clone(),
+                                                    });
                                                 },
                                                 "View"
                                             }
                                         }
                                     } else {
-                                        rsx! {
-                                            Fragment {}
-                                        }
+                                        rsx! {}
                                     }
                                 }
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "edit".to_string()),
-                                    index: use_signal(|| 1),
-                                    disabled: use_signal(|| false),
-                                    on_select: move |_| {
-                                        let t = tunnel_signal().clone();
-                                        if let Some(ref on_edit) = on_edit {
-                                            on_edit.call(t);
-                                        }
-                                    },
+                                    index: use_signal(|| 0),
+                                    disabled: is_disabled,
+                                    on_select: move |_| on_edit.call(tunnel_for_edit.clone()),
                                     "Edit"
                                 }
                                 DropdownMenuSeparator {}
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "delete".to_string()),
                                     index: use_signal(|| 2),
-                                    disabled: use_signal(|| false),
-                                    on_select: move |_| on_delete.call(tunnel_signal().clone()),
+                                    disabled: is_disabled,
+                                    on_select: move |_| {
+                                        on_delete.call(tunnel_for_delete.clone());
+                                    },
                                     destructive: true,
                                     "Delete"
                                 }

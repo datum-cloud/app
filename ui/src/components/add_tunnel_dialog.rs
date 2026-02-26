@@ -1,11 +1,12 @@
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
-use lib::{Advertisment, ProxyState, TcpProxyData, TunnelSummary};
+use lib::{TcpProxyData, TunnelSummary};
 
 use crate::{
     components::{
         dialog::{DialogContent, DialogRoot, DialogTitle},
         input::Input,
+        switch::{Switch, SwitchThumb},
         Button, ButtonKind,
     },
     state::AppState,
@@ -33,35 +34,41 @@ fn validate_tunnel_address(s: &str) -> Option<String> {
     }
     let lower = s.to_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Some("Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173).".to_string());
+        return Some(
+            "Do not include http:// or https:// — use host:port only (e.g. 127.0.0.1:5173)."
+                .to_string(),
+        );
     }
     match TcpProxyData::from_host_port_str(s) {
         Ok(_) => None,
-        Err(e) => Some(format!("Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).", e)),
+        Err(e) => Some(format!(
+            "Invalid address: {}. Use host:port (e.g. 127.0.0.1:5173).",
+            e
+        )),
     }
 }
 
 #[component]
 pub fn AddTunnelDialog(
-    /// Pass a signal so the effect re-runs when open/initial_proxy/initial_tunnel change and populates the form.
+    /// Pass a signal so the effect re-runs when open/initial_tunnel change and populates the form.
     open: ReadSignal<bool>,
     on_open_change: EventHandler<bool>,
-    /// When set, the dialog is in edit mode (legacy proxy path).
-    initial_proxy: ReadSignal<Option<ProxyState>>,
     /// When set, the dialog is in edit mode (tunnel path, e.g. from TunnelBandwidth).
     #[props(optional)]
     initial_tunnel: Option<Signal<Option<TunnelSummary>>>,
     /// Called after a successful save so the parent can refresh the tunnels list.
     on_save_success: EventHandler<()>,
 ) -> Element {
-    let mut address = use_signal(|| String::new());
-    let mut label = use_signal(|| String::new());
+    let mut address = use_signal(String::new);
+    let mut label = use_signal(String::new);
+    let mut basic_auth_enabled = use_signal(|| false);
 
     // Reset form when dialog closes (after success or cancel) so next open starts clean
     use_effect(move || {
         if !open() {
             label.set(String::new());
             address.set(String::new());
+            basic_auth_enabled.set(false);
         }
     });
 
@@ -73,13 +80,11 @@ pub fn AddTunnelDialog(
         if let Some(t) = tunnel_opt {
             label.set(t.label.clone());
             address.set(strip_http_scheme(&t.endpoint));
-        } else if let Some(p) = initial_proxy() {
-            label.set(p.info.label().to_string());
-            address.set(strip_http_scheme(&p.info.service().address()));
         } else {
             // Create mode: empty form
             label.set(String::new());
             address.set(String::new());
+            basic_auth_enabled.set(false);
         }
     });
 
@@ -92,7 +97,7 @@ pub fn AddTunnelDialog(
             .project_id;
         let tunnel = state
             .tunnel_service()
-            .create_active(&label(), &address())
+            .create_active(label().trim(), address().trim())
             .await
             .context("Failed to create tunnel")?;
         state.upsert_tunnel(tunnel);
@@ -103,45 +108,12 @@ pub fn AddTunnelDialog(
         n0_error::Ok(())
     });
 
-    let mut save_proxy = use_action(move |existing: Option<ProxyState>| async move {
-        let state = consume_context::<AppState>();
-        let service = TcpProxyData::from_host_port_str(&address()).context("Invalid address")?;
-        let proxy = match existing {
-            Some(proxy) => {
-                let info = Advertisment {
-                    resource_id: proxy.info.resource_id.clone(),
-                    label: Some(label()),
-                    data: service,
-                };
-                ProxyState {
-                    info,
-                    enabled: proxy.enabled,
-                }
-            }
-            None => {
-                let info = Advertisment::new(service, Some(label()));
-                ProxyState {
-                    info,
-                    enabled: true,
-                }
-            }
-        };
-        state
-            .listen_node()
-            .set_proxy(proxy)
-            .await
-            .context("Failed to save proxy")?;
-        on_save_success.call(());
-        on_open_change.call(false);
-        n0_error::Ok(())
-    });
-
     // Edit tunnel (same logic as edit_proxy.rs)
     let mut save_tunnel = use_action(move |tunnel_id: String| async move {
         let state = consume_context::<AppState>();
         let updated = state
             .tunnel_service()
-            .update_active(&tunnel_id, &label(), &address())
+            .update_active(&tunnel_id, label().trim(), address().trim())
             .await
             .context("Failed to update tunnel")?;
         state.upsert_tunnel(updated);
@@ -152,15 +124,27 @@ pub fn AddTunnelDialog(
     });
 
     let is_edit_tunnel = initial_tunnel.as_ref().and_then(|s| s()).is_some();
-    let is_edit_proxy = initial_proxy().is_some();
-    let is_edit = is_edit_tunnel || is_edit_proxy;
-    let title = if is_edit { "Edit tunnel" } else { "Add a tunnel" };
-    let submit_label = if is_edit { "Save changes" } else { "Create tunnel" };
+    let is_edit = is_edit_tunnel;
+    let title = if is_edit {
+        "Edit tunnel"
+    } else {
+        "Add a tunnel"
+    };
+    let submit_label = if is_edit {
+        "Save changes"
+    } else {
+        "Create tunnel"
+    };
     let submit_pending_label = if is_edit { "Saving…" } else { "Creating…" };
-    let error_title = if is_edit { "Couldn't update tunnel" } else { "Couldn't create tunnel" };
+    let error_title = if is_edit {
+        "Couldn't update tunnel"
+    } else {
+        "Couldn't create tunnel"
+    };
 
-    let address_validation = validate_tunnel_address(&address());
-    let address_invalid = address().trim().is_empty() || address_validation.is_some();
+    let address_validation = use_memo(move || validate_tunnel_address(&address()));
+    let address_invalid =
+        use_memo(move || address().trim().is_empty() || address_validation().is_some());
 
     rsx! {
         DialogRoot {
@@ -173,7 +157,7 @@ pub fn AddTunnelDialog(
                     Input {
                         id: Some("tunnel-name".into()),
                         label: Some("Display name".into()),
-                        description: Some("Your tunnel will also get an auto-generated codename.".into()),
+                        description: Some("Your tunnel will also get an auto-generated resource name.".into()),
                         value: "{label}",
                         onchange: move |e: FormEvent| label.set(e.value()),
                     }
@@ -182,17 +166,31 @@ pub fn AddTunnelDialog(
                         label: Some("Local address to forward".into()),
                         value: "{address}",
                         placeholder: "e.g. 127.0.0.1:5173",
-                        error: address_validation.clone(),
+                        error: address_validation().clone(),
                         autocomplete: "off",
                         autocapitalize: "off",
                         autocorrect: "off",
+                        oninput: move |e: FormEvent| address.set(e.value()),
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
-                    if let Some(err) = save_proxy
+                    // TODO: Add basic authentication
+                    // div { class: "flex flex-col gap-2",
+                    //     div { class: "flex items-center justify-between",
+                    //         label { class: "text-xs text-form-label/90", "Basic authentication" }
+                    //         Switch {
+                    //             checked: basic_auth_enabled(),
+                    //             on_checked_change: move |checked| basic_auth_enabled.set(checked),
+                    //             SwitchThumb {}
+                    //         }
+                    //     }
+                    //     div { class: "text-1xs text-form-description",
+                    //         "We'll automatically generate a username and password for you."
+                    //     }
+                    // }
+                    if let Some(err) = save_tunnel
                         .value()
                         .and_then(|r| r.err())
-                        .or_else(|| save_tunnel.value().and_then(|r| r.err()))
                         .or_else(|| save_create_tunnel.value().and_then(|r| r.err()))
                     {
                         div { class: "rounded-md border border-red-200 bg-red-50 p-4 text-red-800",
@@ -200,13 +198,12 @@ pub fn AddTunnelDialog(
                             div { class: "text-sm mt-1 break-words", "{err}" }
                         }
                     }
-                    div { class: "flex items-center gap-4 pt-2 justify-start",
+                    div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
-                            class: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending()
-    || address_invalid { Some("opacity-60".to_string()) } else { None },
+                            class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid() { Some("opacity-60".to_string()) } else { None },
                             onclick: move |_| {
-                                if address_invalid {
+                                if address_invalid() {
                                     return;
                                 }
                                 if let Some(tunnel_id) = initial_tunnel
@@ -215,13 +212,11 @@ pub fn AddTunnelDialog(
                                     .map(|t| t.id.clone())
                                 {
                                     save_tunnel.call(tunnel_id);
-                                } else if initial_proxy().is_some() {
-                                    save_proxy.call(initial_proxy().clone());
                                 } else {
                                     save_create_tunnel.call(());
                                 }
                             },
-                            text: if save_proxy.pending() || save_tunnel.pending() || save_create_tunnel.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
+                            text: if save_tunnel.pending() || save_create_tunnel.pending() { submit_pending_label.to_string() } else { submit_label.to_string() },
                         }
                         Button {
                             kind: ButtonKind::Ghost,
