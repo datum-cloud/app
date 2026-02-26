@@ -445,6 +445,7 @@ impl AuthStateWrapper {
 
     async fn from_repo(repo: Repo, oauth_key: &str) -> Result<Self> {
         let state = repo.read_oauth_for_key(oauth_key).await?;
+        set_sentry_user(state.as_ref());
         let (login_state_tx, _) = watch::channel(login_state_for(state.as_ref()));
         let (auth_update_tx, _) = watch::channel(0);
         Ok(Self {
@@ -474,6 +475,7 @@ impl AuthStateWrapper {
             repo.write_oauth_for_key(&self.oauth_key, auth.as_ref())
                 .await?;
         }
+        set_sentry_user(auth.as_ref());
         self.inner.store(Arc::new(MaybeAuth(auth)));
         let _ = self
             .login_state_tx
@@ -489,6 +491,17 @@ fn login_state_for(auth: Option<&AuthState>) -> LoginState {
         None => LoginState::Missing,
         Some(state) => state.tokens.login_state(),
     }
+}
+
+fn set_sentry_user(auth: Option<&AuthState>) {
+    sentry::configure_scope(|scope| {
+        scope.set_user(auth.map(|state| sentry::User {
+            id: Some(state.profile.user_id.clone()),
+            email: Some(state.profile.email.clone()),
+            username: Some(state.profile.display_name()),
+            ..Default::default()
+        }));
+    });
 }
 
 #[derive(derive_more::Debug, Clone)]
