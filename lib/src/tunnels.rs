@@ -19,6 +19,11 @@ use crate::datum_apis::http_proxy::{
     ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
     HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
+use crate::datum_apis::traffic_protection_policy::{
+    LocalPolicyTargetReferenceWithSectionName, TrafficProtectionPolicy,
+    TrafficProtectionPolicyMode, TrafficProtectionPolicyRuleSet,
+    TrafficProtectionPolicyRuleSetType, TrafficProtectionPolicySpec, OWASPCRS, ParanoiaLevels,
+};
 use crate::datum_cloud::DatumCloudClient;
 use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
 use gateway_api::apis::standard::httproutes::{
@@ -259,7 +264,7 @@ impl TunnelService {
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let client = pcp.client();
         let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
-        let ads: Api<ConnectorAdvertisement> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+        let ads: Api<ConnectorAdvertisement> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
 
         debug!(
             %project_id,
@@ -333,6 +338,57 @@ impl TunnelService {
             proxy = %proxy_name,
             connector = %connector_name,
             "created ConnectorAdvertisement"
+        );
+
+        let tpps: Api<TrafficProtectionPolicy> =
+            Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        debug!(
+            %project_id,
+            proxy = %proxy_name,
+            "creating TrafficProtectionPolicy"
+        );
+        let tpp = TrafficProtectionPolicy {
+            metadata: ObjectMeta {
+                name: Some(proxy_name.clone()),
+                ..Default::default()
+            },
+            spec: TrafficProtectionPolicySpec {
+                target_refs: vec![LocalPolicyTargetReferenceWithSectionName {
+                    group: "gateway.networking.k8s.io".to_string(),
+                    kind: "Gateway".to_string(),
+                    name: proxy_name.clone(),
+                    section_name: None,
+                }],
+                mode: Some(TrafficProtectionPolicyMode::Enforce),
+                sampling_percentage: None,
+                rule_sets: Some(vec![TrafficProtectionPolicyRuleSet {
+                    rule_set_type: TrafficProtectionPolicyRuleSetType::OWASPCoreRuleSet,
+                    owasp_core_rule_set: Some(OWASPCRS {
+                        paranoia_levels: Some(ParanoiaLevels {
+                            blocking: Some(1),
+                            detection: Some(1),
+                        }),
+                        score_thresholds: None,
+                        rule_exclusions: None,
+                    }),
+                }]),
+            },
+            status: None,
+        };
+        tpps.create(&PostParams::default(), &tpp)
+            .await
+            .std_context("Failed to create TrafficProtectionPolicy")
+            .inspect_err(|err| {
+                warn!(
+                    %project_id,
+                    proxy = %proxy_name,
+                    "TrafficProtectionPolicy create failed: {err:#}"
+                );
+            })?;
+        debug!(
+            %project_id,
+            proxy = %proxy_name,
+            "created TrafficProtectionPolicy"
         );
 
         let proxy_state = proxy_state_from_summary(&proxy_name, &endpoint, label, true)?;
@@ -583,7 +639,7 @@ impl TunnelService {
         let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
         let ads: Api<ConnectorAdvertisement> =
             Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
-        let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+        let connectors: Api<Connector> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
 
         if proxies
             .get_opt(tunnel_id)
@@ -606,6 +662,19 @@ impl TunnelService {
             ads.delete(tunnel_id, &DeleteParams::default())
                 .await
                 .std_context("Failed to delete ConnectorAdvertisement")?;
+        }
+
+        let tpps: Api<TrafficProtectionPolicy> =
+            Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        if tpps
+            .get_opt(tunnel_id)
+            .await
+            .std_context("Failed to load TrafficProtectionPolicy")?
+            .is_some()
+        {
+            tpps.delete(tunnel_id, &DeleteParams::default())
+                .await
+                .std_context("Failed to delete TrafficProtectionPolicy")?;
         }
 
         if self.publish_tickets {
