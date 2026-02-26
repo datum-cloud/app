@@ -10,6 +10,7 @@ use axum::{Router, extract::State, routing::get};
 use hyper::http::header;
 use iroh::Endpoint;
 use iroh_metrics::Registry;
+use iroh_proxy_utils::downstream::DownstreamMetrics;
 use n0_error::Result;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -170,7 +171,7 @@ impl GatewayMetrics {
         }
     }
 
-    fn render(&self, endpoint: &Endpoint) -> String {
+    fn render(&self, endpoint: &Endpoint, downstream_metrics: &Arc<DownstreamMetrics>) -> String {
         let endpoint_metrics = endpoint.metrics();
         let direct_added = endpoint_metrics.magicsock.num_direct_conns_added.get();
         let direct_removed = endpoint_metrics.magicsock.num_direct_conns_removed.get();
@@ -196,12 +197,11 @@ impl GatewayMetrics {
             + endpoint_metrics.magicsock.recv_data_ipv6.get()
             + endpoint_metrics.magicsock.recv_data_relay.get();
         let send_total = endpoint_metrics.magicsock.send_data.get();
-        let mut endpoint_openmetrics = String::new();
+
+        let mut downstream_openmetrics = String::new();
         let mut registry = Registry::default();
-        registry
-            .sub_registry_with_prefix("iroh_gateway_endpoint")
-            .register_all(endpoint.metrics());
-        let _ = registry.encode_openmetrics_to_writer(&mut endpoint_openmetrics);
+        registry.register(downstream_metrics.clone());
+        let _ = registry.encode_openmetrics_to_writer(&mut downstream_openmetrics);
 
         format!(
             concat!(
@@ -324,7 +324,7 @@ impl GatewayMetrics {
             path_ping_failures,
             path_marked_outdated,
             path_failure_resets,
-        ) + &endpoint_openmetrics
+        ) + &downstream_openmetrics
     }
 }
 
@@ -332,11 +332,20 @@ impl GatewayMetrics {
 pub(super) struct MetricsHttpState {
     endpoint: Endpoint,
     metrics: Arc<GatewayMetrics>,
+    downstream_metrics: Arc<DownstreamMetrics>,
 }
 
 impl MetricsHttpState {
-    pub(super) fn new(endpoint: Endpoint, metrics: Arc<GatewayMetrics>) -> Self {
-        Self { endpoint, metrics }
+    pub(super) fn new(
+        endpoint: Endpoint,
+        metrics: Arc<GatewayMetrics>,
+        downstream_metrics: Arc<DownstreamMetrics>,
+    ) -> Self {
+        Self {
+            endpoint,
+            metrics,
+            downstream_metrics,
+        }
     }
 }
 
@@ -358,6 +367,8 @@ async fn metrics_handler(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        state.metrics.render(&state.endpoint),
+        state
+            .metrics
+            .render(&state.endpoint, &state.downstream_metrics),
     )
 }
