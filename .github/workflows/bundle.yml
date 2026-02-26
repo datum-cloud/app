@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -261,3 +261,50 @@ jobs:
             Assets: Datum.dmg, Datum.AppImage, Datum-setup.exe (see SHA256 checksums below).
           files: artifacts/**/*
           generate_release_notes: false
+
+  update-homebrew:
+    needs: [release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: DatumConnect-macOS
+          path: macos-dist
+
+      - name: Update Homebrew Tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          DMG_FILE=$(find macos-dist -name "*.dmg" | head -1)
+          DMG_SHA=$(sha256sum "$DMG_FILE" | cut -d' ' -f1)
+          REPO="datum-cloud/app"
+
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/datum-cloud/homebrew-tap.git tap
+          mkdir -p tap/Casks
+
+          cat > tap/Casks/datum.rb <<RUBY
+          cask "datum" do
+            version "${VERSION}"
+            sha256 "${DMG_SHA}"
+
+            url "https://github.com/${REPO}/releases/download/${TAG}/Datum.dmg"
+            name "Datum"
+            desc "Quickly and safely expose local environments to the internet, for free."
+            homepage "https://www.datum.net/"
+
+            depends_on macos: ">= :big_sur"
+
+            app "Datum.app"
+          end
+          RUBY
+
+          cd tap
+          git config user.name "Datum Release Bot"
+          git config user.email "releases@datum.net"
+          git add Casks/datum.rb
+          git diff --cached --quiet || git commit -m "Brew cask update for Datum version ${TAG}"
+          git push
