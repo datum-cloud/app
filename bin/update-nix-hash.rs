@@ -29,7 +29,9 @@ const FAKE_HASH: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 fn main() {
     // Optional positional argument: nix target.  Default: ".#default".
+    // Optional flag: --no-verify  skip the final confirmation build.
     let args: Vec<String> = env::args().collect();
+    let no_verify = args.iter().any(|a| a == "--no-verify");
     let target = args
         .iter()
         .skip(1)
@@ -114,6 +116,11 @@ fn main() {
 
     if !any_changed {
         eprintln!("\n✓ All outputHashes are already up to date");
+        return;
+    }
+
+    if no_verify {
+        eprintln!("\n✓ outputHashes updated (skipping verification build)");
         return;
     }
 
