@@ -38,6 +38,7 @@ tracing-appender.workspace = true
 data-encoding.workspace = true
 uuid.workspace = true
 n0-error.workspace = true
+rustls.workspace = true
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 
 [features]

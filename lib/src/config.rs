@@ -19,14 +19,6 @@ pub enum DiscoveryMode {
     Hybrid,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum GatewayMode {
-    #[default]
-    Reverse,
-    Forward,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
@@ -57,7 +49,6 @@ pub struct Config {
     /// Useful for local development (e.g. 127.0.0.1:53535).
     #[serde(default)]
     pub dns_resolver: Option<SocketAddr>,
-
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -65,9 +56,6 @@ pub struct Config {
 pub struct GatewayConfig {
     #[serde(flatten)]
     pub common: Config,
-    /// Gateway operating mode for HTTP proxying.
-    #[serde(default)]
-    pub gateway_mode: GatewayMode,
 }
 
 impl Config {

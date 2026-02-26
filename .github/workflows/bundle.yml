@@ -3,6 +3,8 @@ name: bundle
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,6 +19,7 @@ jobs:
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
+      DATUM_API_ENV: production
 
     steps:
       - uses: actions/checkout@v4
@@ -83,13 +86,63 @@ jobs:
           echo "Updated signing identity in Dioxus.toml"
           grep signing_identity Dioxus.toml
 
+      - name: Set Version (Unix)
+        if: runner.os != 'Windows'
+        working-directory: ./ui
+        env:
+          FULL_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        run: |
+          if echo "$REF" | grep -q '^refs/tags/'; then
+            VERSION="${REF#refs/tags/v}"
+            VERSION="${VERSION#refs/tags/}"
+          else
+            SHORT_SHA=${FULL_SHA::7}
+            BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
+            VERSION="${BUILD_DATE}-${SHORT_SHA}"
+          fi
+          echo "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Also update lib/Cargo.toml if it exists
+          if [ -f ../lib/Cargo.toml ]; then
+            sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" ../lib/Cargo.toml
+          fi
+
+      - name: Set Version (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ./ui
+        env:
+          FULL_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        shell: pwsh
+        run: |
+          if ($env:REF -match '^refs/tags/') {
+            $VERSION = $env:REF -replace '^refs/tags/v?', ''
+          } else {
+            $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
+            $BUILD_DATE = Get-Date -Format "yyyy.M.d"
+            $VERSION = "$BUILD_DATE-$SHORT_SHA"
+          }
+          Write-Host "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          if (Test-Path ../lib/Cargo.toml) {
+            (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
+          }
+
+      - name: Update Cargo.lock
+        if: runner.os == 'macOS'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Notarize macOS App
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -121,6 +174,11 @@ jobs:
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
 
+      - name: Update Cargo.lock
+        if: runner.os == 'Linux'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
+
       - name: Bundle (Linux)
         if: runner.os == 'Linux'
         working-directory: ./ui
@@ -131,6 +189,11 @@ jobs:
         env:
           NO_STRIP: true
         run: dx bundle --locked --desktop --release --package-types appimage
+
+      - name: Update Cargo.lock
+        if: runner.os == 'Windows'
+        # Run from workspace root to update lock file for all workspace members
+        run: cargo generate-lockfile
 
       - name: Bundle (Windows)
         working-directory: ./ui
@@ -148,43 +211,53 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Only create releases for v* tags (no rolling release on main)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Set Version Info and Paths
         id: set_paths
-        env:
-          FULL_SHA: ${{ github.sha }}
         run: |
-          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
-          echo "VERSION=0.1.0,$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_ENV
-          SHORT_SHA=${FULL_SHA::7}
-          echo "RELEASE_VERSION=$(date +'%Y.%m.%d')-$SHORT_SHA" >> $GITHUB_ENV
+          TAG_NAME="${{ github.ref_name }}"
+          echo "RELEASE_VERSION=${TAG_NAME#v}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=${TAG_NAME}" >> $GITHUB_ENV
+          echo "RELEASE_NAME=${TAG_NAME}" >> $GITHUB_ENV
+          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
 
-      - name: Prepare Release Body Data
-        id: release_data
+      - name: Create stable asset aliases
         run: |
-          echo "CURRENT_DATE_STR=$(date)" >> $GITHUB_ENV
+          mkdir -p artifacts/aliases
+          DMG_FILE=$(find artifacts -name "*.dmg" | head -1)
+          APPIMAGE_FILE=$(find artifacts -name "*.AppImage" | head -1)
+          EXE_FILE=$(find artifacts -name "*-setup.exe" -o -name "*setup*.exe" | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            cp "$DMG_FILE" artifacts/aliases/Datum.dmg
+          fi
+          if [ -n "$APPIMAGE_FILE" ]; then
+            cp "$APPIMAGE_FILE" artifacts/aliases/Datum.AppImage
+          fi
+          if [ -n "$EXE_FILE" ]; then
+            cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
+          fi
 
-      - name: Create Main Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Continuous release (${{ env.RELEASE_VERSION }})
-          tag_name: rolling
+          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ env.RELEASE_TAG }}
           make_latest: true
           prerelease: false
           body: |
-            This is a rolling release of DatumConnect, published automatically on every commit to main.
-
             Version: ${{ env.RELEASE_VERSION }}
+            Tag: ${{ env.RELEASE_TAG }}
             Commit: ${{ github.sha }}
             Built: ${{ env.CURRENT_DATE_STR }}
             Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            See the release assets for SHA256 checksums.
-          files: artifacts/*/*
+            Assets: Datum.dmg, Datum.AppImage, Datum-setup.exe (see SHA256 checksums below).
+          files: artifacts/**/*
           generate_release_notes: false

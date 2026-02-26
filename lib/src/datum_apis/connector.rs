@@ -1,5 +1,5 @@
-use kube::CustomResource;
 use k8s_openapi::{api::core::v1, apimachinery::pkg::apis::meta::v1 as metav1};
+use kube::CustomResource;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,5 +102,3 @@ pub struct ConnectorStatus {
     pub connection_details: Option<ConnectorConnectionDetails>,
     pub lease_ref: Option<v1::LocalObjectReference>,
 }
-
-pub const CONNECTOR_NAME_ANNOTATION: &str = "networking.datum.org/connector-name";

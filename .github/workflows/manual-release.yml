@@ -1,0 +1,247 @@
+name: manual-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.0.1)"
+        required: true
+        type: string
+      publish_docker:
+        description: "Publish iroh-gateway image"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  bundle:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    env:
+      BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
+      DATUM_API_ENV: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            rpm \
+            libfuse2 \
+            libxdo-dev
+
+      - name: Install Dioxus CLI
+        # Should be pinned to same version as dioxus in Cargo.toml
+        # note: dx bundle on Windows fails with 0.7.3, see
+        # https://github.com/DioxusLabs/dioxus/issues/5233
+        run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Import Apple Certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # Import certificate from secrets
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Configure macOS Signing Identity
+        if: runner.os == 'macOS'
+        working-directory: ./ui
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          # Update Dioxus.toml with the actual signing identity
+          sed -i '' "s/signing_identity = \"-\"/signing_identity = \"$APPLE_SIGNING_IDENTITY\"/" Dioxus.toml
+          echo "Updated signing identity in Dioxus.toml"
+          grep signing_identity Dioxus.toml
+
+      - name: Set Version (Unix)
+        if: runner.os != 'Windows'
+        working-directory: ./ui
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        run: |
+          # Extract version from tag (remove 'v' prefix if present)
+          VERSION="${VERSION_TAG#v}"
+          echo "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Also update lib/Cargo.toml if it exists
+          if [ -f ../lib/Cargo.toml ]; then
+            sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" ../lib/Cargo.toml
+          fi
+
+      - name: Set Version (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ./ui
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        shell: pwsh
+        run: |
+          $VERSION_TAG = $env:VERSION_TAG
+          $VERSION = $VERSION_TAG -replace '^v', ''
+          Write-Host "Setting version to: $VERSION"
+          # Update Cargo.toml version
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          if (Test-Path ../lib/Cargo.toml) {
+            (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
+          }
+
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        working-directory: ./ui
+        run: dx bundle --locked --desktop --release --package-types dmg
+
+      - name: Notarize macOS App
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Find the DMG file
+          DMG_FILE=$(find ui/dist -name "*.dmg" | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            echo "Notarizing $DMG_FILE..."
+            
+            # Submit for notarization
+            xcrun notarytool submit "$DMG_FILE" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            
+            # Staple the notarization ticket to the DMG
+            xcrun stapler staple "$DMG_FILE"
+            
+            echo "Notarization complete!"
+          else
+            echo "No DMG file found to notarize"
+            exit 1
+          fi
+
+      - name: Cleanup macOS Keychain
+        if: runner.os == 'macOS' && always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+
+      - name: Bundle (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ./ui
+        # TODO: stripping fails currently, it seems to be a known issues
+        # See https://github.com/DioxusLabs/dioxus/issues/3426
+        # and https://github.com/linuxdeploy/linuxdeploy/issues/272
+        # For now we set NO_STRIP, which makes the bundles *huge*...
+        env:
+          NO_STRIP: true
+        run: dx bundle --locked --desktop --release --package-types appimage
+
+      - name: Bundle (Windows)
+        working-directory: ./ui
+        if: runner.os == 'Windows'
+        run: dx bundle --locked --desktop --release --package-types nsis
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: DatumConnect-${{ runner.os }}
+          path: ui/dist/**
+
+  release:
+    needs: [bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Create stable asset aliases
+        run: |
+          mkdir -p artifacts/aliases
+          DMG_FILE=$(find artifacts -name "*.dmg" | head -1)
+          APPIMAGE_FILE=$(find artifacts -name "*.AppImage" | head -1)
+          EXE_FILE=$(find artifacts -name "*-setup.exe" -o -name "*setup*.exe" | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            cp "$DMG_FILE" artifacts/aliases/Datum.dmg
+          fi
+          if [ -n "$APPIMAGE_FILE" ]; then
+            cp "$APPIMAGE_FILE" artifacts/aliases/Datum.AppImage
+          fi
+          if [ -n "$EXE_FILE" ]; then
+            cp "$EXE_FILE" artifacts/aliases/Datum-setup.exe
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DatumConnect ${{ inputs.version }}
+          tag_name: ${{ inputs.version }}
+          make_latest: false
+          prerelease: false
+          draft: false
+          files: artifacts/**/*
+
+  publish-docker:
+    if: ${{ inputs.publish_docker }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push iroh-gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ghcr.io/datum-cloud/iroh-gateway:${{ inputs.version }}

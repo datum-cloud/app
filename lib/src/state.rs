@@ -8,7 +8,6 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, futures::Notified};
-use uuid::Uuid;
 
 use crate::{DATUM_CONNECT_GATEWAY_DOMAIN_NAME, Repo};
 
@@ -232,6 +231,15 @@ impl Advertisment {
     }
 }
 
+fn rand_str(len: usize) -> String {
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdvertismentTicket {
     pub data: Advertisment,
@@ -265,90 +273,9 @@ impl Ticket for AdvertismentTicket {
     }
 }
 
-fn rand_str(len: usize) -> String {
-    rand::rng()
-        .sample_iter(&rand::distr::Alphanumeric)
-        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        .take(len)
-        .map(char::from)
-        .collect()
-}
-
-#[allow(unused)]
-pub(crate) fn generate_codename(id: Uuid) -> String {
-    const ADJECTIVES: &[&str] = &[
-        "amber", "bold", "calm", "dark", "eager", "fair", "gentle", "happy", "icy", "jolly",
-        "kind", "light", "merry", "noble", "proud", "quiet", "rapid", "smart", "tall", "warm",
-        "wise", "young", "zealous", "bright", "clever", "deep", "fast", "grand", "keen", "loud",
-        "mild", "neat", "odd", "pale", "quick", "rich", "safe", "tame", "vast", "wild", "brave",
-        "clean", "crisp", "dull", "free", "glad", "cool", "fresh", "pure", "sharp",
-    ];
-
-    const COLORS: &[&str] = &[
-        "azure", "beige", "coral", "cream", "cyan", "ebony", "gold", "gray", "green", "indigo",
-        "ivory", "jade", "khaki", "lemon", "lime", "navy", "olive", "orange", "peach", "pearl",
-        "pink", "plum", "rose", "ruby", "rust", "sand", "silver", "snow", "tan", "teal", "violet",
-        "white", "amber", "bronze", "brown", "cherry", "copper", "crimson", "yellow", "maroon",
-        "mint", "scarlet", "slate", "steel", "taupe", "blue", "red", "purple", "black",
-    ];
-
-    const NOUNS: &[&str] = &[
-        "anchor", "bridge", "canyon", "delta", "echo", "forest", "glacier", "harbor", "island",
-        "jungle", "lagoon", "meadow", "nebula", "ocean", "peak", "river", "storm", "thunder",
-        "valley", "wave", "zenith", "aurora", "breeze", "cloud", "dawn", "ember", "fjord", "grove",
-        "hawk", "inlet", "knight", "lotus", "moon", "nova", "oak", "pine", "quartz", "ridge",
-        "star", "tiger", "vortex", "whale", "axis", "beacon", "comet", "dune", "eagle", "flare",
-        "gem", "stream",
-    ];
-
-    let bytes = id.as_bytes();
-
-    // Convert first 6 bytes into three 16-bit values
-    // This gives us values in range 0-65535
-    let val1 = u16::from_be_bytes([bytes[0], bytes[1]]);
-    let val2 = u16::from_be_bytes([bytes[2], bytes[3]]);
-    let val3 = u16::from_be_bytes([bytes[4], bytes[5]]);
-
-    let idx1 = (val1 as usize) % ADJECTIVES.len();
-    let idx2 = (val2 as usize) % COLORS.len();
-    let idx3 = (val3 as usize) % NOUNS.len();
-
-    format!("{}-{}-{}", ADJECTIVES[idx1], COLORS[idx2], NOUNS[idx3])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_generate_codename() {
-        // Test with a known UUID
-        let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let codename = generate_codename(id);
-
-        // Should always produce the same codename for the same UUID
-        assert_eq!(codename, generate_codename(id));
-
-        // Should have format: word-word-word
-        let parts: Vec<&str> = codename.split('-').collect();
-        assert_eq!(parts.len(), 3, "Codename should have 3 parts");
-
-        // Each part should be non-empty
-        assert!(!parts[0].is_empty());
-        assert!(!parts[1].is_empty());
-        assert!(!parts[2].is_empty());
-    }
-
-    #[test]
-    fn test_generate_codename_different_uuids() {
-        let id1 = Uuid::new_v4();
-        let id2 = Uuid::new_v4();
-
-        let codename1 = generate_codename(id1);
-        let codename2 = generate_codename(id2);
-
-        assert_ne!(codename1, codename2);
-    }
 
     #[test]
     fn parse_tcp_proxy_data_from_host_port() {

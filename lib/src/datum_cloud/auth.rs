@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -7,9 +10,9 @@ use arc_swap::ArcSwap;
 use chrono::Utc;
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr, stack_error};
 use openidconnect::{
-    AccessToken, AccessTokenHash, AdditionalClaims, AuthorizationCode, ClientId, ClientSecret,
-    CsrfToken, GenderClaim, IdTokenClaims, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
-    PkceCodeChallenge, RefreshToken, Scope, TokenResponse,
+    AccessToken, AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
+    Nonce, NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, RefreshToken, Scope,
+    TokenResponse,
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde::{Deserialize, Serialize};
@@ -79,6 +82,8 @@ pub struct UserProfile {
     pub email: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub registration_approval: Option<String>,
 }
 
 impl UserProfile {
@@ -117,51 +122,21 @@ impl UserProfile {
     //             .map(|(_lang, name)| name.to_string()),
     //     })
     // }
-
-    // TODO: `IdTokenClaims` contains `StandardClaims` but does not expose it directly.
-    // File PR to openidconnect and then remove this function (which is a literal copy-paste)
-    // of `from_standard_claims`).
-    fn from_id_token_claims<AC, GC>(claims: &IdTokenClaims<AC, GC>) -> Result<Self>
-    where
-        AC: AdditionalClaims,
-        GC: GenderClaim,
-    {
-        Ok(Self {
-            user_id: claims.subject().to_string(),
-            email: claims
-                .email()
-                .map(|x| x.to_string())
-                .context("missing email address")?,
-            first_name: claims
-                .given_name()
-                .map(|x| x.iter())
-                .into_iter()
-                .flatten()
-                .next()
-                .map(|(_lang, name)| name.to_string()),
-            last_name: claims
-                .family_name()
-                .map(|x| x.iter())
-                .into_iter()
-                .flatten()
-                .next()
-                .map(|(_lang, name)| name.to_string()),
-        })
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct StatelessClient {
     oidc: types::OidcClient,
     http: reqwest::Client,
+    env: ApiEnv,
 }
 
 impl StatelessClient {
     pub async fn new(env: ApiEnv) -> Result<Self> {
-        Self::with_provider(env.auth_provider()).await
+        Self::with_provider(env, env.auth_provider()).await
     }
 
-    pub async fn with_provider(provider: AuthProvider) -> Result<Self> {
+    pub async fn with_provider(env: ApiEnv, provider: AuthProvider) -> Result<Self> {
         let http = reqwest::ClientBuilder::new()
             // Following redirects opens the client up to SSRF vulnerabilities.
             .redirect(reqwest::redirect::Policy::none())
@@ -184,7 +159,7 @@ impl StatelessClient {
         )
         .set_redirect_uri(RedirectServer::url());
 
-        Ok(Self { oidc, http })
+        Ok(Self { oidc, http, env })
     }
 
     pub async fn login(&self) -> Result<AuthState> {
@@ -228,7 +203,22 @@ impl StatelessClient {
             .std_context("Failed to exchange auth code to access token")
             .inspect_err(|e| error!("{e:#}"))?;
 
-        let state = self.parse_token_response(tokens, &nonce)?;
+        let expected_nonce = nonce.clone();
+        let nonce_verifier = move |received_nonce: Option<&Nonce>| -> Result<(), String> {
+            match received_nonce {
+                Some(received) => {
+                    let received_str = format!("{:?}", received);
+                    let expected_str = format!("{:?}", expected_nonce);
+                    if received_str == expected_str {
+                        Ok(())
+                    } else {
+                        Err("Nonce mismatch".to_string())
+                    }
+                }
+                None => Err("Missing nonce in ID token".to_string()),
+            }
+        };
+        let state = self.parse_token_response(tokens, nonce_verifier).await?;
         info!(email=%state.profile.email, expires_at=%state.tokens.expires_at(), "login succesfull");
         Ok(state)
     }
@@ -243,12 +233,14 @@ impl StatelessClient {
             .request_async(&self.http)
             .await
             .std_context("Failed to refresh tokens")?;
-        let state = self.parse_token_response(tokens, refresh_nonce_verifier)?;
+        let state = self
+            .parse_token_response(tokens, refresh_nonce_verifier)
+            .await?;
         debug!("Access token refreshed");
         Ok(state)
     }
 
-    fn parse_token_response(
+    async fn parse_token_response(
         &self,
         tokens: OidcTokenResponse,
         nonce_verifier: impl NonceVerifier,
@@ -286,15 +278,127 @@ impl StatelessClient {
             }
         }
 
-        let profile = UserProfile::from_id_token_claims(claims)?;
-        let tokens = AuthTokens {
-            issued_at: claims.issue_time(),
+        // Extract user_id from ID token claims
+        let user_id = claims.subject().to_string();
+        let issued_at = claims.issue_time();
+
+        // Create auth tokens
+        let auth_tokens = AuthTokens {
+            issued_at,
             access_token: tokens.access_token().clone(),
             refresh_token: tokens.refresh_token().cloned(),
             expires_in: tokens.expires_in().context("Missing expires_in claim")?,
         };
 
-        Ok(AuthState { tokens, profile })
+        // Fetch user profile from Datum Cloud API
+        let profile = self.fetch_user_profile(&auth_tokens, &user_id).await?;
+
+        Ok(AuthState {
+            tokens: auth_tokens,
+            profile,
+        })
+    }
+
+    pub(crate) async fn fetch_user_profile(
+        &self,
+        tokens: &AuthTokens,
+        user_id: &str,
+    ) -> Result<UserProfile> {
+        fn parse_user(json: &serde_json::Value) -> Option<UserProfile> {
+            let metadata = json.get("metadata")?.as_object()?;
+            let spec = json.get("spec").and_then(|s| s.as_object());
+            let status = json.get("status").and_then(|s| s.as_object());
+
+            // Extract user_id from metadata.name
+            let user_id = metadata.get("name")?.as_str()?.to_string();
+
+            // Extract email from spec or status (try spec first, then status)
+            let email = spec
+                .and_then(|s| s.get("email"))
+                .or_else(|| status.and_then(|s| s.get("email")))
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string());
+
+            // Extract first_name from spec (API uses givenName, not firstName)
+            let first_name = spec
+                .and_then(|s| s.get("givenName"))
+                .or_else(|| spec.and_then(|s| s.get("firstName")))
+                .or_else(|| spec.and_then(|s| s.get("first_name")))
+                .or_else(|| status.and_then(|s| s.get("givenName")))
+                .or_else(|| status.and_then(|s| s.get("firstName")))
+                .or_else(|| status.and_then(|s| s.get("first_name")))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+
+            // Extract last_name from spec (API uses familyName, not lastName)
+            let last_name = spec
+                .and_then(|s| s.get("familyName"))
+                .or_else(|| spec.and_then(|s| s.get("lastName")))
+                .or_else(|| spec.and_then(|s| s.get("last_name")))
+                .or_else(|| status.and_then(|s| s.get("familyName")))
+                .or_else(|| status.and_then(|s| s.get("lastName")))
+                .or_else(|| status.and_then(|s| s.get("last_name")))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+
+            let avatar_url = status
+                .and_then(|s| s.get("avatarUrl"))
+                .or_else(|| status.and_then(|s| s.get("avatar_url")))
+                .or_else(|| spec.and_then(|s| s.get("avatarUrl")))
+                .or_else(|| spec.and_then(|s| s.get("avatar_url")))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+
+            let registration_approval = status
+                .and_then(|s| s.get("registrationApproval"))
+                .or_else(|| status.and_then(|s| s.get("registration_approval")))
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+
+            Some(UserProfile {
+                user_id,
+                email: email?,
+                first_name,
+                last_name,
+                avatar_url,
+                registration_approval,
+            })
+        }
+
+        let url = format!(
+            "{}/apis/iam.miloapis.com/v1alpha1/users/{}",
+            self.env.api_url(),
+            user_id
+        );
+
+        let res = self
+            .http
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", tokens.access_token.secret()),
+            )
+            .send()
+            .await
+            .inspect_err(|e| warn!(%url, "Failed to fetch user profile: {e:#}"))
+            .with_std_context(|_| format!("Failed to fetch user profile from {url}"))?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let text = match res.text().await {
+                Ok(text) => text,
+                Err(err) => err.to_string(),
+            };
+            warn!(%url, "Request failed: {status} {text}");
+            n0_error::bail_any!("Request failed with status {status}");
+        }
+
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .std_context("Failed to parse user profile response as JSON")?;
+
+        parse_user(&json).context("Failed to parse user profile")
     }
 }
 
@@ -319,6 +423,7 @@ impl MaybeAuth {
 struct AuthStateWrapper {
     inner: Arc<ArcSwap<MaybeAuth>>,
     repo: Option<Repo>,
+    oauth_key: String,
     login_state_tx: watch::Sender<LoginState>,
     auth_update_tx: watch::Sender<u64>,
     auth_update_counter: Arc<AtomicU64>,
@@ -331,19 +436,21 @@ impl AuthStateWrapper {
         Self {
             inner: Arc::new(ArcSwap::new(Default::default())),
             repo: None,
+            oauth_key: String::new(),
             login_state_tx,
             auth_update_tx,
             auth_update_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    async fn from_repo(repo: Repo) -> Result<Self> {
-        let state = repo.read_oauth().await?;
+    async fn from_repo(repo: Repo, oauth_key: &str) -> Result<Self> {
+        let state = repo.read_oauth_for_key(oauth_key).await?;
         let (login_state_tx, _) = watch::channel(login_state_for(state.as_ref()));
         let (auth_update_tx, _) = watch::channel(0);
         Ok(Self {
             inner: Arc::new(ArcSwap::new(Arc::new(MaybeAuth(state)))),
             repo: Some(repo),
+            oauth_key: oauth_key.to_string(),
             login_state_tx,
             auth_update_tx,
             auth_update_counter: Arc::new(AtomicU64::new(0)),
@@ -364,10 +471,13 @@ impl AuthStateWrapper {
 
     async fn set(&self, auth: Option<AuthState>) -> Result<()> {
         if let Some(repo) = self.repo.as_ref() {
-            repo.write_oauth(auth.as_ref()).await?;
+            repo.write_oauth_for_key(&self.oauth_key, auth.as_ref())
+                .await?;
         }
         self.inner.store(Arc::new(MaybeAuth(auth)));
-        let _ = self.login_state_tx.send(login_state_for(self.load().get().ok()));
+        let _ = self
+            .login_state_tx
+            .send(login_state_for(self.load().get().ok()));
         let next = self.auth_update_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.auth_update_tx.send(next);
         Ok(())
@@ -390,7 +500,7 @@ pub struct AuthClient {
 
 impl AuthClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
-        let auth = AuthStateWrapper::from_repo(repo).await?;
+        let auth = AuthStateWrapper::from_repo(repo, env.oauth_storage_key()).await?;
         let auth_client = StatelessClient::new(env).await?;
         let mut client = Self {
             state: auth,
@@ -524,7 +634,33 @@ impl AuthClient {
         let auth = auth.get()?;
         let new_auth = match self.client.refresh(&auth.tokens).await {
             Ok(auth) => auth,
-            Err(err) => Err(err).context("Failed to refresh auth tokens, needs login")?,
+            Err(err) => {
+                warn!("Failed to refresh auth tokens, logging out: {err:#}");
+                self.state.set(None).await?;
+                Err(err).context("Failed to refresh auth tokens, needs login")?
+            }
+        };
+        self.state.set(Some(new_auth)).await?;
+        Ok(())
+    }
+
+    /// Refresh the user profile from the API without refreshing tokens
+    pub async fn refresh_profile(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = auth.get()?;
+        let user_id = auth.profile.user_id.clone();
+        let new_profile = self
+            .client
+            .fetch_user_profile(&auth.tokens, &user_id)
+            .await?;
+        let new_auth = AuthState {
+            tokens: AuthTokens {
+                access_token: auth.tokens.access_token.clone(),
+                refresh_token: auth.tokens.refresh_token.as_ref().cloned(),
+                issued_at: auth.tokens.issued_at,
+                expires_in: auth.tokens.expires_in,
+            },
+            profile: new_profile,
         };
         self.state.set(Some(new_auth)).await?;
         Ok(())

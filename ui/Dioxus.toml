@@ -31,7 +31,7 @@ script = []
 [bundle]
 identifier = "net.datum.desktop"
 publisher = "Datum"
-icon = ["assets/bundle/linux/128.png"]
+icon = ["assets/bundle/macos/Datum.icns", "assets/bundle/windows/Datum.ico", "assets/bundle/linux/1024.png", "assets/bundle/linux/512.png", "assets/bundle/linux/256.png"]
 resources = ["assets/*"]
 short_description = "Create Datum tunnels"
 long_description = """
@@ -40,7 +40,6 @@ Datum Datum Datum
 
 [bundle.macos]
 bundle_name = "Datum"
-icon = "assets/bundle/macos/Assets.xcassets/AppIcon.appiconset"
 # Code signing - uses APPLE_SIGNING_IDENTITY env var if set, otherwise this value
 # For local dev: "Developer ID Application: Your Name (TEAMID)"
 # For CI: Set via APPLE_SIGNING_IDENTITY secret
@@ -48,6 +47,3 @@ signing_identity = "-"
 entitlements = "entitlements.plist"
 # Minimum macOS version
 minimum_system_version = "11.0"
-
-[bundle.windows]
-icon = "assets/bundle/windows/Datum Icon.ico"

@@ -1,13 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, ResourceExt};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use n0_error::{Result, StackResultExt, StdResultExt};
 use serde_json::json;
 use tracing::{debug, warn};
 
-use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
     ConnectorConnectionType, ConnectorSpec, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
@@ -16,20 +15,37 @@ use crate::datum_apis::connector_advertisement::{
     ConnectorAdvertisement, ConnectorAdvertisementLayer4, ConnectorAdvertisementLayer4Service,
     ConnectorAdvertisementSpec, Layer4ServiceAddress, Layer4ServicePort, Protocol,
 };
-use crate::datum_apis::connector::CONNECTOR_NAME_ANNOTATION;
 use crate::datum_apis::http_proxy::{
-    ConnectorReference, HTTPProxy, HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
+    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
+    HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
+use crate::datum_cloud::DatumCloudClient;
+use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
 use gateway_api::apis::standard::httproutes::{
     HTTPRouteRulesMatchesPath, HTTPRouteRulesMatchesPathType,
 };
-use crate::datum_cloud::DatumCloudClient;
 
 const DEFAULT_PCP_NAMESPACE: &str = "default";
 const DEFAULT_CONNECTOR_CLASS_NAME: &str = "datum-connect";
 const CONNECTOR_SELECTOR_FIELD: &str = "status.connectionDetails.publicKey.id";
 const ADVERTISEMENT_CONNECTOR_FIELD: &str = "spec.connectorRef.name";
 const DISPLAY_NAME_ANNOTATION: &str = "app.kubernetes.io/name";
+
+/// Returns true if any rule in the HTTPProxy has a backend that references the given connector by name.
+fn proxy_uses_connector(proxy: &HTTPProxy, connector_name: &str) -> bool {
+    proxy
+        .spec
+        .rules
+        .iter()
+        .flat_map(|rule| rule.backends.iter().flatten())
+        .any(|backend| {
+            backend
+                .connector
+                .as_ref()
+                .map(|c| c.name == connector_name)
+                .unwrap_or(false)
+        })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TunnelSummary {
@@ -38,6 +54,8 @@ pub struct TunnelSummary {
     pub endpoint: String,
     pub hostnames: Vec<String>,
     pub enabled: bool,
+    pub accepted: bool,
+    pub programmed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +69,32 @@ pub struct TunnelService {
     datum: DatumCloudClient,
     listen: ListenNode,
     publish_tickets: bool,
+}
+
+// TODO(zachsmith1): Use connectors + ConnectorAdvertisements across all projects to
+// decide which local proxies should be allowed, instead of only syncing the
+// selected project's tunnel list.
+fn proxy_state_from_summary(
+    tunnel_id: &str,
+    endpoint: &str,
+    label: &str,
+    enabled: bool,
+) -> Result<ProxyState> {
+    let data = TcpProxyData::from_host_port_str(&strip_scheme(endpoint))?;
+    let info = Advertisment::with_id(tunnel_id.to_string(), data, Some(label.to_string()));
+    Ok(ProxyState { info, enabled })
+}
+
+fn condition_is_true(
+    conditions: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>,
+    kind: &str,
+) -> bool {
+    conditions
+        .unwrap_or_default()
+        .iter()
+        .find(|condition| condition.type_ == kind)
+        .map(|condition| condition.status == "True")
+        .unwrap_or(false)
 }
 
 impl TunnelService {
@@ -95,7 +139,11 @@ impl TunnelService {
             .await
     }
 
-    pub async fn set_enabled_active(&self, tunnel_id: &str, enabled: bool) -> Result<TunnelSummary> {
+    pub async fn set_enabled_active(
+        &self,
+        tunnel_id: &str,
+        enabled: bool,
+    ) -> Result<TunnelSummary> {
         let Some(selected) = self.datum.selected_context() else {
             n0_error::bail_any!("No project selected");
         };
@@ -143,14 +191,7 @@ impl TunnelService {
             let Some(name) = proxy.metadata.name.clone() else {
                 continue;
             };
-            let matches_connector = proxy
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|annotations| annotations.get(CONNECTOR_NAME_ANNOTATION))
-                .map(|value| value == &connector_name)
-                .unwrap_or(false);
-            if !matches_connector {
+            if !proxy_uses_connector(&proxy, &connector_name) {
                 continue;
             }
             let label = proxy
@@ -161,7 +202,21 @@ impl TunnelService {
                 .cloned()
                 .unwrap_or_else(|| name.clone());
             let endpoint = normalize_endpoint(&proxy_backend_endpoint(&proxy).unwrap_or_default());
-            let hostnames = proxy.spec.hostnames.clone().unwrap_or_default();
+            let hostnames = proxy_hostnames(&proxy);
+            let accepted = condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            );
+            let programmed = condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            );
             let enabled = enabled_by_name.contains_key(&name);
             tunnels.push(TunnelSummary {
                 id: name,
@@ -169,8 +224,24 @@ impl TunnelService {
                 endpoint,
                 hostnames,
                 enabled,
+                accepted,
+                programmed,
             });
         }
+        if !self.publish_tickets {
+            for tunnel in &tunnels {
+                if let Ok(proxy_state) = proxy_state_from_summary(
+                    &tunnel.id,
+                    &tunnel.endpoint,
+                    &tunnel.label,
+                    tunnel.enabled,
+                ) && let Err(err) = self.listen.set_proxy_state(proxy_state).await
+                {
+                    warn!(tunnel_id = %tunnel.id, "Failed to store proxy state: {err:#}");
+                }
+            }
+        }
+
         Ok(tunnels)
     }
 
@@ -199,10 +270,10 @@ impl TunnelService {
         let mut proxy = HTTPProxy {
             metadata: ObjectMeta {
                 generate_name: Some("tunnel-".to_string()),
-                annotations: Some(BTreeMap::from([
-                    (DISPLAY_NAME_ANNOTATION.to_string(), label.to_string()),
-                    (CONNECTOR_NAME_ANNOTATION.to_string(), connector_name.clone()),
-                ])),
+                annotations: Some(BTreeMap::from([(
+                    DISPLAY_NAME_ANNOTATION.to_string(),
+                    label.to_string(),
+                )])),
                 ..Default::default()
             },
             spec: HTTPProxySpec {
@@ -264,25 +335,36 @@ impl TunnelService {
             "created ConnectorAdvertisement"
         );
 
+        let proxy_state = proxy_state_from_summary(&proxy_name, &endpoint, label, true)?;
         if self.publish_tickets {
-            let data = TcpProxyData::from_host_port_str(&strip_scheme(&endpoint))?;
-            let info = Advertisment::with_id(proxy_name.clone(), data, Some(label.to_string()));
-            let proxy_state = ProxyState {
-                info,
-                enabled: true,
-            };
             debug!(%proxy_name, "publishing ticket for tunnel");
             if let Err(err) = self.listen.set_proxy(proxy_state).await {
                 warn!(%proxy_name, "Failed to publish ticket: {err:#}");
             }
+        } else if let Err(err) = self.listen.set_proxy_state(proxy_state).await {
+            warn!(%proxy_name, "Failed to store proxy state: {err:#}");
         }
 
         Ok(TunnelSummary {
             id: proxy_name,
             label: label.to_string(),
             endpoint,
-            hostnames: proxy.spec.hostnames.clone().unwrap_or_default(),
+            hostnames: proxy_hostnames(&proxy),
             enabled: true,
+            accepted: condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
         })
     }
 
@@ -313,7 +395,6 @@ impl TunnelService {
             "metadata": {
                 "annotations": {
                     DISPLAY_NAME_ANNOTATION: label,
-                    CONNECTOR_NAME_ANNOTATION: connector_name,
                 }
             },
             "spec": {
@@ -326,15 +407,15 @@ impl TunnelService {
             .await
             .std_context("Failed to update HTTPProxy")?;
 
-        if let Ok(existing_ad) = ads.get_opt(tunnel_id).await {
-            if existing_ad.is_some() {
-                let ad_patch = json!({
-                    "spec": advertisement_spec(&connector_name, target)
-                });
-                ads.patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&ad_patch))
-                    .await
-                    .std_context("Failed to update ConnectorAdvertisement")?;
-            }
+        if let Ok(existing_ad) = ads.get_opt(tunnel_id).await
+            && existing_ad.is_some()
+        {
+            let ad_patch = json!({
+                "spec": advertisement_spec(&connector_name, target)
+            });
+            ads.patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&ad_patch))
+                .await
+                .std_context("Failed to update ConnectorAdvertisement")?;
         }
 
         let enabled = ads
@@ -343,13 +424,41 @@ impl TunnelService {
             .std_context("Failed to load ConnectorAdvertisement")?
             .is_some();
 
-        Ok(TunnelSummary {
+        let summary = TunnelSummary {
             id: tunnel_id.to_string(),
             label: label.to_string(),
             endpoint,
-            hostnames,
+            hostnames: proxy_hostnames(&existing),
             enabled,
-        })
+            accepted: condition_is_true(
+                existing
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                existing
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
+        };
+
+        if !self.publish_tickets
+            && let Ok(proxy_state) = proxy_state_from_summary(
+                &summary.id,
+                &summary.endpoint,
+                &summary.label,
+                summary.enabled,
+            )
+            && let Err(err) = self.listen.set_proxy_state(proxy_state).await
+        {
+            warn!(tunnel_id = %summary.id, "Failed to store proxy state: {err:#}");
+        }
+
+        Ok(summary)
     }
 
     pub async fn set_enabled_project(
@@ -371,7 +480,6 @@ impl TunnelService {
             .await
             .std_context("Failed to fetch HTTPProxy")?;
         let endpoint = normalize_endpoint(&proxy_backend_endpoint(&proxy).unwrap_or_default());
-        let hostnames = proxy.spec.hostnames.clone().unwrap_or_default();
         let label = proxy
             .metadata
             .annotations
@@ -419,13 +527,41 @@ impl TunnelService {
                 .std_context("Failed to delete ConnectorAdvertisement")?;
         }
 
-        Ok(TunnelSummary {
+        let summary = TunnelSummary {
             id: tunnel_id.to_string(),
             label,
             endpoint,
-            hostnames,
+            hostnames: proxy_hostnames(&proxy),
             enabled,
-        })
+            accepted: condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            programmed: condition_is_true(
+                proxy
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_deref()),
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
+        };
+
+        if !self.publish_tickets
+            && let Ok(proxy_state) = proxy_state_from_summary(
+                &summary.id,
+                &summary.endpoint,
+                &summary.label,
+                summary.enabled,
+            )
+            && let Err(err) = self.listen.set_proxy_state(proxy_state).await
+        {
+            warn!(tunnel_id = %summary.id, "Failed to store proxy state: {err:#}");
+        }
+
+        Ok(summary)
     }
 
     pub async fn delete_project(
@@ -445,7 +581,8 @@ impl TunnelService {
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let client = pcp.client();
         let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
-        let ads: Api<ConnectorAdvertisement> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        let ads: Api<ConnectorAdvertisement> =
+            Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
         let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
 
         if proxies
@@ -476,6 +613,8 @@ impl TunnelService {
             if let Err(err) = self.listen.remove_proxy(tunnel_id).await {
                 warn!(%tunnel_id, "Failed to unpublish ticket: {err:#}");
             }
+        } else if let Err(err) = self.listen.remove_proxy_state(tunnel_id).await {
+            warn!(%tunnel_id, "Failed to remove proxy state: {err:#}");
         }
 
         let remaining = proxies
@@ -486,15 +625,7 @@ impl TunnelService {
         let mut remaining_for_connector = remaining
             .items
             .into_iter()
-            .filter(|proxy| {
-                proxy
-                    .metadata
-                    .annotations
-                    .as_ref()
-                    .and_then(|annotations| annotations.get(CONNECTOR_NAME_ANNOTATION))
-                    .map(|value| value == &connector_name)
-                    .unwrap_or(false)
-            })
+            .filter(|proxy| proxy_uses_connector(proxy, &connector_name))
             .peekable();
         if remaining_for_connector.peek().is_none() {
             let ad_selector = format!("{ADVERTISEMENT_CONNECTOR_FIELD}={connector_name}");
@@ -503,10 +634,10 @@ impl TunnelService {
                 .await
                 .std_context("Failed to list remaining ConnectorAdvertisements")?;
             for ad in ads_list.items {
-                if let Some(name) = ad.metadata.name.clone() {
-                    if let Err(err) = ads.delete(&name, &DeleteParams::default()).await {
-                        warn!(%name, "Failed to delete connector advertisement: {err:#}");
-                    }
+                if let Some(name) = ad.metadata.name.clone()
+                    && let Err(err) = ads.delete(&name, &DeleteParams::default()).await
+                {
+                    warn!(%name, "Failed to delete connector advertisement: {err:#}");
                 }
             }
 
@@ -563,31 +694,30 @@ impl TunnelService {
                 .and_then(|details| details.public_key.as_ref())
                 .map(|details| details.id.as_str() != endpoint_id.as_str())
                 .unwrap_or(true);
-            if needs_patch {
-                if let Some(details) = build_connection_details(&self.listen) {
-                    let details_value = serde_json::to_value(details)
-                        .std_context("Failed to serialize connection details")?;
-                    let patch = json!({ "status": { "connectionDetails": details_value } });
-                    if let Err(err) = connectors
-                        .patch_status(
-                            &connector.name_any(),
-                            &PatchParams::default(),
-                            &Patch::Merge(&patch),
-                        )
+            if needs_patch && let Some(details) = build_connection_details(&self.listen) {
+                let details_value = serde_json::to_value(details)
+                    .std_context("Failed to serialize connection details")?;
+                let patch = json!({ "status": { "connectionDetails": details_value } });
+                if let Err(err) = connectors
+                    .patch_status(
+                        &connector.name_any(),
+                        &PatchParams::default(),
+                        &Patch::Merge(&patch),
+                    )
+                    .await
+                {
+                    warn!(
+                        connector = %connector.name_any(),
+                        "Failed to patch connector status: {err:#}"
+                    );
+                } else {
+                    connector = connectors
+                        .get(&connector.name_any())
                         .await
-                    {
-                        warn!(
-                            connector = %connector.name_any(),
-                            "Failed to patch connector status: {err:#}"
-                        );
-                    } else {
-                        connector = connectors
-                            .get(&connector.name_any())
-                            .await
-                            .std_context("Failed to reload connector after patch")?;
-                    }
+                        .std_context("Failed to reload connector after patch")?;
                 }
             }
+            patch_device_annotations(&connectors, &mut connector).await;
             return Ok(Some(connector));
         }
         if list.items.len() > 1 {
@@ -597,7 +727,9 @@ impl TunnelService {
                 "Multiple connectors found for endpoint, using first"
             );
         }
-        Ok(list.items.into_iter().next())
+        let mut connector = list.items.into_iter().next().unwrap();
+        patch_device_annotations(&connectors, &mut connector).await;
+        Ok(Some(connector))
     }
 
     async fn ensure_connector(&self, project_id: &str) -> Result<Connector> {
@@ -612,6 +744,7 @@ impl TunnelService {
         let mut connector = Connector {
             metadata: ObjectMeta {
                 generate_name: Some("datum-connect-".to_string()),
+                annotations: Some(device_annotations()),
                 ..Default::default()
             },
             spec: ConnectorSpec {
@@ -626,8 +759,8 @@ impl TunnelService {
             .std_context("Failed to create Connector")?;
 
         if let Some(details) = build_connection_details(&self.listen) {
-            let details_value =
-                serde_json::to_value(details).std_context("Failed to serialize connection details")?;
+            let details_value = serde_json::to_value(details)
+                .std_context("Failed to serialize connection details")?;
             let patch = json!({ "status": { "connectionDetails": details_value } });
             if let Err(err) = connectors
                 .patch_status(
@@ -718,14 +851,22 @@ fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 fn strip_scheme(endpoint: &str) -> String {
-    if let Ok(url) = url::Url::parse(endpoint) {
-        if let Some(host) = url.host_str() {
-            if let Some(port) = url.port() {
-                return format!("{host}:{port}");
-            }
-        }
+    if let Ok(url) = url::Url::parse(endpoint)
+        && let Some(host) = url.host_str()
+        && let Some(port) = url.port()
+    {
+        return format!("{host}:{port}");
     }
     endpoint.to_string()
+}
+
+fn proxy_hostnames(proxy: &HTTPProxy) -> Vec<String> {
+    proxy
+        .status
+        .as_ref()
+        .and_then(|status| status.hostnames.clone())
+        .or_else(|| proxy.spec.hostnames.clone())
+        .unwrap_or_default()
 }
 
 fn proxy_rule(endpoint: &str, connector_name: &str) -> HTTPProxyRule {
@@ -780,6 +921,73 @@ fn default_match() -> crate::datum_apis::http_proxy::HTTPRouteMatch {
             value: Some("/".to_string()),
         }),
         ..Default::default()
+    }
+}
+
+fn friendly_device_name() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("scutil")
+            .arg("--get")
+            .arg("ComputerName")
+            .output()
+        {
+            if output.status.success() {
+                let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+    }
+    let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    hostname
+        .strip_suffix(".local")
+        .unwrap_or(&hostname)
+        .to_string()
+}
+
+const DEVICE_NAME_ANNOTATION: &str = "datum.net/device-name";
+const DEVICE_OS_ANNOTATION: &str = "datum.net/device-os";
+
+fn device_annotations() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (DEVICE_NAME_ANNOTATION.to_string(), friendly_device_name()),
+        (
+            DEVICE_OS_ANNOTATION.to_string(),
+            std::env::consts::OS.to_string(),
+        ),
+    ])
+}
+
+async fn patch_device_annotations(api: &Api<Connector>, connector: &mut Connector) {
+    let expected = device_annotations();
+    let current = connector.metadata.annotations.as_ref();
+    let needs_patch = expected.iter().any(|(k, v)| {
+        current
+            .and_then(|a| a.get(k))
+            .map(|cv| cv != v)
+            .unwrap_or(true)
+    });
+    if !needs_patch {
+        return;
+    }
+    let patch = json!({ "metadata": { "annotations": expected } });
+    match api
+        .patch(
+            &connector.name_any(),
+            &PatchParams::default(),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        Ok(patched) => *connector = patched,
+        Err(err) => {
+            warn!(
+                connector = %connector.name_any(),
+                "Failed to patch device annotations: {err:#}"
+            );
+        }
     }
 }
 

@@ -1,38 +1,26 @@
-use std::{
-    fmt::Debug,
-    net::SocketAddr,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
 use iroh::{
     Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
     protocol::Router,
 };
-use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_n0des::ApiSecret;
 use iroh_proxy_utils::{ALPN as IROH_HTTP_CONNECT_ALPN, HttpProxyRequest, HttpProxyRequestKind};
 use iroh_proxy_utils::{
     downstream::{DownstreamProxy, EndpointAuthority, ProxyMode},
     upstream::{AuthError, AuthHandler, UpstreamProxy},
 };
-use n0_error::{AnyError, Result, StackResultExt, StdResultExt, stack_error};
-use n0_future::{IterExt, StreamExt, task::AbortOnDropHandle};
+use iroh_relay::dns::{DnsProtocol, DnsResolver};
+use n0_error::{Result, StackResultExt, StdResultExt};
+use n0_future::task::AbortOnDropHandle;
 use tokio::{
     net::TcpListener,
     sync::{broadcast, futures::Notified},
     task::JoinHandle,
 };
-use tracing::{Instrument, debug, error, error_span, info, instrument, warn};
-use ttl_cache::TtlCache;
+use tracing::{Instrument, debug, error_span, info, instrument, warn};
 
-use crate::{
-    Advertisment, ProxyState, Repo, StateWrapper, TcpProxyData, config::Config,
-    state::AdvertismentTicket,
-};
-
-const TICKET_TTL: Duration = Duration::from_secs(30);
+use crate::{ProxyState, Repo, StateWrapper, TcpProxyData, config::Config};
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -59,7 +47,7 @@ pub struct ListenNode {
     router: Router,
     state: StateWrapper,
     repo: Repo,
-    n0des: Arc<iroh_n0des::Client>,
+    _n0des: Option<Arc<iroh_n0des::Client>>,
     metrics_tx: broadcast::Sender<MetricsUpdate>,
     _metrics_task: Arc<AbortOnDropHandle<()>>,
 }
@@ -71,12 +59,14 @@ impl ListenNode {
     }
 
     #[instrument("listen-node", skip_all)]
-    pub async fn with_n0des_api_secret(repo: Repo, n0des_api_secret: ApiSecret) -> Result<Self> {
+    pub async fn with_n0des_api_secret(
+        repo: Repo,
+        n0des_api_secret: Option<ApiSecret>,
+    ) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.listen_key().await?;
         let endpoint = build_endpoint(secret_key, &config).await?;
-        let n0des = build_n0des_client(&endpoint, n0des_api_secret).await?;
-
+        let n0des = build_n0des_client_opt(&endpoint, n0des_api_secret).await;
         let state = repo.load_state().await?;
 
         let upstream_proxy = UpstreamProxy::new(state.clone())?;
@@ -112,14 +102,13 @@ impl ListenNode {
         );
 
         let this = Self {
-            n0des,
             repo,
             router,
             state,
             metrics_tx,
             _metrics_task: Arc::new(AbortOnDropHandle::new(metrics_task)),
+            _n0des: n0des,
         };
-        this.announce_all().await;
         Ok(this)
     }
 
@@ -136,9 +125,8 @@ impl ListenNode {
     }
 
     pub fn proxies(&self) -> Vec<ProxyState> {
-        self.state.get().proxies.iter().cloned().collect()
+        self.state.get().proxies.to_vec()
     }
-
 
     pub fn proxy_by_id(&self, id: &str) -> Option<ProxyState> {
         self.state
@@ -153,9 +141,13 @@ impl ListenNode {
         self.state
             .update(&self.repo, |state| state.set_proxy(proxy.clone()))
             .await?;
-        if proxy.enabled {
-            self.announce_proxy(&proxy.info).await?;
-        }
+        Ok(())
+    }
+
+    pub async fn set_proxy_state(&self, proxy: ProxyState) -> Result<()> {
+        self.state
+            .update(&self.repo, |state| state.set_proxy(proxy))
+            .await?;
         Ok(())
     }
 
@@ -166,39 +158,17 @@ impl ListenNode {
             .update(&self.repo, move |state| state.remove_proxy(resource_id))
             .await;
         debug!(%resource_id, "removed {res:?}");
-        if let Err(err) = self
-            .n0des
-            .unpublish_ticket::<AdvertismentTicket>(resource_id.to_string())
-            .await
-        {
-            warn!(%resource_id, "Failed to unpublish ticket from n0des: {err:#}");
-        }
         res
     }
 
-    async fn announce_proxy(&self, proxy: &Advertisment) -> Result<()> {
-        let ticket = proxy.ticket(self.endpoint_id());
-        let name = ticket.data.resource_id.clone();
-        debug!(%name, ?proxy, "announce");
-        if let Err(err) = self.n0des.publish_ticket(name, ticket).await {
-            error!(?proxy, "Failed to publish ticket: {err:#}");
-            Err(err).anyerr()
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn announce_all(&self) {
-        let state = self.state.get();
-        let count = state
-            .proxies
-            .iter()
-            .filter(|proxy| proxy.enabled)
-            .map(async |proxy| self.announce_proxy(&proxy.info).await)
-            .into_unordered_stream()
-            .count()
+    pub async fn remove_proxy_state(&self, resource_id: &str) -> Result<Option<ProxyState>> {
+        debug!(%resource_id, "removing proxy state {resource_id}");
+        let res = self
+            .state
+            .update(&self.repo, move |state| state.remove_proxy(resource_id))
             .await;
-        debug!("announced {count} proxies");
+        debug!(%resource_id, "removed {res:?}");
+        res
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -212,11 +182,27 @@ impl ListenNode {
 
 impl StateWrapper {
     fn tcp_proxy_exists(&self, host: &str, port: u16) -> bool {
-        self.get()
-            .proxies
-            .iter()
-            .any(|a| a.enabled && a.info.service().host == host && a.info.service().port == port)
+        // Strip scheme from incoming host (e.g., "http://127.0.0.1" -> "127.0.0.1")
+        // The gateway may send the host with scheme, but local state stores without
+        let normalized_host = strip_host_scheme(host);
+        let exists = self.get().proxies.iter().any(|a| {
+            a.enabled && a.info.service().host == normalized_host && a.info.service().port == port
+        });
+        if !exists {
+            debug!(
+                requested_host = host,
+                normalized_host, port, "tcp_proxy_exists: no matching proxy found"
+            );
+        }
+        exists
     }
+}
+
+/// Strip scheme prefix from host (e.g., "http://127.0.0.1" -> "127.0.0.1")
+fn strip_host_scheme(host: &str) -> &str {
+    host.strip_prefix("http://")
+        .or_else(|| host.strip_prefix("https://"))
+        .unwrap_or(host)
 }
 
 impl AuthHandler for StateWrapper {
@@ -233,60 +219,52 @@ impl AuthHandler for StateWrapper {
                     Err(AuthError::Forbidden)
                 }
             }
-            HttpProxyRequestKind::Absolute { .. } => Err(AuthError::Forbidden),
+            HttpProxyRequestKind::Absolute { target, .. } => {
+                let target_str = target.to_string();
+                if let Some((host, port)) = parse_host_port_from_url(&target_str) {
+                    if self.tcp_proxy_exists(&host, port) {
+                        Ok(())
+                    } else {
+                        Err(AuthError::Forbidden)
+                    }
+                } else {
+                    debug!(%target, "failed to parse host:port from absolute URL");
+                    Err(AuthError::Forbidden)
+                }
+            }
         }
     }
 }
 
-#[derive(derive_more::Debug, Clone)]
-pub struct TicketClient {
-    n0des: Arc<iroh_n0des::Client>,
-    #[debug(skip)]
-    cache: Arc<Mutex<TtlCache<String, AdvertismentTicket>>>,
-}
+/// Parse host and port from an absolute URL (e.g., "http://localhost:5173/path")
+fn parse_host_port_from_url(url: &str) -> Option<(String, u16)> {
+    // Remove scheme
+    let without_scheme = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
 
-#[stack_error(derive)]
-pub enum FetchTicketError {
-    NotFound,
-    FailedToFetch(#[error(source)] AnyError),
-}
+    // Split off the path
+    let authority = without_scheme.split('/').next()?;
 
-impl TicketClient {
-    pub(crate) fn new(n0des: Arc<iroh_n0des::Client>) -> Self {
-        Self {
-            n0des,
-            cache: Arc::new(Mutex::new(TtlCache::new(1024))),
-        }
-    }
-
-    pub async fn get(&self, codename: &str) -> Result<AdvertismentTicket, FetchTicketError> {
-        if let Some(ticket) = self.cache.lock().expect("poisoned").get(codename) {
-            debug!(%codename, "ticket is cached");
-            Ok(ticket.clone())
+    // Split host and port
+    if let Some((host, port_str)) = authority.rsplit_once(':') {
+        let port = port_str.parse().ok()?;
+        Some((host.to_string(), port))
+    } else {
+        // Default ports
+        if url.starts_with("https://") {
+            Some((authority.to_string(), 443))
         } else {
-            debug!(%codename, "fetch ticket from n0des");
-            let ticket = self
-                .n0des
-                .fetch_ticket::<AdvertismentTicket>(codename.to_string())
-                .await
-                .map_err(|err| FetchTicketError::FailedToFetch(AnyError::from_std(err)))?
-                .map(|ticket| ticket.ticket)
-                .ok_or(FetchTicketError::NotFound)?;
-            self.cache.lock().expect("poisoned").insert(
-                codename.to_string(),
-                ticket.clone(),
-                TICKET_TTL,
-            );
-            Ok(ticket)
+            Some((authority.to_string(), 80))
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnectNode {
-    pub(crate) endpoint: Endpoint,
-    pub(crate) proxy: DownstreamProxy,
-    pub tickets: TicketClient,
+    endpoint: Endpoint,
+    proxy: DownstreamProxy,
+    _n0des: Option<Arc<iroh_n0des::Client>>,
 }
 
 impl ConnectNode {
@@ -296,32 +274,24 @@ impl ConnectNode {
     }
 
     #[instrument("connect-node", skip_all)]
-    pub async fn with_n0des_api_secret(repo: Repo, n0des_api_secret: ApiSecret) -> Result<Self> {
+    pub async fn with_n0des_api_secret(
+        repo: Repo,
+        n0des_api_secret: Option<ApiSecret>,
+    ) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.connect_key().await?;
         let endpoint = build_endpoint(secret_key, &config).await?;
-        let n0des = build_n0des_client(&endpoint, n0des_api_secret).await?;
-        let tickets = TicketClient::new(n0des);
+        let n0des = build_n0des_client_opt(&endpoint, n0des_api_secret).await;
         let pool = DownstreamProxy::new(endpoint.clone(), Default::default());
         Ok(Self {
             endpoint,
-            tickets,
+            _n0des: n0des,
             proxy: pool,
         })
     }
 
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint.id()
-    }
-
-    pub async fn connect_codename_and_bind_local(
-        &self,
-        codename: &str,
-        bind_addr: SocketAddr,
-    ) -> Result<OutboundProxyHandle> {
-        let ticket = self.tickets.get(codename).await?;
-        self.connect_and_bind_local(ticket.endpoint, ticket.service(), bind_addr)
-            .await
     }
 
     pub async fn connect_and_bind_local(
@@ -384,8 +354,9 @@ pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Re
         crate::config::DiscoveryMode::Dns => {
             Endpoint::empty_builder(default_relay_mode()).secret_key(secret_key)
         }
-        crate::config::DiscoveryMode::Default
-        | crate::config::DiscoveryMode::Hybrid => Endpoint::builder().secret_key(secret_key),
+        crate::config::DiscoveryMode::Default | crate::config::DiscoveryMode::Hybrid => {
+            Endpoint::builder().secret_key(secret_key)
+        }
     };
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);
@@ -416,17 +387,36 @@ pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Re
     Ok(endpoint)
 }
 
-pub(crate) fn n0des_api_secret_from_env() -> Result<ApiSecret> {
+pub(crate) fn n0des_api_secret_from_env() -> Result<Option<ApiSecret>> {
     let api_secret_str = match std::env::var("N0DES_API_SECRET") {
         Ok(s) => s,
         Err(_) => match option_env!("BUILD_N0DES_API_SECRET") {
-            None => n0_error::bail_any!("Missing env varable N0DES_API_SECRET"),
+            None => return Ok(None),
             Some(s) => s.to_string(),
         },
     };
     let api_secret = ApiSecret::from_str(&api_secret_str)
         .context("Failed to parse n0des API secret from env variable N0DES_API_SECRET")?;
-    Ok(api_secret)
+    Ok(Some(api_secret))
+}
+
+pub(crate) async fn build_n0des_client_opt(
+    endpoint: &Endpoint,
+    api_secret: Option<ApiSecret>,
+) -> Option<Arc<iroh_n0des::Client>> {
+    match api_secret {
+        None => {
+            info!("Disabling metrics collection: N0DES_API_SECRET is not set");
+            None
+        }
+        Some(n0des_api_secret) => match build_n0des_client(endpoint, n0des_api_secret).await {
+            Ok(client) => Some(client),
+            Err(err) => {
+                warn!("Disabling metrics collection: Failed to connect to n0des: {err:#}");
+                None
+            }
+        },
+    }
 }
 
 pub(crate) async fn build_n0des_client(
@@ -440,6 +430,6 @@ pub(crate) async fn build_n0des_client(
         .build()
         .await
         .std_context("Failed to connect to n0des endpoint")?;
-    info!(remote=%remote_id.fmt_short(), "connected to n0des endpoint");
+    info!(remote=%remote_id.fmt_short(), "Connected to n0des endpoint for metrics collection");
     Ok(Arc::new(client))
 }

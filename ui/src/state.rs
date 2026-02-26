@@ -1,8 +1,7 @@
 use dioxus::prelude::WritableExt;
 use lib::{
-    HeartbeatAgent, SelectedContext, TunnelSummary,
     datum_cloud::{ApiEnv, DatumCloudClient},
-    ListenNode, Node, ProjectControlPlaneClient, Repo, TunnelService,
+    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelService, TunnelSummary,
 };
 use tokio::sync::Notify;
 use tracing::info;
@@ -23,7 +22,7 @@ impl AppState {
         let repo = Repo::open_or_create(repo_path).await?;
         let (node, datum) = tokio::try_join! {
             Node::new(repo.clone()),
-            DatumCloudClient::with_repo(ApiEnv::Staging, repo)
+            DatumCloudClient::with_repo(ApiEnv::default(), repo)
         }?;
         let heartbeat = HeartbeatAgent::new(datum.clone(), node.listen.clone());
         heartbeat.start().await;
@@ -47,12 +46,6 @@ impl AppState {
 
     pub fn heartbeat(&self) -> &HeartbeatAgent {
         &self.heartbeat
-    }
-
-    pub async fn project_control_plane(
-        &self,
-    ) -> n0_error::Result<Option<ProjectControlPlaneClient>> {
-        self.datum.project_control_plane_client_active().await
     }
 
     pub fn listen_node(&self) -> &ListenNode {
@@ -112,8 +105,9 @@ impl AppState {
                 .map_or("<none>".to_string(), SelectedContext::label),
             "ui: setting selected context"
         );
-        self.datum.set_selected_context(selected_context.clone()).await?;
+        self.datum
+            .set_selected_context(selected_context.clone())
+            .await?;
         Ok(())
     }
-
 }

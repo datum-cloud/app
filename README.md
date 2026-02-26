@@ -2,6 +2,13 @@
 
 This repo is broken into 3 components, a CLI, GUI app, and shared-core library that the CLI & GUI draw on.
 
+### Download the app
+[![Download for macOS](https://img.shields.io/badge/Download-macOS-000000?logo=apple&logoColor=white)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum.dmg)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum-setup.exe)
+[![Download for Linux](https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum.AppImage)
+
+If a download fails, use the latest release page: https://github.com/datum-cloud/datum-connect/releases/latest
+
 
 ### Required Tools
 * For all three crates: [`rust & cargo`](https://rust-lang.org/tools/install/)
@@ -52,6 +59,8 @@ dig +norecurse @127.0.0.1 -p 53535 TXT _iroh.<z32>.datumconnect.test
 ```
 cargo run -p datum-connect -- gateway \
   --port 8080 \
+  --metrics-addr 127.0.0.1 \
+  --metrics-port 9090 \
   --mode forward \
   --discovery dns \
   --dns-origin datumconnect.test \
@@ -61,6 +70,7 @@ Discovery modes:
 - `default`: iroh defaults (n0 preset).
 - `dns`: only the provided DNS origin/resolver.
 - `hybrid`: default + custom DNS.
+- metrics endpoint: `GET http://127.0.0.1:9090/metrics` (when `--metrics-addr` or `--metrics-port` is set)
 ```
 
 #### 5) Send a CONNECT request
@@ -124,6 +134,8 @@ and run it via `cargo run -p datum-connect -- ...` (quote IPv6 addresses).
 export DATUM_CONNECT_REPO=$(pwd)/.datum-connect-dev
 cargo run -p datum-connect -- gateway \
   --port 8080 \
+  --metrics-addr 127.0.0.1 \
+  --metrics-port 9090 \
   --mode forward \
   --discovery dns \
   --dns-origin datumconnect.test \

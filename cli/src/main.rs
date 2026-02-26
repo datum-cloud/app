@@ -4,8 +4,8 @@ mod dns_dev;
 mod tunnel_dev;
 
 use lib::{
-    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, GatewayMode, ListenNode,
-    ProxyState, Repo, TcpProxyData,
+    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, ListenNode, ProxyState, Repo,
+    TcpProxyData,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
 use std::{
@@ -133,13 +133,9 @@ pub struct ConnectArgs {
     #[clap(long)]
     pub bind: SocketAddr,
 
-    /// three-word-name for a tunnel to connect to.
-    #[clap(long, conflicts_with = "ticket")]
-    pub codename: Option<String>,
-
     /// provide a ticket to drive connection directly.
     #[clap(long, conflicts_with = "codename")]
-    pub ticket: Option<AdvertismentTicket>,
+    pub ticket: AdvertismentTicket,
 }
 
 #[derive(Parser, Debug)]
@@ -148,9 +144,16 @@ pub struct ServeArgs {
     pub bind_addr: IpAddr,
     #[clap(long, default_value = "8080")]
     pub port: u16,
-    /// Gateway mode for reverse proxy (default) or forward proxy (CONNECT).
-    #[clap(long, value_enum)]
-    pub mode: Option<GatewayModeArg>,
+    /// Optional bind address for Prometheus metrics server.
+    #[clap(long)]
+    pub metrics_addr: Option<IpAddr>,
+    /// Optional port for Prometheus metrics server.
+    #[clap(long)]
+    pub metrics_port: Option<u16>,
+    /// Also listen on a Unix domain socket at this path (e.g. for Envoy to forward via UDS).
+    #[cfg(unix)]
+    #[clap(long)]
+    pub uds: Option<PathBuf>,
     /// Discovery mode for connection details.
     #[clap(long, value_enum)]
     pub discovery: Option<DiscoveryModeArg>,
@@ -178,7 +181,7 @@ pub enum DiscoveryModeArg {
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
     tracing_subscriber::fmt::init();
-    if let Some(path) = dotenv::dotenv().ok() {
+    if let Ok(path) = dotenv::dotenv() {
         info!("Loaded environment variables from {}", path.display());
     }
 
@@ -189,7 +192,7 @@ async fn main() -> n0_error::Result<()> {
 
     match args.command {
         Commands::List => {
-            let datum = DatumCloudClient::with_repo(ApiEnv::Staging, repo.clone()).await?;
+            let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
             let orgs = datum.orgs_and_projects().await?;
             for org in orgs {
                 println!("org: {} {}", org.org.resource_id, org.org.display_name);
@@ -201,7 +204,7 @@ async fn main() -> n0_error::Result<()> {
                 }
             }
 
-            println!("");
+            println!();
             let state = repo.load_state().await?;
             for p in state.get().proxies.iter() {
                 println!(
@@ -266,19 +269,8 @@ async fn main() -> n0_error::Result<()> {
             println!()
         }
         Commands::Connect(args) => {
-            let ConnectArgs {
-                bind,
-                codename,
-                ticket,
-            } = args;
+            let ConnectArgs { bind, ticket } = args;
             let node = ConnectNode::new(repo).await?;
-            let ticket = if let Some(codename) = codename {
-                node.tickets.get(&codename).await?
-            } else if let Some(ticket) = ticket {
-                ticket
-            } else {
-                n0_error::bail_any!("either --codename or --ticket is required");
-            };
 
             let handle = node
                 .connect_and_bind_local(ticket.endpoint, &ticket.data.data, bind)
@@ -295,14 +287,14 @@ async fn main() -> n0_error::Result<()> {
         }
         Commands::Gateway(args) => {
             let bind_addr: SocketAddr = (args.bind_addr, args.port).into();
+            let metrics_bind_addr = match (args.metrics_addr, args.metrics_port) {
+                (None, None) => None,
+                (Some(addr), Some(port)) => Some((addr, port).into()),
+                (Some(addr), None) => Some((addr, 9090).into()),
+                (None, Some(port)) => Some((args.bind_addr, port).into()),
+            };
             let secret_key = repo.gateway_key().await?;
             let mut config = repo.gateway_config().await?;
-            if let Some(mode) = args.mode {
-                config.gateway_mode = match mode {
-                    GatewayModeArg::Reverse => GatewayMode::Reverse,
-                    GatewayModeArg::Forward => GatewayMode::Forward,
-                };
-            }
             if let Some(discovery) = args.discovery {
                 config.common.discovery_mode = match discovery {
                     DiscoveryModeArg::Default => DiscoveryMode::Default,
@@ -316,9 +308,27 @@ async fn main() -> n0_error::Result<()> {
             if let Some(resolver) = args.dns_resolver {
                 config.common.dns_resolver = Some(resolver);
             }
+            #[cfg(unix)]
+            let uds_listener = if let Some(uds_path) = &args.uds {
+                if uds_path.exists() {
+                    std::fs::remove_file(uds_path)?;
+                }
+                let listener = tokio::net::UnixListener::bind(uds_path)?;
+                println!("UDS gateway at {}", uds_path.display());
+                Some(listener)
+            } else {
+                None
+            };
             println!("serving on port {bind_addr}");
             tokio::select! {
-                res = lib::gateway::bind_and_serve(secret_key, config, bind_addr) => res?,
+                res = lib::gateway::bind_and_serve(
+                    secret_key,
+                    config,
+                    bind_addr,
+                    metrics_bind_addr,
+                    #[cfg(unix)]
+                    uds_listener,
+                ) => res?,
                 _ = tokio::signal::ctrl_c() => {}
             }
         }
