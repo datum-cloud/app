@@ -20,9 +20,9 @@ use crate::datum_apis::http_proxy::{
     HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
 use crate::datum_apis::traffic_protection_policy::{
-    LocalPolicyTargetReferenceWithSectionName, TrafficProtectionPolicy,
+    LocalPolicyTargetReferenceWithSectionName, OWASPCRS, ParanoiaLevels, TrafficProtectionPolicy,
     TrafficProtectionPolicyMode, TrafficProtectionPolicyRuleSet,
-    TrafficProtectionPolicyRuleSetType, TrafficProtectionPolicySpec, OWASPCRS, ParanoiaLevels,
+    TrafficProtectionPolicyRuleSetType, TrafficProtectionPolicySpec,
 };
 use crate::datum_cloud::DatumCloudClient;
 use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
@@ -264,7 +264,8 @@ impl TunnelService {
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let client = pcp.client();
         let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
-        let ads: Api<ConnectorAdvertisement> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        let ads: Api<ConnectorAdvertisement> =
+            Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
 
         debug!(
             %project_id,
