@@ -30,20 +30,36 @@ pub async fn bind_and_serve(
     config: crate::config::GatewayConfig,
     tcp_bind_addr: SocketAddr,
     metrics_bind_addr: Option<SocketAddr>,
+    #[cfg(unix)] uds_listener: Option<UnixListener>,
 ) -> Result<()> {
     let listener = TcpListener::bind(tcp_bind_addr).await?;
     let endpoint = build_endpoint(secret_key, &config.common).await?;
-    serve_with_metrics(endpoint, listener, metrics_bind_addr).await
+    serve_with_metrics(
+        endpoint,
+        listener,
+        metrics_bind_addr,
+        #[cfg(unix)]
+        uds_listener,
+    )
+    .await
 }
 
 pub async fn serve(endpoint: Endpoint, listener: TcpListener) -> Result<()> {
-    serve_with_metrics(endpoint, listener, None).await
+    serve_with_metrics(
+        endpoint,
+        listener,
+        None,
+        #[cfg(unix)]
+        None,
+    )
+    .await
 }
 
 pub async fn serve_with_metrics(
     endpoint: Endpoint,
     listener: TcpListener,
     metrics_bind_addr: Option<SocketAddr>,
+    #[cfg(unix)] uds_listener: Option<UnixListener>,
 ) -> Result<()> {
     let tcp_bind_addr = listener.local_addr()?;
     info!(
@@ -52,11 +68,12 @@ pub async fn serve_with_metrics(
         "TCP proxy gateway started"
     );
 
-    // Use one shared metrics instance so both TCP and UDS listeners contribute
-    // to the same /metrics output in this process.
     let metrics = shared_gateway_metrics();
+    let proxy = DownstreamProxy::new(endpoint.clone(), Default::default());
+
     if let Some(metrics_bind_addr) = metrics_bind_addr {
-        let state = MetricsHttpState::new(endpoint.clone(), metrics.clone());
+        let state =
+            MetricsHttpState::new(endpoint.clone(), metrics.clone(), proxy.metrics().clone());
         tokio::spawn(async move {
             if let Err(err) = serve_metrics_http(metrics_bind_addr, state).await {
                 tracing::warn!(%err, "gateway metrics server failed");
@@ -64,9 +81,22 @@ pub async fn serve_with_metrics(
         });
     }
 
+    #[cfg(unix)]
+    if let Some(uds_listener) = uds_listener {
+        let uds_proxy = proxy.clone();
+        let uds_endpoint = endpoint.clone();
+        let uds_metrics = metrics.clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                serve_uds_with_proxy(uds_endpoint, uds_listener, uds_metrics, uds_proxy).await
+            {
+                tracing::warn!(%err, "UDS gateway task failed");
+            }
+        });
+    }
+
     let resolver_endpoint = endpoint.clone();
     let error_endpoint = endpoint.clone();
-    let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
         HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
             .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
@@ -74,9 +104,13 @@ pub async fn serve_with_metrics(
     proxy.forward_tcp_listener(listener, mode).await
 }
 
-/// Serves the gateway on a Unix Domain Socket.
 #[cfg(unix)]
-pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()> {
+async fn serve_uds_with_proxy(
+    endpoint: Endpoint,
+    listener: UnixListener,
+    metrics: Arc<GatewayMetrics>,
+    proxy: DownstreamProxy,
+) -> Result<()> {
     let uds_path = listener
         .local_addr()
         .ok()
@@ -87,31 +121,12 @@ pub async fn serve_uds(endpoint: Endpoint, listener: UnixListener) -> Result<()>
         "UDS proxy gateway started"
     );
 
-    let metrics = shared_gateway_metrics();
     let resolver_endpoint = endpoint.clone();
-    let error_endpoint = endpoint.clone();
-    let proxy = DownstreamProxy::new(endpoint, Default::default());
     let mode = ProxyMode::Http(
         HttpProxyOpts::new(HeaderResolver::new(resolver_endpoint, metrics.clone()))
-            .error_responder(ErrorResponseWriter::new(error_endpoint, metrics)),
+            .error_responder(ErrorResponseWriter::new(endpoint, metrics)),
     );
     proxy.forward_uds_listener(listener, mode).await
-}
-
-/// Binds the gateway to a Unix Domain Socket at `path` and serves.
-#[cfg(unix)]
-pub async fn bind_and_serve_uds(
-    secret_key: SecretKey,
-    config: crate::config::GatewayConfig,
-    path: impl AsRef<std::path::Path>,
-) -> Result<()> {
-    let path = path.as_ref();
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    let listener = UnixListener::bind(path)?;
-    let endpoint = build_endpoint(secret_key, &config.common).await?;
-    serve_uds(endpoint, listener).await
 }
 
 const HEADER_NODE_ID: &str = "x-iroh-endpoint-id";
