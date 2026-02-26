@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -141,6 +141,22 @@ jobs:
         working-directory: ./ui
         run: dx bundle --locked --desktop --release --package-types dmg
 
+      - name: Upload Debug Symbols to Sentry (macOS)
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            cargo binstall sentry-cli --force -y
+            sentry-cli debug-files upload --include-sources \
+              target/dx/Datum/release/macos/Datum.app/Contents/MacOS/
+          else
+            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload"
+          fi
+
       - name: Notarize macOS App
         if: runner.os == 'macOS' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         env:
@@ -190,6 +206,22 @@ jobs:
           NO_STRIP: true
         run: dx bundle --locked --desktop --release --package-types appimage
 
+      - name: Upload Debug Symbols to Sentry (Linux)
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            cargo binstall sentry-cli --force -y
+            sentry-cli debug-files upload --include-sources \
+              target/dx/Datum/release/linux/
+          else
+            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload"
+          fi
+
       - name: Update Cargo.lock
         if: runner.os == 'Windows'
         # Run from workspace root to update lock file for all workspace members
@@ -199,6 +231,23 @@ jobs:
         working-directory: ./ui
         if: runner.os == 'Windows'
         run: dx bundle --locked --desktop --release --package-types nsis
+
+      - name: Upload Debug Symbols to Sentry (Windows)
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        shell: pwsh
+        run: |
+          if ($env:SENTRY_AUTH_TOKEN) {
+            cargo binstall sentry-cli --force -y
+            sentry-cli debug-files upload --include-sources `
+              target/dx/Datum/release/windows/
+          } else {
+            Write-Host "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload"
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
