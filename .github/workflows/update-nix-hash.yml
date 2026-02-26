@@ -22,7 +22,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Update outputHashes in flake.nix
-        run: just update-nix-hash
+        run: |
+          rustc bin/update-nix-hash.rs -o /tmp/update-nix-hash
+          /tmp/update-nix-hash
 
       - name: Commit updated flake.nix
         uses: stefanzweifel/git-auto-commit-action@v5
