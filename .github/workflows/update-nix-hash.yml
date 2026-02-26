@@ -24,7 +24,7 @@ jobs:
       - name: Update outputHashes in flake.nix
         run: |
           rustc bin/update-nix-hash.rs -o /tmp/update-nix-hash
-          /tmp/update-nix-hash
+          /tmp/update-nix-hash --no-verify
 
       - name: Commit updated flake.nix
         uses: stefanzweifel/git-auto-commit-action@v5
