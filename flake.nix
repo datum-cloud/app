@@ -64,6 +64,7 @@
           ];
 
           cargoBuildFlags = [ "--workspace" ];
+          doCheck = false; # tests require network (iroh STUN/relay); run with `cargo test` locally
 
           meta = with pkgs.lib; {
             description = "Datum Connect - A tunneling solution built on iroh";
@@ -98,6 +99,7 @@
           ];
 
           cargoBuildFlags = [ "-p" "datum-connect" ];
+          doCheck = false; # tests require network (iroh STUN/relay); run with `cargo test` locally
 
           meta = with pkgs.lib; {
             description = "Datum Connect CLI";
