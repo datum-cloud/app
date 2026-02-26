@@ -142,7 +142,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types dmg
 
       - name: Upload Debug Symbols to Sentry (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: ${{ secrets.SENTRY_URL }}
@@ -207,7 +207,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types appimage
 
       - name: Upload Debug Symbols to Sentry (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: ${{ secrets.SENTRY_URL }}
@@ -233,7 +233,7 @@ jobs:
         run: dx bundle --locked --desktop --release --package-types nsis
 
       - name: Upload Debug Symbols to Sentry (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: ${{ secrets.SENTRY_URL }}
