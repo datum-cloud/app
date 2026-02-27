@@ -150,6 +150,18 @@
         };
 
         formatter = pkgs.nixpkgs-fmt;
+
+        apps.desktop = let
+          script = pkgs.writeShellScriptBin "desktop-app" ''
+            cd "$PWD/ui"
+            export DATUM_CONNECT_PUBLISH_TICKETS=1
+            export RUST_LOG=info,lib::heartbeat=debug,lib::tunnels=debug
+            exec ${pkgs.dioxus-cli}/bin/dx serve --platform desktop
+          '';
+        in {
+          type = "app";
+          program = "${script}/bin/desktop-app";
+        };
       }
     );
 }
