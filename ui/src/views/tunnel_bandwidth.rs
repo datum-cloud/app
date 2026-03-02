@@ -13,7 +13,7 @@ use crate::{
     Route,
 };
 
-const SAMPLING_INTERVAL: Duration = Duration::from_millis(500);
+const SAMPLING_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq)]
 struct RatePoint {
@@ -381,23 +381,37 @@ pub fn TunnelBandwidth(id: String) -> Element {
     }
 }
 
+/// Format a byte value for the Y-axis so all labels use the same unit (B or KB).
+fn format_axis_bytes(val: u64, max_v: f64) -> String {
+    if val == 0 {
+        return "0 B".to_string();
+    }
+    if max_v >= 1024.0 {
+        let kb = val as f64 / 1024.0;
+        format!("{:.1} KB", kb)
+    } else {
+        format!("{} B", val)
+    }
+}
+
 #[component]
 fn BandwidthChart(points: Vec<RatePoint>) -> Element {
-    // Render with a fixed viewBox but scale to the container width to avoid overflow.
-    // Give the left axis more room so labels don't get clipped.
+    // Fixed viewBox; SVG scales to container. Left padding gives Y-axis labels room so they don't clip.
     let width = 860.0;
     let height = 400.0;
-    let padding_x = 52.0;
+    let padding_x = 76.0;
     let padding_y = 22.0;
     let w = width - padding_x * 2.0;
     let h = height - padding_y * 2.0;
 
+    // Data max; use a minimum display scale so the Y-axis doesn't collapse to "0 B" everywhere when idle.
     let max_v = points
         .iter()
         .map(|p| p.send_per_s.max(p.recv_per_s))
         .max()
         .unwrap_or(0)
         .max(1) as f64;
+    let display_max = max_v.max(10.0);
 
     #[derive(Clone, Copy)]
     struct Pt {
@@ -461,7 +475,7 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
             .map(|(i, p)| {
                 let x = (i as f64 / (points.len().saturating_sub(1).max(1) as f64)) * w;
                 let v = get(p) as f64;
-                let y = h - (v / max_v * h);
+                let y = h - (v / display_max * h);
                 Pt { x, y }
             })
             .collect();
@@ -486,13 +500,14 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
     let send_color = "#BF9595";
     let recv_color = "#4D6356";
 
-    let y_ticks = 2;
+    // Y-axis ticks: use display_max so idle (max_v < 10) still shows distinct labels (e.g. 10, 7, 5, 2, 0 B).
+    let y_ticks = 4;
     let mut y_labels = Vec::new();
     for i in 0..=y_ticks {
         let frac = i as f64 / y_ticks as f64;
         let y = padding_y + frac * h;
-        let val = ((1.0 - frac) * max_v) as u64;
-        y_labels.push((humanize_bytes(val), y));
+        let val = ((1.0 - frac) * display_max) as u64;
+        y_labels.push((format_axis_bytes(val, display_max), y));
     }
 
     rsx! {
@@ -548,7 +563,7 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                     stroke: "none",
                 }
 
-                // grid + y labels
+                // grid + y labels (text_anchor end = right edge of text at x; dominant-baseline = align with line)
                 for (label , y) in y_labels {
                     line {
                         x1: "{padding_x}",
@@ -560,11 +575,12 @@ fn BandwidthChart(points: Vec<RatePoint>) -> Element {
                         stroke_dasharray: "10 10",
                     }
                     text {
-                        x: "{padding_x - 12.0}",
-                        y: "{y + 4.0}",
+                        x: "{padding_x - 8.0}",
+                        y: "{y}",
                         text_anchor: "end",
-                        font_size: "17",
-                        fill: "#94a3b8",
+                        dominant_baseline: "middle",
+                        font_size: "15",
+                        fill: "#64748b",
                         "{label}"
                     }
                 }
