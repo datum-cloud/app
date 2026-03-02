@@ -111,10 +111,10 @@ pub fn TunnelBandwidth(id: String) -> Element {
                     break;
                 };
 
-                let tunnel_metric = metrics.get(&authority).unwrap_or_default();
-
-                let send = tunnel_metric.bytes_from_origin();
-                let recv = tunnel_metric.bytes_to_origin();
+                let (send, recv) = match metrics.get(&authority) {
+                    Some(m) => (m.bytes_from_origin(), m.bytes_to_origin()),
+                    None => (0, 0),
+                };
 
                 // First metric just initializes the baseline.
                 let now = std::time::Instant::now();

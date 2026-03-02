@@ -5,7 +5,7 @@ use iroh::{
     protocol::Router,
 };
 use iroh_n0des::ApiSecret;
-use iroh_proxy_utils::upstream::Metrics;
+use iroh_proxy_utils::upstream::UpstreamMetrics;
 use iroh_proxy_utils::{
     ALPN as IROH_HTTP_CONNECT_ALPN, Authority, HttpProxyRequest, HttpProxyRequestKind,
 };
@@ -45,7 +45,7 @@ pub struct ListenNode {
     router: Router,
     state: StateWrapper,
     repo: Repo,
-    metrics: Arc<Metrics>,
+    metrics: Arc<UpstreamMetrics>,
     _n0des: Option<Arc<iroh_n0des::Client>>,
 }
 
@@ -91,7 +91,7 @@ impl ListenNode {
         &self.state
     }
 
-    pub fn metrics(&self) -> &Arc<Metrics> {
+    pub fn metrics(&self) -> &Arc<UpstreamMetrics> {
         &self.metrics
     }
 
