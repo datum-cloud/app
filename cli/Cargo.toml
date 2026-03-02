@@ -20,3 +20,5 @@ hickory-server = "0.25.2"
 hickory-proto = "0.25.2"
 iroh-base.workspace = true
 z32 = "1.0.3"
+rand.workspace = true
+sentry.workspace = true
