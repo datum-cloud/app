@@ -3,7 +3,6 @@
 //! component  to be used in our app.
 
 mod add_tunnel_dialog;
-mod bandwidth_timeseries_chart;
 mod button;
 mod delete_tunnel_dialog;
 mod head;
