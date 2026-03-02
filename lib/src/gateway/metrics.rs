@@ -9,31 +9,9 @@ use std::{
 use axum::{Router, extract::State, routing::get};
 use hyper::http::header;
 use iroh::Endpoint;
-use iroh_metrics::{Counter, MetricsGroup, Registry};
+use iroh_metrics::Registry;
+use iroh_proxy_utils::downstream::DownstreamMetrics;
 use n0_error::Result;
-
-/// Local stand-in for downstream proxy metrics when using iroh-proxy-utils
-/// branches that do not expose DownstreamMetrics (e.g. feat/metrics).
-#[derive(Debug, MetricsGroup)]
-#[metrics(name = "proxy-downstream", default)]
-pub(super) struct DownstreamMetrics {
-    pub requests_accepted: Counter,
-    pub requests_accepted_tcp: Counter,
-    pub requests_accepted_h1: Counter,
-    pub requests_accepted_h2: Counter,
-    pub requests_accepted_h1_connect: Counter,
-    pub requests_accepted_h1_upgrade: Counter,
-    pub requests_accepted_h2_connect: Counter,
-    pub requests_accepted_h2_extended_connect: Counter,
-    pub requests_denied: Counter,
-    pub requests_completed: Counter,
-    pub requests_failed: Counter,
-    pub iroh_connections_opened: Counter,
-    pub iroh_connections_closed_idle: Counter,
-    pub iroh_connections_closed_error: Counter,
-    pub bytes_to_upstream: Counter,
-    pub bytes_from_upstream: Counter,
-}
 use tokio::net::TcpListener;
 use tracing::info;
 
