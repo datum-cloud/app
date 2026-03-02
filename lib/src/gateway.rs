@@ -73,8 +73,7 @@ pub async fn serve_with_metrics(
 
     if let Some(metrics_bind_addr) = metrics_bind_addr {
         let downstream_metrics = Arc::new(self::metrics::DownstreamMetrics::default());
-        let state =
-            MetricsHttpState::new(endpoint.clone(), metrics.clone(), downstream_metrics);
+        let state = MetricsHttpState::new(endpoint.clone(), metrics.clone(), downstream_metrics);
         tokio::spawn(async move {
             if let Err(err) = serve_metrics_http(metrics_bind_addr, state).await {
                 tracing::warn!(%err, "gateway metrics server failed");
