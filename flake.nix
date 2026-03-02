@@ -1,0 +1,167 @@
+{
+  description = "Dioxus development environment";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs {
+          inherit system overlays;
+        };
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
+        # Platform-specific packages
+        darwinPackages = with pkgs; lib.optionals stdenv.isDarwin [
+          apple-sdk_15
+        ];
+
+        linuxPackages = with pkgs; lib.optionals stdenv.isLinux [
+          # For web/desktop rendering
+          webkitgtk
+          gtk3
+          libsoup
+          # X11 dependencies
+          xorg.libX11
+          xorg.libXcursor
+          xorg.libXrandr
+          xorg.libXi
+        ];
+
+      in
+      {
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "datum-connect";
+          version = "0.1.0";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "iroh-proxy-utils-0.1.0" = "sha256-ZV71q22zCWBqFdrc0jzkwyQdVc/H0r0BBB6dKrNARr8=";
+              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
+            };
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+          ] ++ lib.optionals stdenv.isDarwin [
+            libiconv
+          ];
+
+          cargoBuildFlags = [ "--workspace" ];
+          doCheck = false; # tests require network (iroh STUN/relay); run with `cargo test` locally
+
+          meta = with pkgs.lib; {
+            description = "Datum Connect - A tunneling solution built on iroh";
+            homepage = "https://github.com/datum-cloud/datum-connect";
+            license = licenses.agpl3Only;
+            maintainers = [ ];
+          };
+        };
+
+        packages.cli = pkgs.rustPlatform.buildRustPackage {
+          pname = "datum-connect-cli";
+          version = "0.1.0";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "iroh-proxy-utils-0.1.0" = "sha256-ZV71q22zCWBqFdrc0jzkwyQdVc/H0r0BBB6dKrNARr8=";
+              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
+            };
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+          ] ++ lib.optionals stdenv.isDarwin [
+            libiconv
+          ];
+
+          cargoBuildFlags = [ "-p" "datum-connect" ];
+          doCheck = false; # tests require network (iroh STUN/relay); run with `cargo test` locally
+
+          meta = with pkgs.lib; {
+            description = "Datum Connect CLI";
+            mainProgram = "datum-connect";
+          };
+        };
+
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            # Rust toolchain with WASM support
+            rustToolchain
+
+            # Dioxus CLI for hot reloading and bundling
+            dioxus-cli
+
+            # Build tools
+            pkg-config
+            openssl
+
+            # npm
+            nodejs
+
+            # For serving web apps locally
+            simple-http-server
+
+            # Useful tools
+            cargo-watch
+            cargo-edit
+          ] ++ darwinPackages ++ linuxPackages;
+
+          # Environment variables
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+
+          # For OpenSSL on macOS
+          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+
+          shellHook = ''
+            echo "🚀 Dioxus development environment loaded"
+            echo "  rustc: $(rustc --version)"
+            echo "  cargo: $(cargo --version)"
+            echo "  dx: $(dx --version 2>/dev/null || echo 'not found')"
+            echo ""
+            echo "Quick start:"
+            echo "  dx new myapp      # Create new project"
+            echo "  dx serve          # Start dev server with hot reload"
+            echo "  dx build --release # Build for production"
+          '';
+        };
+
+        formatter = pkgs.nixpkgs-fmt;
+
+        apps.desktop = let
+          script = pkgs.writeShellScriptBin "desktop-app" ''
+            cd "$PWD/ui"
+            export DATUM_CONNECT_PUBLISH_TICKETS=1
+            export RUST_LOG=info,lib::heartbeat=debug,lib::tunnels=debug
+            exec ${pkgs.dioxus-cli}/bin/dx serve --platform desktop
+          '';
+        in {
+          type = "app";
+          program = "${script}/bin/desktop-app";
+        };
+      }
+    );
+}

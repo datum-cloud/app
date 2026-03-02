@@ -11,9 +11,9 @@ use lib::{
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 use tracing::info;
+use tracing_subscriber::prelude::*;
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
@@ -181,10 +181,28 @@ pub enum DiscoveryModeArg {
 
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(sentry::integrations::tracing::layer())
+        .init();
     if let Ok(path) = dotenv::dotenv() {
         info!("Loaded environment variables from {}", path.display());
     }
+
+    let _sentry_guard = sentry::init(sentry::ClientOptions {
+        dsn: std::env::var("SENTRY_DSN")
+            .ok()
+            .and_then(|s| s.parse().ok()),
+        release: sentry::release_name!(),
+        send_default_pii: true,
+        before_send: Some(std::sync::Arc::new(|event| match event.level {
+            sentry::Level::Error | sentry::Level::Fatal => Some(event),
+            _ if rand::random::<f64>() < 0.1 => Some(event),
+            _ => None,
+        })),
+        traces_sample_rate: 0.1,
+        ..Default::default()
+    });
 
     let args = Args::parse();
 
@@ -310,20 +328,26 @@ async fn main() -> n0_error::Result<()> {
                 config.common.dns_resolver = Some(resolver);
             }
             #[cfg(unix)]
-            if let Some(uds_path) = &args.uds {
-                let sk = secret_key.clone();
-                let cfg = config.clone();
-                let path = uds_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = lib::gateway::bind_and_serve_uds(sk, cfg, path).await {
-                        tracing::warn!(%e, "UDS gateway task failed");
-                    }
-                });
+            let uds_listener = if let Some(uds_path) = &args.uds {
+                if uds_path.exists() {
+                    std::fs::remove_file(uds_path)?;
+                }
+                let listener = tokio::net::UnixListener::bind(uds_path)?;
                 println!("UDS gateway at {}", uds_path.display());
-            }
+                Some(listener)
+            } else {
+                None
+            };
             println!("serving on port {bind_addr}");
             tokio::select! {
-                res = lib::gateway::bind_and_serve(secret_key, config, bind_addr, metrics_bind_addr) => res?,
+                res = lib::gateway::bind_and_serve(
+                    secret_key,
+                    config,
+                    bind_addr,
+                    metrics_bind_addr,
+                    #[cfg(unix)]
+                    uds_listener,
+                ) => res?,
                 _ = tokio::signal::ctrl_c() => {}
             }
         }

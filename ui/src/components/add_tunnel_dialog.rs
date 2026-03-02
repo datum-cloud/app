@@ -174,19 +174,20 @@ pub fn AddTunnelDialog(
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
-                    div { class: "flex flex-col gap-2",
-                        div { class: "flex items-center justify-between",
-                            label { class: "text-xs text-form-label/90", "Basic authentication" }
-                            Switch {
-                                checked: basic_auth_enabled(),
-                                on_checked_change: move |checked| basic_auth_enabled.set(checked),
-                                SwitchThumb {}
-                            }
-                        }
-                        div { class: "text-1xs text-form-description",
-                            "We'll automatically generate a username and password for you."
-                        }
-                    }
+                    // TODO: Add basic authentication
+                    // div { class: "flex flex-col gap-2",
+                    //     div { class: "flex items-center justify-between",
+                    //         label { class: "text-xs text-form-label/90", "Basic authentication" }
+                    //         Switch {
+                    //             checked: basic_auth_enabled(),
+                    //             on_checked_change: move |checked| basic_auth_enabled.set(checked),
+                    //             SwitchThumb {}
+                    //         }
+                    //     }
+                    //     div { class: "text-1xs text-form-description",
+                    //         "We'll automatically generate a username and password for you."
+                    //     }
+                    // }
                     if let Some(err) = save_tunnel
                         .value()
                         .and_then(|r| r.err())

@@ -951,6 +951,9 @@
   .pt-2 {
     padding-top: calc(var(--spacing) * 2);
   }
+  .pb-12 {
+    padding-bottom: calc(var(--spacing) * 12);
+  }
   .pb-48 {
     padding-bottom: calc(var(--spacing) * 48);
   }

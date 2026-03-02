@@ -49,7 +49,7 @@ pub fn Chrome() -> Element {
     rsx! {
         div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
             AppHeader { add_tunnel_dialog_open, invite_user_dialog_open }
-            div { class: "flex-1 min-h-0 overflow-y-auto py-4 px-4 w-full mx-auto max-w-4xl bg-content-background",
+            div { class: "flex-1 min-h-0 overflow-y-auto py-4 px-4 w-full mx-auto max-w-4xl bg-content-background pb-12",
                 Outlet::<Route> {}
             }
             AddTunnelDialog {
@@ -351,7 +351,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
                                     DropdownMenuSeparator {}
                                     div { class: "px-2 py-1",
                                         div { class: "text-[10px] text-foreground/40 text-left",
-                                            "v{env!(\"CARGO_PKG_VERSION\")} (beta)"
+                                            "v{env!(\"CARGO_PKG_VERSION\")}"
                                         }
                                     }
                                 }

@@ -1,0 +1,33 @@
+name: Update nix hashes
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+
+jobs:
+  update-nix-hash:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Update outputHashes in flake.nix
+        run: |
+          rustc bin/update-nix-hash.rs -o /tmp/update-nix-hash
+          /tmp/update-nix-hash --no-verify
+
+      - name: Commit updated flake.nix
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update nix outputHashes"
+          file_pattern: flake.nix
