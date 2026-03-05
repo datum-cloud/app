@@ -341,9 +341,10 @@ jobs:
 
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/datum-cloud/homebrew-tap.git tap
           mkdir -p tap/Casks
+          rm -f tap/Casks/datum.rb
 
-          cat > tap/Casks/datum.rb <<RUBY
-          cask "datum" do
+          cat > tap/Casks/desktop.rb <<RUBY
+          cask "desktop" do
             version "${VERSION}"
             sha256 "${DMG_SHA}"
 
@@ -361,6 +362,6 @@ jobs:
           cd tap
           git config user.name "Datum Release Bot"
           git config user.email "releases@datum.net"
-          git add Casks/datum.rb
-          git diff --cached --quiet || git commit -m "Brew cask update for Datum version ${TAG}"
+          git add Casks/desktop.rb Casks/datum.rb
+          git diff --cached --quiet || git commit -m "Brew cask update for Datum Desktop version ${TAG}"
           git push
