@@ -7,7 +7,7 @@ use crate::components::icon::{Icon, IconSource};
 
 /// Dark backdrop when dropdown is open (same style as dialog). Only visible when using controlled `open` state.
 const BACKDROP_CLASS: &str =
-    "fixed inset-0 bg-foreground/30 mt-[32px] z-40 rounded-b-md animate-in fade-in duration-100";
+    "fixed inset-0 mt-[32px] z-40 rounded-b-md animate-in fade-in duration-100";
 
 #[component]
 pub fn DropdownMenu(props: DropdownMenuProps) -> Element {
@@ -89,10 +89,15 @@ pub struct DropdownMenuItemProps<T: Clone + PartialEq + 'static> {
 pub fn DropdownMenuItem<T: Clone + PartialEq + 'static>(
     props: DropdownMenuItemProps<T>,
 ) -> Element {
-    let item_class = if props.destructive {
+    let base_class = if props.destructive {
         ITEM_DESTRUCTIVE_CLASS
     } else {
         ITEM_CLASS
+    };
+    let item_class = if (props.disabled)() {
+        format!("{base_class} opacity-50")
+    } else {
+        base_class.to_string()
     };
     let mut attrs = vec![Attribute::new("class", item_class, None, false)];
     attrs.extend(props.attributes);

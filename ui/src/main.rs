@@ -28,6 +28,13 @@ mod views;
 
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
+/// Context for manual update check: trigger starts a check, in_progress is true while checking.
+#[derive(Clone)]
+pub struct UpdateCheckContext {
+    pub trigger: Signal<bool>,
+    pub in_progress: Signal<bool>,
+}
+
 // Assets for favicons
 const FAVICON_DARK_196: Asset = asset!("/assets/icons/favicon-dark-196x196.png");
 const FAVICON_LIGHT_196: Asset = asset!("/assets/icons/favicon-light-196x196.png");
@@ -103,7 +110,7 @@ fn main() {
             .with_inner_size(LogicalSize::new(630, 600)) // default width, height (logical pixels)
             .with_min_inner_size(LogicalSize::new(630, 600)) // prevent resizing smaller
             .with_decorations(true)
-            .with_transparent(true)
+            .with_transparent(cfg!(target_os = "macos"))
             .with_window_icon(Some(window_icon()));
 
         // macOS-specific window options
@@ -150,23 +157,55 @@ fn init_tracing() {
         .init();
 }
 
+/// Custom title bar (drag region + favicon) shown only on macOS; empty on Windows/Linux which use the native title bar.
+#[component]
+fn TitleBar() -> Element {
+    #[cfg(target_os = "macos")]
+    {
+        rsx! {
+            div {
+                class: "h-[32px] flex items-center pl-20 bg-background z-50 cursor-default",
+                onmousedown: move |_| {
+                    #[cfg(feature = "desktop")]
+                    {
+                        use_window().drag();
+                    }
+                },
+                img {
+                    src: "{FAVICON_DARK_196}",
+                    class: "w-6 h-6 ml-auto mr-2 dark:hidden",
+                }
+                img {
+                    src: "{FAVICON_LIGHT_196}",
+                    class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 #[component]
 fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
     let mut update_dialog_open = use_signal(|| false);
     let update_info = use_signal(|| None::<lib::UpdateInfo>);
     let mut manual_update_check = use_signal(|| false);
+    let mut update_check_in_progress = use_signal(|| false);
 
     // Poll for macOS menu bar update check flag
     #[cfg(all(feature = "desktop", target_os = "macos"))]
     {
         use_future(move || {
             let mut manual_update_check = manual_update_check;
+            let mut update_check_in_progress = update_check_in_progress;
             async move {
                 loop {
                     // Check the atomic flag
                     if MANUAL_UPDATE_CHECK_FLAG.swap(false, std::sync::atomic::Ordering::Acquire) {
                         manual_update_check.set(true);
+                        update_check_in_progress.set(true);
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
@@ -197,6 +236,7 @@ fn App() -> Element {
         let mut update_dialog_open = update_dialog_open;
         let mut update_info = update_info;
         let mut manual_update_check = manual_update_check;
+        let mut update_check_in_progress = update_check_in_progress;
         async move {
             // Wait for app state to be ready
             while !app_state_ready() {
@@ -235,6 +275,7 @@ fn App() -> Element {
                         update_info.set(Some(info));
                         update_dialog_open.set(true);
                     }
+                    update_check_in_progress.set(false);
                 }
 
                 // Periodic update check (every 12 hours)
@@ -277,6 +318,7 @@ fn App() -> Element {
             }
             "Check for Updates..." => {
                 manual_update_check.set(true);
+                update_check_in_progress.set(true);
                 ()
             }
             "Quit" => {
@@ -317,29 +359,15 @@ fn App() -> Element {
         }
     });
 
-    // Provide manual update check trigger for Settings page
-    provide_context(manual_update_check);
+    // Provide manual update check trigger and in-progress state for Settings page
+    provide_context(UpdateCheckContext {
+        trigger: manual_update_check,
+        in_progress: update_check_in_progress,
+    });
 
     rsx! {
         div { class: "theme-alpha",
-            div {
-                class: "h-[32px] flex items-center pl-20 bg-background z-50 cursor-default",
-                onmousedown: move |_| {
-                    #[cfg(feature = "desktop")]
-                    {
-                        use_window().drag();
-                    }
-                },
-                // Show light favicon in dark mode (when .dark class is present), dark favicon in light mode
-                img {
-                    src: "{FAVICON_DARK_196}",
-                    class: "w-6 h-6 ml-auto mr-2 dark:hidden",
-                }
-                img {
-                    src: "{FAVICON_LIGHT_196}",
-                    class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
-                }
-            }
+            TitleBar {}
             div { class: "flex-1 overflow-hidden",
                 Head {}
                 Router::<Route> {}

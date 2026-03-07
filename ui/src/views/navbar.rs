@@ -198,10 +198,18 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
             .unwrap_or_default()
     };
 
+    // Disable Invite when org is Personal (matches web app: org?.type === 'Personal')
+    let invite_disabled = use_memo(move || {
+        !selected_context
+            .read()
+            .as_ref()
+            .map_or(false, |c| c.can_send_invite())
+    });
+
     rsx! {
         // App header bar - below titlebar, contains Add tunnel button and user menu
-        div { class: "shrink-0 bg-background border-b border-app-border flex items-center w-full mx-auto border-t",
-            div { class: "max-w-4xl mx-auto flex items-center justify-between w-full p-4",
+        div { class: "shrink-0 bg-background border-b border-app-border flex items-center w-full mx-auto",
+            div { class: "max-w-4xl mx-auto flex items-center justify-between w-full px-4 py-3",
                 // Left side: Add tunnel button
                 if auth_state.get().is_ok() && selected_context.read().is_some() {
                     Button {
@@ -221,11 +229,13 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
                                 default_open: false,
                                 on_open_change: move |v| profile_menu_open.set(Some(v)),
                                 disabled: use_signal(|| false),
-                                DropdownMenuTrigger { class: "flex items-center gap-2 cursor-default focus:outline-2 focus:outline-app-border/50 hover:opacity-80 transition-opacity",
+                                DropdownMenuTrigger {
+                                    class: "flex items-center gap-2 cursor-default focus:outline-none hover:opacity-80 transition-opacity",
+                                    tabindex: "-1",
                                     span { class: "text-sm text-foreground font-medium",
                                         "{user_name}"
                                     }
-                                    div { class: "w-10 h-10 rounded-lg border border-app-border bg-white flex items-center justify-center overflow-hidden shrink-0",
+                                    div { class: "w-[37px] h-[37px] rounded-lg border border-app-border bg-white flex items-center justify-center overflow-hidden shrink-0",
                                         if let Some(avatar_url) = user_avatar_url.as_ref() {
                                             img {
                                                 src: "{avatar_url}",
@@ -307,7 +317,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
                                     DropdownMenuItem::<String> {
                                         value: use_signal(|| "invite".to_string()),
                                         index: use_signal(|| 2),
-                                        disabled: use_signal(|| false),
+                                        disabled: invite_disabled,
                                         on_select: move |_| {
                                             profile_menu_open.set(Some(false));
                                             invite_user_dialog_open.set(true);
