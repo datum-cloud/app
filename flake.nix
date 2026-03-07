@@ -37,6 +37,11 @@
           xorg.libXi
         ];
 
+        cargoOutputHashes = {
+          "iroh-proxy-utils-0.1.0" = "sha256-gBEL8FiUhHZ6fI4R/EmngZp+eUR/PcwHYYby9YpIUk8=";
+          "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
+        };
+
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -47,10 +52,7 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            outputHashes = {
-              "iroh-proxy-utils-0.1.0" = "sha256-gBEL8FiUhHZ6fI4R/EmngZp+eUR/PcwHYYby9YpIUk8=";
-              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
-            };
+            outputHashes = cargoOutputHashes;
           };
 
           nativeBuildInputs = with pkgs; [
@@ -82,10 +84,7 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            outputHashes = {
-              "iroh-proxy-utils-0.1.0" = "sha256-gBEL8FiUhHZ6fI4R/EmngZp+eUR/PcwHYYby9YpIUk8=";
-              "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
-            };
+            outputHashes = cargoOutputHashes;
           };
 
           nativeBuildInputs = with pkgs; [
