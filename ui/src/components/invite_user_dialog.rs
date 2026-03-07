@@ -7,20 +7,20 @@ use lib::datum_cloud::RoleSummary;
 
 use crate::{
     components::{
-        Button, ButtonKind, IconSource, dialog::{DialogContent, DialogRoot, DialogTitle}, input::Input, select::{
-            Select, SelectGroup, SelectItemIndicator, SelectList,
-            SelectOptionItem, SelectTrigger, SelectValue,
-        }
+        dialog::{DialogContent, DialogRoot, DialogTitle},
+        input::Input,
+        select::{
+            Select, SelectGroup, SelectItemIndicator, SelectList, SelectOptionItem, SelectTrigger,
+            SelectValue,
+        },
+        Button, ButtonKind, IconSource,
     },
     state::AppState,
 };
 
 /// Label for the role in the UI; matches web app: annotations["kubernetes.io/display-name"] ?? displayName ?? name.
 fn role_display_label(r: &RoleSummary) -> String {
-    r.display_name
-        .as_deref()
-        .unwrap_or(&r.name)
-        .to_string()
+    r.display_name.as_deref().unwrap_or(&r.name).to_string()
 }
 
 /// Description for the role dropdown; uses API description or a fallback for common roles.
@@ -123,29 +123,29 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
     // Select expects value: ReadSignal<Option<Option<T>>>
     let select_role_value = use_memo(move || Some(selected_role_name()));
 
-    let mut invite_user = use_action(move |(email_value, role_ref): (String, Option<RoleReference>)| async move {
-        let state = consume_context::<AppState>();
-        let ctx = state
-            .selected_context()
-            .context("No org selected")?;
-        if !ctx.can_send_invite() {
-            n0_error::bail_any!("Invitations are not available for personal organizations");
-        }
+    let mut invite_user = use_action(
+        move |(email_value, role_ref): (String, Option<RoleReference>)| async move {
+            let state = consume_context::<AppState>();
+            let ctx = state.selected_context().context("No org selected")?;
+            if !ctx.can_send_invite() {
+                n0_error::bail_any!("Invitations are not available for personal organizations");
+            }
 
-        state
-            .datum()
-            .create_user_invitation_org(
-                &ctx.org_id,
-                email_value.trim(),
-                None,
-                None,
-                role_ref.map(|r| vec![r]),
-            )
-            .await
-            .context("Failed to send invitation")?;
+            state
+                .datum()
+                .create_user_invitation_org(
+                    &ctx.org_id,
+                    email_value.trim(),
+                    None,
+                    None,
+                    role_ref.map(|r| vec![r]),
+                )
+                .await
+                .context("Failed to send invitation")?;
 
-        n0_error::Ok(())
-    });
+            n0_error::Ok(())
+        },
+    );
 
     // Show success view when invite completes successfully; cleared when dialog closes
     use_effect(move || {
@@ -154,7 +154,8 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
         }
     });
 
-    let invite_success = show_success() && invite_user.value().as_ref().map_or(false, Result::is_ok);
+    let invite_success =
+        show_success() && invite_user.value().as_ref().map_or(false, Result::is_ok);
     let state_for_team_url = state.clone();
     let team_url = use_memo(move || {
         invite_user.value().as_ref().filter(|r| r.is_ok())?;

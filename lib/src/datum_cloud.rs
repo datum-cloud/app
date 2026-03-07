@@ -141,7 +141,6 @@ impl DatumCloudClient {
             )
             .await?;
 
-   
         parse_role_list(&json).context("Failed to parse roles list")
     }
 
@@ -167,10 +166,7 @@ impl DatumCloudClient {
             .map(|r| {
                 r.iter()
                     .map(|ref_| {
-                        let ns = ref_
-                            .namespace
-                            .as_deref()
-                            .unwrap_or("milo-system");
+                        let ns = ref_.namespace.as_deref().unwrap_or("milo-system");
                         serde_json::json!({ "name": ref_.name, "namespace": ns })
                     })
                     .collect()
@@ -298,11 +294,7 @@ impl DatumCloudClient {
         self.fetch_direct(&url).await
     }
 
-    async fn post_json(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<()> {
+    async fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<()> {
         tracing::debug!("POST {url}");
 
         let auth_state = self.auth.load_refreshed().await?;

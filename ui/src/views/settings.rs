@@ -1,8 +1,7 @@
 use crate::{
     components::{input::Input, Button, ButtonKind, Icon, IconSource},
     state::AppState,
-    UpdateCheckContext,
-    Route,
+    Route, UpdateCheckContext,
 };
 use dioxus::prelude::*;
 use open::that;
