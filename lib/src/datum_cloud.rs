@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use chrono::{Duration, Utc};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::{BufferedStreamExt, TryStreamExt, task::AbortOnDropHandle};
+use rand::Rng;
 use tokio::sync::watch;
 use tracing::warn;
 
+use crate::datum_apis::user_invitation::RoleReference;
 use crate::{ProjectControlPlaneClient, Repo, SelectedContext};
 
 pub use self::{
@@ -123,6 +126,82 @@ impl DatumCloudClient {
         ))
     }
 
+    /// Lists IAM roles in a namespace (org-scoped control plane).
+    /// Uses the namespaced roles API; defaults to `datum-cloud` to match the web app.
+    pub async fn list_roles(
+        &self,
+        org_id: &str,
+        namespace: Option<&str>,
+    ) -> Result<Vec<RoleSummary>> {
+        let ns = namespace.unwrap_or("datum-cloud");
+        let json = self
+            .fetch(
+                Scope::Org(org_id.to_string()),
+                Api::Iam(IamResource::NamespacedRoles(ns.to_string())),
+            )
+            .await?;
+
+   
+        parse_role_list(&json).context("Failed to parse roles list")
+    }
+
+    /// Creates a UserInvitation at org scope (org-scoped API).
+    /// Payload matches web app adapter: expirationDate 24h, organizationRef, state Pending, role namespace default milo-system.
+    pub async fn create_user_invitation_org(
+        &self,
+        org_id: &str,
+        email: &str,
+        given_name: Option<&str>,
+        family_name: Option<&str>,
+        roles: Option<Vec<RoleReference>>,
+    ) -> Result<()> {
+        let namespace = format!("organization-{org_id}");
+        let url = self.url(
+            Scope::Org(org_id.to_string()),
+            Api::Iam(IamResource::NamespacedUserInvitations(namespace)),
+        );
+        let name = invitation_name(org_id);
+        let expiration_date = (Utc::now() + Duration::hours(24)).to_rfc3339();
+        let roles_payload: Vec<serde_json::Value> = roles
+            .as_ref()
+            .map(|r| {
+                r.iter()
+                    .map(|ref_| {
+                        let ns = ref_
+                            .namespace
+                            .as_deref()
+                            .unwrap_or("milo-system");
+                        serde_json::json!({ "name": ref_.name, "namespace": ns })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let body = serde_json::json!({
+            "apiVersion": "iam.miloapis.com/v1alpha1",
+            "kind": "UserInvitation",
+            "metadata": {
+                "name": name,
+            },
+            "spec": {
+                "email": email.trim(),
+                "expirationDate": expiration_date,
+                "organizationRef": { "name": org_id },
+                "givenName": given_name.and_then(|s| {
+                    let t = s.trim();
+                    if t.is_empty() { None } else { Some(t) }
+                }),
+                "familyName": family_name.and_then(|s| {
+                    let t = s.trim();
+                    if t.is_empty() { None } else { Some(t) }
+                }),
+                "roles": roles_payload,
+                "state": "Pending"
+            }
+        });
+        self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
     pub fn orgs_projects_cache(&self) -> Vec<OrganizationWithProjects> {
         self.session.orgs_projects()
     }
@@ -217,6 +296,41 @@ impl DatumCloudClient {
     async fn fetch(&self, scope: Scope, api: Api) -> Result<serde_json::Value> {
         let url = self.url(scope, api);
         self.fetch_direct(&url).await
+    }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        tracing::debug!("POST {url}");
+
+        let auth_state = self.auth.load_refreshed().await?;
+        let auth = auth_state.get()?;
+
+        let res = self
+            .http
+            .post(url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", auth.tokens.access_token.secret()),
+            )
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await
+            .inspect_err(|e| warn!(%url, "Failed to POST: {e:#}"))
+            .with_std_context(|_| format!("Failed to POST {url}"))?;
+        let status = res.status();
+        if !status.is_success() {
+            let text = match res.text().await {
+                Ok(text) => text,
+                Err(err) => err.to_string(),
+            };
+            warn!(%url, "Request failed: {status} {text}");
+            n0_error::bail_any!("Request failed with status {status}");
+        }
+        Ok(())
     }
 
     async fn fetch_direct(&self, url: &str) -> Result<serde_json::Value> {
@@ -419,6 +533,99 @@ pub struct Project {
     pub display_name: String,
 }
 
+/// Summary of an IAM Role for listing (e.g. in invite dialog).
+#[derive(Debug, Clone)]
+pub struct RoleSummary {
+    pub name: String,
+    pub namespace: Option<String>,
+    /// Human-readable label; from annotations["kubernetes.io/display-name"] ?? displayName ?? name.
+    pub display_name: Option<String>,
+    /// Human-readable description of the role's permissions (e.g. from spec or annotations).
+    pub description: Option<String>,
+    /// Sort order for display; from annotations["taxonomy.miloapis.com/sort-order"], default 999.
+    pub sort_order: u32,
+}
+
+/// Returns true if the role should be shown: either it has no status (include by default) or
+/// its status has Ready condition True. Excludes only when Ready is explicitly not True.
+fn role_status_is_success(item: &serde_json::Value) -> bool {
+    let status = match item.get("status") {
+        Some(s) => s,
+        None => return true, // no status -> include
+    };
+    let conditions = match status.get("conditions").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return true, // no conditions -> include
+    };
+    let ready_false = conditions.iter().any(|c| {
+        let c = c.as_object();
+        let type_ = c.and_then(|o| o.get("type")).and_then(|v| v.as_str());
+        let status = c.and_then(|o| o.get("status")).and_then(|v| v.as_str());
+        type_.map_or(false, |t| t == "Ready") && status.map_or(false, |s| s == "False")
+    });
+    !ready_false // include unless Ready is explicitly False
+}
+
+fn parse_role_list(json: &serde_json::Value) -> Result<Vec<RoleSummary>> {
+    let items = json
+        .get("items")
+        .and_then(|v| v.as_array())
+        .context("Missing or invalid items")?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if !role_status_is_success(item) {
+            continue;
+        }
+        let meta = item.get("metadata").context("Missing metadata")?;
+        let name = meta
+            .get("name")
+            .and_then(|v| v.as_str())
+            .context("Missing metadata.name")?
+            .to_string();
+        let namespace = meta
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let display_name = meta
+            .get("annotations")
+            .and_then(|a| a.get("kubernetes.io/display-name"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                item.get("displayName")
+                    .or_else(|| item.get("spec").and_then(|s| s.get("displayName")))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
+        let description = item
+            .get("spec")
+            .and_then(|s| s.get("description"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                meta.get("annotations")
+                    .and_then(|a| a.get("kubernetes.io/description"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
+        let sort_order = meta
+            .get("annotations")
+            .and_then(|a| a.get("taxonomy.miloapis.com/sort-order"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(999);
+        out.push(RoleSummary {
+            name,
+            namespace,
+            display_name,
+            description,
+            sort_order,
+        });
+    }
+    out.sort_by_key(|r| r.sort_order);
+    Ok(out)
+}
+
 #[derive(Debug, Clone, derive_more::Display)]
 enum Scope {
     #[display("/apis/iam.miloapis.com/v1alpha1/users/{_0}")]
@@ -437,6 +644,8 @@ impl Scope {
 enum Api {
     #[display("/control-plane/apis/resourcemanager.miloapis.com/v1alpha1{_0}")]
     ResourceManager(ResourceManager),
+    #[display("/control-plane/apis/iam.miloapis.com/v1alpha1{_0}")]
+    Iam(IamResource),
 }
 
 #[derive(Debug, Clone, derive_more::Display)]
@@ -445,4 +654,25 @@ enum ResourceManager {
     OrganizationMemberships,
     #[display("/projects")]
     Projects,
+}
+
+#[derive(Debug, Clone, derive_more::Display)]
+enum IamResource {
+    /// Namespaced list: /namespaces/{namespace}/roles (matches web app listIamMiloapisComV1Alpha1NamespacedRole)
+    #[display("/namespaces/{_0}/roles")]
+    NamespacedRoles(String),
+    /// Namespaced create: /namespaces/organization-{orgId}/userinvitations (matches web app createIamMiloapisComV1Alpha1NamespacedUserInvitation)
+    #[display("/namespaces/{_0}/userinvitations")]
+    NamespacedUserInvitations(String),
+}
+
+/// Produces invitation resource name matching web app: `{organizationId}-{random8}`.
+fn invitation_name(org_id: &str) -> String {
+    let suffix: String = rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
+        .take(8)
+        .map(char::from)
+        .collect::<String>()
+        .to_lowercase();
+    format!("{org_id}-{suffix}")
 }

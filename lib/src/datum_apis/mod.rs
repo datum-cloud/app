@@ -4,3 +4,4 @@ pub mod connector_class;
 pub mod http_proxy;
 pub mod lease;
 pub mod traffic_protection_policy;
+pub mod user_invitation;
