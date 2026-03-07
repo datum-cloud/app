@@ -38,7 +38,7 @@
         ];
 
         cargoOutputHashes = {
-          "iroh-proxy-utils-0.1.0" = "sha256-gBEL8FiUhHZ6fI4R/EmngZp+eUR/PcwHYYby9YpIUk8=";
+          "iroh-proxy-utils-0.1.0" = "sha256-ZV71q22zCWBqFdrc0jzkwyQdVc/H0r0BBB6dKrNARr8=";
           "dioxus-primitives-0.0.1" = "sha256-gN0cb0Icp0S/Oi7eddfwfoN9PHhdlID2BKzdeP5j8PM=";
         };
 
