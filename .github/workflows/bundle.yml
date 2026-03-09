@@ -362,6 +362,6 @@ jobs:
           cd tap
           git config user.name "Datum Release Bot"
           git config user.email "releases@datum.net"
-          git add Casks/desktop.rb Casks/datum.rb
+          git add Casks/
           git diff --cached --quiet || git commit -m "Brew cask update for Datum Desktop version ${TAG}"
           git push
