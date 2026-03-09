@@ -28,7 +28,9 @@ use crate::datum_apis::traffic_protection_policy::{
 use crate::datum_cloud::DatumCloudClient;
 use crate::{Advertisment, ListenNode, ProxyState, TcpProxyData};
 use gateway_api::apis::standard::httproutes::{
-    HTTPRouteRulesMatchesPath, HTTPRouteRulesMatchesPathType,
+    HTTPRouteRulesFiltersRequestRedirectScheme, HTTPRouteRulesFiltersType,
+    HTTPRouteRulesMatchesHeaders, HTTPRouteRulesMatchesHeadersType, HTTPRouteRulesMatchesPath,
+    HTTPRouteRulesMatchesPathType,
 };
 
 const DEFAULT_PCP_NAMESPACE: &str = "default";
@@ -295,7 +297,10 @@ impl TunnelService {
             },
             spec: HTTPProxySpec {
                 hostnames: None,
-                rules: vec![proxy_rule(&endpoint, &connector_name)],
+                rules: vec![
+                    https_redirect_rule(),
+                    proxy_rule(&endpoint, &connector_name),
+                ],
             },
             status: None,
         };
@@ -467,7 +472,7 @@ impl TunnelService {
             },
             "spec": {
                 "hostnames": hostnames,
-                "rules": [proxy_rule(&endpoint, &connector_name)],
+                "rules": [https_redirect_rule(), proxy_rule(&endpoint, &connector_name)],
             }
         });
         proxies
@@ -950,6 +955,45 @@ fn proxy_hostnames(proxy: &HTTPProxy) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Rule that matches requests with x-forwarded-proto: http and redirects to HTTPS (301).
+/// Evaluated first so HTTP traffic is upgraded before hitting the backend rule.
+fn https_redirect_rule() -> HTTPProxyRule {
+    use gateway_api::apis::standard::httproutes::{
+        HTTPRouteRulesFilters, HTTPRouteRulesFiltersRequestRedirect,
+    };
+    HTTPProxyRule {
+        name: None,
+        matches: vec![crate::datum_apis::http_proxy::HTTPRouteMatch {
+            path: Some(HTTPRouteRulesMatchesPath {
+                r#type: Some(HTTPRouteRulesMatchesPathType::PathPrefix),
+                value: Some("/".to_string()),
+            }),
+            headers: Some(vec![HTTPRouteRulesMatchesHeaders {
+                name: "x-forwarded-proto".to_string(),
+                r#type: Some(HTTPRouteRulesMatchesHeadersType::Exact),
+                value: "http".to_string(),
+            }]),
+            ..Default::default()
+        }],
+        filters: Some(vec![HTTPRouteRulesFilters {
+            request_redirect: Some(HTTPRouteRulesFiltersRequestRedirect {
+                scheme: Some(HTTPRouteRulesFiltersRequestRedirectScheme::Https),
+                status_code: Some(301),
+                hostname: None,
+                path: None,
+                port: None,
+            }),
+            r#type: HTTPRouteRulesFiltersType::RequestRedirect,
+            extension_ref: None,
+            request_header_modifier: None,
+            request_mirror: None,
+            response_header_modifier: None,
+            url_rewrite: None,
+        }]),
+        backends: None,
+    }
+}
+
 fn proxy_rule(endpoint: &str, connector_name: &str) -> HTTPProxyRule {
     HTTPProxyRule {
         name: None,
@@ -969,9 +1013,8 @@ fn proxy_backend_endpoint(proxy: &HTTPProxy) -> Option<String> {
     proxy
         .spec
         .rules
-        .first()
-        .and_then(|rule| rule.backends.as_ref())
-        .and_then(|backends| backends.first())
+        .iter()
+        .find_map(|rule| rule.backends.as_ref().and_then(|b| b.first()))
         .map(|backend| backend.endpoint.clone())
 }
 
