@@ -236,7 +236,7 @@ pub fn ProxiesList() -> Element {
                         alt: "",
                     }
                     div { class: "text-sm mt-2 max-w-xs",
-                        "Hey {first_name}, Want to safely expose a local service on the internet?"
+                        "Hey {first_name}, want to safely expose a local service on the internet?"
                     }
                     Button {
                         kind: ButtonKind::Outline,
