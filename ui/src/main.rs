@@ -105,7 +105,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         use dioxus_desktop::tao::platform::macos::WindowBuilderExtMacOS;
 
-        let mut window_builder = WindowBuilder::new()
+        let window_builder = WindowBuilder::new()
             .with_title("")
             .with_inner_size(LogicalSize::new(630, 600)) // default width, height (logical pixels)
             .with_min_inner_size(LogicalSize::new(630, 600)) // prevent resizing smaller
@@ -115,12 +115,10 @@ fn main() {
 
         // macOS-specific window options
         #[cfg(target_os = "macos")]
-        {
-            window_builder = window_builder
-                .with_titlebar_transparent(true)
-                .with_has_shadow(true)
-                .with_fullsize_content_view(true);
-        }
+        let window_builder = window_builder
+            .with_titlebar_transparent(true)
+            .with_has_shadow(true)
+            .with_fullsize_content_view(true);
 
         dioxus::LaunchBuilder::desktop()
             .with_cfg(desktop! {
@@ -183,7 +181,9 @@ fn TitleBar() -> Element {
         }
     }
     #[cfg(not(target_os = "macos"))]
-    None
+    {
+        rsx! {}
+    }
 }
 
 #[component]

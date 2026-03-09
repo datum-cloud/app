@@ -485,7 +485,7 @@ pub fn TunnelCard(
                                 }
                             }
                         }
-                        if let Some(id) = short_id.as_ref() {
+                        if let Some(_id) = short_id.as_ref() {
                             div { class: "flex items-center gap-2.5 text-icon-tunnel",
                                 Icon {
                                     source: IconSource::Named("external-link".into()),
