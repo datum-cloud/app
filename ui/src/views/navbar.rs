@@ -102,7 +102,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
     let mut orgs = use_signal(Vec::<OrganizationWithProjects>::new);
     let mut selected_org_id = use_signal(|| state.selected_context().map(|c| c.org_id));
     let mut selected_project_id = use_signal(|| state.selected_context().map(|c| c.project_id));
-    let mut pending_org_switch = use_signal(|| false);
+    let pending_org_switch = use_signal(|| false);
     let state_for_watch = state.clone();
     use_future(move || {
         let state_for_watch = state_for_watch.clone();
@@ -165,7 +165,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
     let orgs_snapshot = orgs.read().clone();
     let selected_org_snapshot = selected_org_id.read().clone();
     let selected_ctx = selected_context.read().clone();
-    let org_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
+    let _org_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
         selected_ctx
             .as_ref()
             .map(|ctx| vec![(ctx.org_id.clone(), ctx.org_name.clone())])
@@ -176,7 +176,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
             .map(|org| (org.org.resource_id.clone(), org.org.display_name.clone()))
             .collect()
     };
-    let project_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
+    let _project_options: Vec<(String, String)> = if orgs_snapshot.is_empty() {
         selected_ctx
             .as_ref()
             .map(|ctx| vec![(ctx.project_id.clone(), ctx.project_name.clone())])

@@ -6,7 +6,6 @@ use crate::{
     components::{
         dialog::{DialogContent, DialogRoot, DialogTitle},
         input::Input,
-        switch::{Switch, SwitchThumb},
         Button, ButtonKind,
     },
     state::AppState,
