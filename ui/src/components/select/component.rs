@@ -107,8 +107,8 @@ pub fn SelectList(
     children: Element,
 ) -> Element {
     let base_class = match size {
-        SelectSize::Default => "absolute z-[60] w-full min-w-full max-h-[min(20rem,calc(100vh-2rem))] overflow-y-auto overflow-x-auto rounded-md border border-app-border bg-card-background shadow-card p-1 animate-in fade-in duration-300 outline-none focus:outline-none top-full mt-1 data-[side=top]:top-auto data-[side=top]:bottom-full data-[side=top]:mt-0 data-[side=top]:mb-1 data-[side=bottom]:bottom-auto data-[side=bottom]:top-full data-[side=bottom]:mb-0 data-[side=bottom]:mt-1",
-        SelectSize::Small => "absolute z-[60] w-max min-w-max max-w-[20rem,calc(100vw-2rem)] max-h-[min(20rem,calc(100vh-2rem))] overflow-y-auto overflow-x-auto rounded-md border border-app-border bg-card-background shadow-card p-0.5 animate-in fade-in duration-300 outline-none focus:outline-none top-full mt-1 data-[side=top]:top-auto data-[side=top]:bottom-full data-[side=top]:mt-0 data-[side=top]:mb-1 data-[side=bottom]:bottom-auto data-[side=bottom]:top-full data-[side=bottom]:mb-0 data-[side=bottom]:mt-1",
+        SelectSize::Default => "absolute z-[60] w-full min-w-full max-h-[10rem] overflow-y-auto overflow-x-auto rounded-md border border-app-border bg-card-background shadow-card p-1 animate-in fade-in duration-300 outline-none focus:outline-none top-full mt-1 data-[side=top]:top-auto data-[side=top]:bottom-full data-[side=top]:mt-0 data-[side=top]:mb-1 data-[side=bottom]:bottom-auto data-[side=bottom]:top-full data-[side=bottom]:mb-0 data-[side=bottom]:mt-1",
+        SelectSize::Small => "absolute z-[60] w-max min-w-max max-w-[20rem,calc(100vw-2rem)] max-h-[10rem] overflow-y-auto overflow-x-auto rounded-md border border-app-border bg-card-background shadow-card p-0.5 animate-in fade-in duration-300 outline-none focus:outline-none top-full mt-1 data-[side=top]:top-auto data-[side=top]:bottom-full data-[side=top]:mt-0 data-[side=top]:mb-1 data-[side=bottom]:bottom-auto data-[side=bottom]:top-full data-[side=bottom]:mb-0 data-[side=bottom]:mt-1",
     };
     let class = format!("{} {}", base_class, align_class(align));
     rsx! {
@@ -161,6 +161,9 @@ pub fn SelectOptionItem(
     text_value: String,
     index: usize,
     #[props(default = false)] disabled: bool,
+    /// Optional extra class for the option (e.g. "whitespace-normal" for multi-line content).
+    #[props(default = None)]
+    option_class: Option<String>,
     children: Element,
 ) -> Element {
     let initial_value = value.clone();
@@ -169,12 +172,22 @@ pub fn SelectOptionItem(
     use_effect(move || {
         value_signal.set(value.clone());
     });
+    let base_class = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-default data-highlighted:bg-content-background flex items-center justify-between gap-2 whitespace-nowrap";
+    let class = match &option_class {
+        Some(extra) => format!("{base_class} {extra}"),
+        None => base_class.to_string(),
+    };
     rsx! {
-        SelectOption::<String> {
+        select::SelectOption::<String> {
+            class,
             value: value_signal,
             text_value,
             index,
             disabled,
+            id: None,
+            aria_label: None,
+            aria_roledescription: None,
+            attributes: vec![],
             {children}
         }
     }

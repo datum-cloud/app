@@ -136,6 +136,7 @@ pub fn SelectProject() -> Element {
                 org_name: org.org.display_name.clone(),
                 project_id,
                 project_name: project.display_name.clone(),
+                org_type: org.org.r#type.clone(),
             };
 
             spawn({

@@ -1,7 +1,7 @@
 use crate::{
     components::{input::Input, Button, ButtonKind, Icon, IconSource},
     state::AppState,
-    Route,
+    Route, UpdateCheckContext,
 };
 use dioxus::prelude::*;
 use open::that;
@@ -10,7 +10,7 @@ use open::that;
 pub fn Settings() -> Element {
     let nav = use_navigator();
     let state = consume_context::<AppState>();
-    let mut manual_update_check = consume_context::<Signal<bool>>();
+    let mut update_ctx = consume_context::<UpdateCheckContext>();
     let auth_state = state.datum().auth_state();
     let first_name: String = match auth_state.get() {
         Ok(auth) => auth.profile.first_name.clone().unwrap_or_default(),
@@ -92,11 +92,15 @@ pub fn Settings() -> Element {
                     }
                     Button {
                         class: "w-fit",
-                        text: "Check for Updates",
+                        text: if (update_ctx.in_progress)() { "Checking…" } else { "Check for Updates" },
                         kind: ButtonKind::Secondary,
+                        trailing_icon: if (update_ctx.in_progress)() { Some(IconSource::Named("loader-circle".into())) } else { None },
+                        disabled: (update_ctx.in_progress)(),
                         onclick: move |_| {
-                            let mut check_signal = manual_update_check;
-                            check_signal.set(true);
+                            if !(update_ctx.in_progress)() {
+                                update_ctx.trigger.set(true);
+                                update_ctx.in_progress.set(true);
+                            }
                         },
                     }
                 }
