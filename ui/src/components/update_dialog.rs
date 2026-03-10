@@ -20,7 +20,7 @@ pub fn UpdateDialog(props: UpdateDialogProps) -> Element {
     let UpdateDialogProps {
         mut open,
         update_info,
-        on_restart,
+        on_restart: _,
         on_dismiss,
     } = props;
 

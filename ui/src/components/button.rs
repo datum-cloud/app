@@ -30,6 +30,8 @@ pub struct ButtonProps {
     /// Additional classes appended to the base button classes
     #[props(default = None)]
     class: Option<String>,
+    #[props(default = false)]
+    disabled: bool,
 }
 
 fn class_for(kind: ButtonKind) -> &'static str {
@@ -52,7 +54,7 @@ pub fn Button(props: ButtonProps) -> Element {
     let to_route = props.to.clone();
     let leading_content = rsx! {
         if let Some(ref icon) = props.leading_icon {
-            span { class: "flex shrink-0 items-center justify-start size-5 min-w-5 min-h-5",
+            span { class: "flex shrink-0 items-center justify-start size-3 min-w-3 min-h-3",
                 Icon { source: icon.clone(), size: 16 }
             }
         } else if let Some(leading) = props.leading.clone() {
@@ -62,7 +64,7 @@ pub fn Button(props: ButtonProps) -> Element {
 
     let trailing_content = rsx! {
         if let Some(ref icon) = props.trailing_icon {
-            span { class: "flex shrink-0 items-center justify-center size-5 min-w-5 min-h-5",
+            span { class: "flex shrink-0 items-center justify-center size-3 min-w-3 min-h-3",
                 Icon { source: icon.clone(), size: 16 }
             }
         }
@@ -79,10 +81,21 @@ pub fn Button(props: ButtonProps) -> Element {
             }
         }
         (false, true) => {
+            let disabled = props.disabled;
+            let button_class = if disabled {
+                format!("{class} opacity-60 cursor-not-allowed")
+            } else {
+                class.clone()
+            };
             rsx! {
                 button {
-                    class: "{class}",
-                    onclick: move |evt| props.onclick.unwrap().call(evt),
+                    class: "{button_class}",
+                    disabled,
+                    onclick: move |evt| {
+                        if !props.disabled {
+                            props.onclick.unwrap().call(evt);
+                        }
+                    },
                     {leading_content}
                     span { class: "leading-none", "{props.text}" }
                     {trailing_content}

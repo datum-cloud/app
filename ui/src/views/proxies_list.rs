@@ -3,6 +3,32 @@ use dioxus::prelude::*;
 use lib::TunnelSummary;
 use open::that;
 
+/// Merge API list with current cache so we don't downgrade tunnels to "pending" when the
+/// backend returns reconciling state (e.g. right after updating one tunnel).
+fn merge_tunnel_list_with_cache(
+    current: Vec<TunnelSummary>,
+    list: Vec<TunnelSummary>,
+) -> Vec<TunnelSummary> {
+    let current_by_id: std::collections::HashMap<_, _> =
+        current.into_iter().map(|t| (t.id.clone(), t)).collect();
+    list.into_iter()
+        .map(|mut t| {
+            if let Some(cached) = current_by_id.get(&t.id) {
+                let cached_ready = cached.accepted && cached.programmed;
+                let new_pending = !t.accepted || !t.programmed;
+                if cached_ready && new_pending {
+                    t.accepted = cached.accepted;
+                    t.programmed = cached.programmed;
+                    if !cached.hostnames.is_empty() && t.hostnames.is_empty() {
+                        t.hostnames = cached.hostnames.clone();
+                    }
+                }
+            }
+            t
+        })
+        .collect()
+}
+
 use crate::{
     components::{
         dropdown_menu::{
@@ -38,6 +64,11 @@ pub fn ProxiesList() -> Element {
                     .list_active()
                     .await
                     .unwrap_or_default();
+                // Merge with current cache so we don't briefly show all tunnels as pending when
+                // a single tunnel is updated (backend may return stale/reconciling state).
+                let cache_signal = state_for_future.tunnel_cache();
+                let current = cache_signal();
+                let list = merge_tunnel_list_with_cache(current, list);
                 // Check if any tunnel is missing a hostname or not yet accepted/programmed.
                 // If so, poll more frequently.
                 // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
@@ -205,7 +236,7 @@ pub fn ProxiesList() -> Element {
                         alt: "",
                     }
                     div { class: "text-sm mt-2 max-w-xs",
-                        "Hey {first_name}, Want to safely expose a local service on the internet?"
+                        "Hey {first_name}, want to safely expose a local service on the internet?"
                     }
                     Button {
                         kind: ButtonKind::Outline,
@@ -454,7 +485,7 @@ pub fn TunnelCard(
                                 }
                             }
                         }
-                        if let Some(id) = short_id.as_ref() {
+                        if let Some(_id) = short_id.as_ref() {
                             div { class: "flex items-center gap-2.5 text-icon-tunnel",
                                 Icon {
                                     source: IconSource::Named("external-link".into()),
