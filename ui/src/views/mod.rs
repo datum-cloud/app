@@ -10,6 +10,7 @@ mod navbar;
 mod proxies_list;
 mod select_project;
 mod settings;
+mod tray_nav_handler;
 mod tunnel_bandwidth;
 
 pub use join_proxy::JoinProxy;
@@ -18,4 +19,5 @@ pub use navbar::*;
 pub use proxies_list::{ProxiesList, TunnelCard};
 pub use select_project::SelectProject;
 pub use settings::Settings;
+pub use tray_nav_handler::TrayNavHandler;
 pub use tunnel_bandwidth::TunnelBandwidth;
