@@ -12,10 +12,10 @@
     --color-gray-300: oklch(87.2% 0.01 258.338);
     --color-gray-500: oklch(55.1% 0.027 264.364);
     --color-gray-700: oklch(37.3% 0.034 259.733);
+    --color-black: #000;
     --color-white: #fff;
     --spacing: 0.25rem;
     --container-xs: 20rem;
-    --container-sm: 24rem;
     --container-md: 28rem;
     --container-lg: 32rem;
     --container-4xl: 56rem;
@@ -267,6 +267,9 @@
   .z-\[60\] {
     z-index: 60;
   }
+  .z-\[100\] {
+    z-index: 100;
+  }
   .container {
     width: 100%;
     @media (width >= 40rem) {
@@ -324,6 +327,9 @@
   .mb-0\.5 {
     margin-bottom: calc(var(--spacing) * 0.5);
   }
+  .mb-2 {
+    margin-bottom: calc(var(--spacing) * 2);
+  }
   .mb-3 {
     margin-bottom: calc(var(--spacing) * 3);
   }
@@ -336,6 +342,9 @@
   .mb-7 {
     margin-bottom: calc(var(--spacing) * 7);
   }
+  .ml-2 {
+    margin-left: calc(var(--spacing) * 2);
+  }
   .ml-3 {
     margin-left: calc(var(--spacing) * 3);
   }
@@ -347,6 +356,9 @@
   }
   .block {
     display: block;
+  }
+  .contents {
+    display: contents;
   }
   .flex {
     display: flex;
@@ -415,6 +427,9 @@
   }
   .h-\[45vh\] {
     height: 45vh;
+  }
+  .h-\[380px\] {
+    height: 380px;
   }
   .h-full {
     height: 100%;
@@ -487,6 +502,9 @@
   }
   .w-\[37px\] {
     width: 37px;
+  }
+  .w-\[320px\] {
+    width: 320px;
   }
   .w-\[452px\] {
     width: 452px;
@@ -659,6 +677,13 @@
       margin-block-end: calc(calc(var(--spacing) * 1.5) * calc(1 - var(--tw-space-y-reverse)));
     }
   }
+  .space-y-3 {
+    :where(& > :not(:last-child)) {
+      --tw-space-y-reverse: 0;
+      margin-block-start: calc(calc(var(--spacing) * 3) * var(--tw-space-y-reverse));
+      margin-block-end: calc(calc(var(--spacing) * 3) * calc(1 - var(--tw-space-y-reverse)));
+    }
+  }
   .space-y-4 {
     :where(& > :not(:last-child)) {
       --tw-space-y-reverse: 0;
@@ -791,6 +816,12 @@
     background-color: var(--background);
     @supports (color: color-mix(in lab, red, red)) {
       background-color: color-mix(in oklab, var(--background) 50%, transparent);
+    }
+  }
+  .bg-black\/20 {
+    background-color: color-mix(in srgb, #000 20%, transparent);
+    @supports (color: color-mix(in lab, red, red)) {
+      background-color: color-mix(in oklab, var(--color-black) 20%, transparent);
     }
   }
   .bg-button-primary-background\/90 {
@@ -949,8 +980,17 @@
   .py-7 {
     padding-block: calc(var(--spacing) * 7);
   }
+  .py-8 {
+    padding-block: calc(var(--spacing) * 8);
+  }
   .pt-2 {
     padding-top: calc(var(--spacing) * 2);
+  }
+  .pt-12 {
+    padding-top: calc(var(--spacing) * 12);
+  }
+  .pr-4 {
+    padding-right: calc(var(--spacing) * 4);
   }
   .pb-12 {
     padding-bottom: calc(var(--spacing) * 12);
@@ -1202,6 +1242,9 @@
   }
   .fade-in {
     --tw-enter-opacity: 0;
+  }
+  .running {
+    animation-play-state: running;
   }
   .group-data-\[state\=checked\]\:translate-x-5 {
     &:is(:where(.group)[data-state="checked"] *) {

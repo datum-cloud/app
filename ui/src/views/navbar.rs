@@ -29,10 +29,19 @@ pub fn Chrome() -> Element {
     let mut add_tunnel_dialog_open = use_signal(|| false);
     let mut invite_user_dialog_open = use_signal(|| false);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
+    let mut open_add_tunnel_from_tray = consume_context::<Signal<bool>>();
 
     provide_context(OpenEditTunnelDialog {
         editing_tunnel,
         dialog_open: add_tunnel_dialog_open,
+    });
+
+    use_effect(move || {
+        if open_add_tunnel_from_tray() {
+            nav.push(Route::ProxiesList {});
+            add_tunnel_dialog_open.set(true);
+            open_add_tunnel_from_tray.set(false);
+        }
     });
 
     use_effect(move || {
