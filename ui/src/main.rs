@@ -297,6 +297,7 @@ fn App() -> Element {
     }
 
     let mut open_add_tunnel_from_tray = use_signal(|| false);
+    let mut login_state_for_tray = use_signal(|| None::<lib::datum_cloud::LoginState>);
 
     // Create tray when app state is ready. Must run before early return.
     #[cfg(feature = "desktop")]
@@ -328,6 +329,11 @@ fn App() -> Element {
                     window.set_visible(false);
                 }
                 "new_tunnel" => {
+                    if login_state_for_tray() == Some(lib::datum_cloud::LoginState::Missing)
+                        || login_state_for_tray().is_none()
+                    {
+                        return;
+                    }
                     window.set_visible(true);
                     window.set_focus();
                     open_add_tunnel_from_tray.set(true);
@@ -351,6 +357,11 @@ fn App() -> Element {
     provide_context(auth_changed);
 
     let state_for_auth_watch = consume_context::<AppState>();
+    use_effect(move || {
+        let _ = auth_changed();
+        let state = consume_context::<AppState>();
+        login_state_for_tray.set(Some(state.datum().login_state()));
+    });
     use_future(move || {
         let state_for_auth_watch = state_for_auth_watch.clone();
         let mut auth_changed = auth_changed;
