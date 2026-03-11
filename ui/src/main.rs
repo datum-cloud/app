@@ -1,6 +1,4 @@
 use dioxus::prelude::*;
-#[cfg(feature = "desktop")]
-use n0_error::Result;
 use std::sync::OnceLock;
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -9,16 +7,16 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use crate::components::{Head, Splash, UpdateDialog};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, TunnelBandwidth,
+    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, TrayNavHandler, TunnelBandwidth,
 };
 
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
     trayicon::{
-        menu::{Menu, MenuItem, PredefinedMenuItem},
+        menu::{IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem},
         Icon, TrayIcon, TrayIconBuilder,
     },
-    use_tray_menu_event_handler, use_window,
+    use_muda_event_handler, use_window,
 };
 
 mod components;
@@ -51,6 +49,7 @@ static MANUAL_UPDATE_CHECK_FLAG: std::sync::atomic::AtomicBool =
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 enum Route {
+    #[layout(TrayNavHandler)]
     #[route("/")]
     Login{},
     #[layout(Chrome)]
@@ -94,9 +93,6 @@ fn main() {
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     gtk::init().unwrap();
-
-    #[cfg(feature = "desktop")]
-    let _tray_icon = init_menu_bar().unwrap();
 
     #[cfg(feature = "desktop")]
     {
@@ -300,36 +296,52 @@ fn App() -> Element {
         });
     }
 
+    let mut open_add_tunnel_from_tray = use_signal(|| false);
+    let mut login_state_for_tray = use_signal(|| None::<lib::datum_cloud::LoginState>);
+
+    // Create tray when app state is ready. Must run before early return.
     #[cfg(feature = "desktop")]
-    use_tray_menu_event_handler(move |event| -> () {
-        // The event ID corresponds to the menu item text
-        let _: () = match event.id.0.as_str() {
-            "About Datum" => {
-                let _ = open::that("https://datum.net");
-                ()
+    {
+        let mut tray_holder = use_signal(|| None::<TrayIcon>);
+
+        use_effect(move || {
+            if !app_state_ready() {
+                return;
             }
-            "Show Window" => {
-                use_window().set_visible(true);
-                ()
+            if (*tray_holder.peek()).is_some() {
+                return;
             }
-            "Hide" => {
-                use_window().set_visible(false);
-                ()
-            }
-            "Check for Updates..." => {
-                manual_update_check.set(true);
-                update_check_in_progress.set(true);
-                ()
-            }
-            "Quit" => {
-                std::process::exit(0);
-            }
-            _ => {
-                eprintln!("Unknown menu event: {}", event.id.0);
-                ()
-            }
-        };
-    });
+            let tray = init_tray();
+            tray_holder.set(Some(tray));
+        });
+
+        let window = use_window();
+        use_muda_event_handler(move |event| -> () {
+            let _: () = match event.id.0.as_str() {
+                "about" => {
+                    let _ = open::that("https://datum.net");
+                }
+                "show" => {
+                    window.set_visible(true);
+                    window.set_focus();
+                }
+                "hide" => {
+                    window.set_visible(false);
+                }
+                "new_tunnel" => {
+                    if login_state_for_tray() == Some(lib::datum_cloud::LoginState::Missing)
+                        || login_state_for_tray().is_none()
+                    {
+                        return;
+                    }
+                    window.set_visible(true);
+                    window.set_focus();
+                    open_add_tunnel_from_tray.set(true);
+                }
+                _ => {}
+            };
+        });
+    }
 
     if !app_state_ready() {
         return rsx! {
@@ -345,6 +357,11 @@ fn App() -> Element {
     provide_context(auth_changed);
 
     let state_for_auth_watch = consume_context::<AppState>();
+    use_effect(move || {
+        let _ = auth_changed();
+        let state = consume_context::<AppState>();
+        login_state_for_tray.set(Some(state.datum().login_state()));
+    });
     use_future(move || {
         let state_for_auth_watch = state_for_auth_watch.clone();
         let mut auth_changed = auth_changed;
@@ -364,6 +381,9 @@ fn App() -> Element {
         trigger: manual_update_check,
         in_progress: update_check_in_progress,
     });
+
+    // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
+    provide_context(open_add_tunnel_from_tray);
 
     rsx! {
         div { class: "theme-alpha",
@@ -387,43 +407,52 @@ fn App() -> Element {
 }
 
 #[cfg(feature = "desktop")]
-fn init_menu_bar() -> Result<TrayIcon> {
-    // Initialize the tray menu
-
+fn init_tray() -> TrayIcon {
     use n0_error::StdResultExt;
+
     let tray_menu = Menu::new();
+    let about_item = MenuItem::with_id("about", "About Datum", true, None);
+    let show_item = MenuItem::with_id("show", "Show Window", true, None);
+    let hide_item = MenuItem::with_id("hide", "Hide", true, None);
 
-    // Create menu items with IDs for event handling
-    let about_item = MenuItem::new("About Datum", true, None);
-    let show_item = MenuItem::new("Show Window", true, None);
-    let hide_item = MenuItem::new("Hide", true, None);
-    let separator1 = PredefinedMenuItem::separator();
-    let check_updates_item = MenuItem::new("Check for Updates...", true, None);
-    let separator2 = PredefinedMenuItem::separator();
-    let quit_item = MenuItem::new("Quit", true, None);
+    #[cfg(target_os = "macos")]
+    let new_tunnel_item = IconMenuItem::with_id_and_native_icon(
+        "new_tunnel",
+        "New Tunnel",
+        true,
+        Some(NativeIcon::Add),
+        None,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let new_tunnel_item = IconMenuItem::with_id("new_tunnel", "New Tunnel", true, None, None);
 
-    // Build the menu structure (macOS-style: About, Show, Hide, sep, Check for Updates, sep, Quit)
+    let version_item = MenuItem::with_id(
+        "version",
+        format!("Version {}", env!("CARGO_PKG_VERSION")),
+        false,
+        None,
+    );
+    let sep = PredefinedMenuItem::separator();
+
     tray_menu
         .append_items(&[
+            &new_tunnel_item,
+            &sep,
             &about_item,
             &show_item,
             &hide_item,
-            &separator1,
-            &check_updates_item,
-            &separator2,
-            &quit_item,
+            &sep,
+            &version_item,
         ])
         .expect("Failed to build tray menu");
 
-    let icon = icon();
-
-    // Build the tray icon
     TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_tooltip("Datum")
-        .with_icon(icon)
+        .with_icon(icon())
         .build()
         .std_context("building tray icon")
+        .expect("failed to build tray icon")
 }
 
 /// Load an icon from a PNG file for the tray
