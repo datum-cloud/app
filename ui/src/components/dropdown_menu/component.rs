@@ -44,7 +44,7 @@ pub fn DropdownMenuContent(props: DropdownMenuContentProps) -> Element {
         dropdown_menu::DropdownMenuContent {
             id: props.id,
             attributes: props.attributes,
-            class: "absolute right-0 min-w-36 top-0 rounded-md border-app-border bg-card-background shadow-card overflow-hidden z-9999999 p-1 animate-in fade-in duration-300",
+            class: "absolute right-0 min-w-36 top-0 rounded-md border border-app-border bg-card-background shadow-card overflow-hidden z-9999999 p-1 animate-in fade-in duration-300",
             {props.children}
         }
     }

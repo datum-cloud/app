@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -17,6 +18,7 @@ use openidconnect::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::Repo;
@@ -143,13 +145,19 @@ impl StatelessClient {
             .build()
             .expect("Client should build");
 
-        // Use OpenID Connect Discovery to fetch the provider metadata.
+        // Use OpenID Connect Discovery to fetch the provider metadata (including JWKs).
+        // We fetch fresh metadata each time to avoid "No matching key found" when
+        // Datum Cloud rotates signing keys (see datum-cloud/app#121).
         let provider_metadata = CoreProviderMetadata::discover_async(
             IssuerUrl::new(provider.issuer_url).std_context("Invalid OIDC provider issuer URL")?,
             &http,
         )
         .await
         .std_context("Failed to discover OIDC provider metadata")?;
+        debug!(
+            jwks_uri=?provider_metadata.jwks_uri(),
+            "fetched fresh OIDC provider metadata"
+        );
 
         // Create an OpenID Connect client
         let oidc = CoreClient::from_provider_metadata(
@@ -162,7 +170,12 @@ impl StatelessClient {
         Ok(Self { oidc, http, env })
     }
 
-    pub async fn login(&self) -> Result<AuthState> {
+    pub async fn login<F, Fut, C>(&self, open_url: F) -> Result<AuthState>
+    where
+        F: FnOnce(String, CancellationToken) -> Fut,
+        Fut: Future<Output = Option<C>>,
+        C: FnOnce() + Send + 'static,
+    {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
         let (auth_url, csrf_token, nonce) = self
@@ -183,13 +196,22 @@ impl StatelessClient {
         // Bind a localhost HTTP server to receive the redirect.
         let mut redirect_server = RedirectServer::bind(csrf_token.clone()).await?;
 
-        // Open the auth URL in the platform's default browser.
-        if let Err(err) = open::that(auth_url.to_string()) {
-            warn!("Failed to auto-open url: {err}");
-            println!("Open this URL in a browser to complete the login:\n{auth_url}")
+        let cancel_token = CancellationToken::new();
+        let cancel_token_for_opener = cancel_token.clone();
+
+        // Open the auth URL; opener may return a close handle to close the window when done.
+        let mut close_handle = open_url(auth_url.to_string(), cancel_token_for_opener).await;
+
+        let recv_result = redirect_server
+            .recv_with_timeout(LOGIN_TIMEOUT, Some(&cancel_token))
+            .await;
+
+        // Close the auth window if one was opened (e.g. in-app webview), on success or error.
+        if let Some(close) = close_handle.take() {
+            close();
         }
 
-        let authorization_code = redirect_server.recv_with_timeout(LOGIN_TIMEOUT).await?;
+        let authorization_code = recv_result?;
         debug!("received redirect with authorization code");
 
         // Exchange auth code for ID and access tokens.
@@ -257,8 +279,14 @@ impl StatelessClient {
 
         let claims = id_token
             .claims(&id_token_verifier, nonce_verifier)
-            .std_context("Failed to verify claims")
-            .inspect_err(|e| error!("{e:#}"))?;
+            .map_err(|e| {
+                error!(
+                    error=%e,
+                    signing_alg=?id_token.signing_alg(),
+                    "Failed to verify ID token claims, try logging in again"
+                );
+                anyerr!("Failed to verify login. Please try again — if the problem persists, your session may need to be refreshed.")
+            })?;
 
         // Verify the access token hash to ensure that the access token hasn't been substituted for
         // another user's.
@@ -507,17 +535,21 @@ fn set_sentry_user(auth: Option<&AuthState>) {
 #[derive(derive_more::Debug, Clone)]
 pub struct AuthClient {
     state: AuthStateWrapper,
-    client: StatelessClient,
+    env: ApiEnv,
+    /// OIDC client with JWKs. Swapped before each login/refresh so we always have fresh keys
+    /// (avoids "No matching key found" when Datum Cloud rotates signing keys; datum-cloud/app#121).
+    client: Arc<ArcSwap<StatelessClient>>,
     _refresh_task: Option<Arc<n0_future::task::AbortOnDropHandle<()>>>,
 }
 
 impl AuthClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
         let auth = AuthStateWrapper::from_repo(repo, env.oauth_storage_key()).await?;
-        let auth_client = StatelessClient::new(env).await?;
+        let auth_client = Arc::new(StatelessClient::new(env).await?);
         let mut client = Self {
             state: auth,
-            client: auth_client,
+            env,
+            client: Arc::new(ArcSwap::new(auth_client)),
             _refresh_task: None,
         };
         client.start_refresh_loop();
@@ -526,14 +558,25 @@ impl AuthClient {
 
     pub async fn new(env: ApiEnv) -> Result<Self> {
         let auth = AuthStateWrapper::empty();
-        let auth_client = StatelessClient::new(env).await?;
+        let auth_client = Arc::new(StatelessClient::new(env).await?);
         let mut client = Self {
             state: auth,
-            client: auth_client,
+            env,
+            client: Arc::new(ArcSwap::new(auth_client)),
             _refresh_task: None,
         };
         client.start_refresh_loop();
         Ok(client)
+    }
+
+    /// Fetch fresh OIDC provider metadata (including JWKs) and swap in a new client.
+    /// Call before login/refresh to avoid "No matching key found" when keys rotate.
+    async fn ensure_fresh_client(&self) -> Result<Arc<StatelessClient>> {
+        let fresh = Arc::new(
+            StatelessClient::with_provider(self.env, self.env.auth_provider()).await?,
+        );
+        self.client.store(fresh.clone());
+        Ok(fresh)
     }
 
     pub fn login_state(&self) -> LoginState {
@@ -624,15 +667,44 @@ impl AuthClient {
     }
 
     pub async fn login(&self) -> Result<()> {
+        self.login_with_opener(|url, _cancel_token| async move {
+            if let Err(err) = open::that(&url) {
+                warn!("Failed to auto-open url: {err}");
+                eprintln!("Open this URL in a browser to complete the login:\n{url}");
+            }
+            None::<Box<dyn FnOnce() + Send>>
+        })
+        .await
+    }
+
+    pub async fn login_with_opener<F, Fut, C>(&self, open_url: F) -> Result<()>
+    where
+        F: FnOnce(String, CancellationToken) -> Fut,
+        Fut: Future<Output = Option<C>>,
+        C: FnOnce() + Send + 'static,
+    {
         let auth = self.state.load();
         let auth = match auth.get() {
-            Err(_) => self.client.login().await?,
+            Err(_) => {
+                let client = self.ensure_fresh_client().await?;
+                client.login(open_url).await?
+            }
             Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
-                match self.client.refresh(&auth.tokens).await {
+                let client = self.ensure_fresh_client().await?;
+                match client.refresh(&auth.tokens).await {
                     Ok(auth) => auth,
                     Err(err) => {
                         warn!("Failed to refresh auth token: {err:#}");
-                        self.client.login().await?
+                        let client = self.ensure_fresh_client().await?;
+                        client
+                            .login(|url, _cancel_token| async move {
+                                if let Err(e) = open::that(&url) {
+                                    warn!("Failed to auto-open url: {e}");
+                                    eprintln!("Open this URL in a browser to complete the login:\n{url}");
+                                }
+                                None::<Box<dyn FnOnce() + Send>>
+                            })
+                            .await?
                     }
                 }
             }
@@ -645,7 +717,8 @@ impl AuthClient {
     pub async fn refresh(&self) -> Result<()> {
         let auth = self.state.load();
         let auth = auth.get()?;
-        let new_auth = match self.client.refresh(&auth.tokens).await {
+        let client = self.ensure_fresh_client().await?;
+        let new_auth = match client.refresh(&auth.tokens).await {
             Ok(auth) => auth,
             Err(err) => {
                 warn!("Failed to refresh auth tokens, logging out: {err:#}");
@@ -664,6 +737,7 @@ impl AuthClient {
         let user_id = auth.profile.user_id.clone();
         let new_profile = self
             .client
+            .load()
             .fetch_user_profile(&auth.tokens, &user_id)
             .await?;
         let new_auth = AuthState {
@@ -740,14 +814,15 @@ mod redirect_server {
         extract::{Query, State},
         routing::get,
     };
-    use n0_error::StdResultExt;
+    use n0_error::{StdResultExt, anyerr};
     use openidconnect::{CsrfToken, RedirectUrl};
     use serde::Deserialize;
     use std::{
         net::{Ipv4Addr, SocketAddr},
         time::Duration,
     };
-    use tokio::{net::TcpListener, sync::mpsc};
+    use tokio::net::TcpSocket;
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
     use tracing::{Instrument, debug, instrument, warn};
 
@@ -776,7 +851,10 @@ mod redirect_server {
             let app = Router::new()
                 .route("/oauth/redirect", get(oauth_redirect))
                 .with_state(state);
-            let listener = TcpListener::bind(bind_addr).await?;
+            let socket = TcpSocket::new_v4()?;
+            socket.set_reuseaddr(true)?;
+            socket.bind(bind_addr)?;
+            let listener = socket.listen(128)?;
             debug!(addr=%bind_addr, "OIDC redirect HTTP server listening");
 
             tokio::spawn({
@@ -810,10 +888,21 @@ mod redirect_server {
             .expect("valid url")
         }
 
-        pub async fn recv_with_timeout(&mut self, timeout: Duration) -> n0_error::Result<String> {
-            let res = tokio::time::timeout(timeout, self.recv()).await;
+        pub async fn recv_with_timeout(
+            &mut self,
+            timeout: Duration,
+            cancel: Option<&CancellationToken>,
+        ) -> n0_error::Result<String> {
+            let res = if let Some(cancel_token) = cancel {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => Err(anyerr!("Login cancelled")),
+                    r = tokio::time::timeout(timeout, self.recv()) => r.anyerr()?,
+                }
+            } else {
+                tokio::time::timeout(timeout, self.recv()).await.anyerr()?
+            };
             self.cancel_token.cancel();
-            res.anyerr()?
+            res
         }
 
         pub async fn recv(&mut self) -> n0_error::Result<String> {
@@ -844,9 +933,19 @@ mod redirect_server {
         sender: mpsc::Sender<n0_error::Result<OauthRedirectData>>,
     }
 
-    async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> String {
+    async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> axum::response::Html<String> {
         let data = query.0;
         state.sender.send(Ok(data)).await.ok();
-        "You are now logged in and can close this window.".to_string()
+        axum::response::Html(
+            r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Login complete</title></head>
+<body>
+<p>You are now logged in. This window will close automatically.</p>
+<script>window.close();</script>
+</body>
+</html>"#
+                .to_string(),
+        )
     }
 }
