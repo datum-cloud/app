@@ -17,6 +17,10 @@ use crate::{
 pub struct Repo(PathBuf);
 
 impl Repo {
+    /// Create a Repo from a path without opening/creating (for sync use cases like update install).
+    pub fn from_path(path: PathBuf) -> Self {
+        Self(path)
+    }
     const CONNECT_KEY_FILE: &str = "connect_key";
     const LISTEN_KEY_FILE: &str = "listen_key";
     const GATEWAY_KEY_FILE: &str = "gateway_key";

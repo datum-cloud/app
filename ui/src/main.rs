@@ -4,7 +4,7 @@ use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use crate::components::{Head, Splash, UpdateDialog};
+use crate::components::{Head, InstallingSplash, Splash, UpdateToast};
 use crate::state::AppState;
 use crate::views::{
     Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, TrayNavHandler, TunnelBandwidth,
@@ -26,11 +26,51 @@ mod views;
 
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
-/// Context for manual update check: trigger starts a check, in_progress is true while checking.
+fn spawn_update_download(
+    repo: lib::Repo,
+    tx: tokio::sync::mpsc::UnboundedSender<Option<PendingUpdate>>,
+    info: lib::UpdateInfo,
+) {
+    let checker = lib::UpdateChecker::new(repo);
+    let url = info.download_url.clone();
+    let version = info.version.clone();
+    tokio::spawn(async move {
+        let result = match checker.download_update(&url).await {
+            Ok(path) => {
+                if let Err(e) = checker.set_pending_install(&path, &version).await {
+                    tracing::warn!("Failed to persist pending install: {e:#}");
+                }
+                Some(PendingUpdate { info, path })
+            }
+            Err(e) => {
+                tracing::warn!("Update download failed: {e:#}");
+                None
+            }
+        };
+        let _ = tx.send(result);
+    });
+}
+
+/// Pending update ready to install (downloaded, awaiting user choice)
+#[derive(Clone, PartialEq)]
+pub struct PendingUpdate {
+    pub info: lib::UpdateInfo,
+    pub path: std::path::PathBuf,
+}
+
+/// Context for update checks and pending updates
 #[derive(Clone)]
 pub struct UpdateCheckContext {
     pub trigger: Signal<bool>,
     pub in_progress: Signal<bool>,
+    pub downloading: Signal<bool>,
+    pub update_ready: Signal<Option<PendingUpdate>>,
+    /// True when there's a downloaded update ready (either showing toast or user chose "Later")
+    pub has_pending_install: Signal<bool>,
+    /// Update info for display when has_pending (kept when user clicks "Later")
+    pub pending_update_info: Signal<Option<lib::UpdateInfo>>,
+    /// When set to true, triggers install now (from Settings or toast)
+    pub install_now_trigger: Signal<bool>,
 }
 
 // Assets for favicons
@@ -185,10 +225,16 @@ fn TitleBar() -> Element {
 #[component]
 fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
-    let mut update_dialog_open = use_signal(|| false);
-    let update_info = use_signal(|| None::<lib::UpdateInfo>);
+    let mut installing_update = use_signal(|| {
+        std::env::var("DATUM_UPDATE_FAKE_INSTALLING").as_deref() == Ok("1")
+    });
     let mut manual_update_check = use_signal(|| false);
     let mut update_check_in_progress = use_signal(|| false);
+    let mut update_downloading = use_signal(|| false);
+    let mut update_ready = use_signal(|| None::<PendingUpdate>);
+    let mut has_pending_install = use_signal(|| false);
+    let mut pending_update_info = use_signal(|| None::<lib::UpdateInfo>);
+    let mut install_now_trigger = use_signal(|| false);
 
     // Poll for macOS menu bar update check flag
     #[cfg(all(feature = "desktop", target_os = "macos"))]
@@ -198,7 +244,6 @@ fn App() -> Element {
             let mut update_check_in_progress = update_check_in_progress;
             async move {
                 loop {
-                    // Check the atomic flag
                     if MANUAL_UPDATE_CHECK_FLAG.swap(false, std::sync::atomic::Ordering::Acquire) {
                         manual_update_check.set(true);
                         update_check_in_progress.set(true);
@@ -209,32 +254,82 @@ fn App() -> Element {
         });
     }
 
+    // Install pending update on startup (before main UI)
+    use_future(move || {
+        let mut installing_update = installing_update;
+        async move {
+            let repo = match lib::Repo::open_or_create(lib::Repo::default_location()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to open repo for install check: {e:#}");
+                    return;
+                }
+            };
+            let checker = lib::UpdateChecker::new(repo);
+            if let Ok(Some(path)) = checker.get_pending_install_path().await {
+                installing_update.set(true);
+                if let Err(e) = checker.clear_pending_install().await {
+                    tracing::warn!("Failed to clear pending install: {e:#}");
+                    installing_update.set(false);
+                    return;
+                }
+                let path = path.clone();
+                let apply_result = tokio::task::spawn_blocking(move || {
+                    lib::UpdateChecker::apply_update_static(&path)
+                })
+                .await;
+                match apply_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to apply update: {e:#}");
+                        installing_update.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Update task failed: {e}");
+                        installing_update.set(false);
+                        return;
+                    }
+                }
+                let exe = match std::env::current_exe() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("Failed to get current exe: {e:#}");
+                        installing_update.set(false);
+                        return;
+                    }
+                };
+                #[cfg(unix)]
+                let _ = std::process::Command::new(&exe).spawn();
+                #[cfg(windows)]
+                let _ = std::process::Command::new(&exe).spawn();
+                std::process::exit(0);
+            }
+        }
+    });
+
     use_future(move || {
         async move {
             let state = AppState::load().await.unwrap();
-            // Refresh user profile on app startup to fetch latest data from API
             if state.datum().login_state() != lib::datum_cloud::LoginState::Missing {
                 if let Err(err) = state.datum().auth().refresh_profile().await {
                     tracing::warn!("Failed to refresh user profile on startup: {err:#}");
                 }
             }
-            // let nav = navigator();
-            // if state.datum().login_state() == LoginState::Missing {
-            //     nav.push(Route::Login {});
-            // }
             provide_context(state);
             app_state_ready.set(true);
         }
     });
 
-    // Check for updates on startup and periodically
+    // Check for updates on startup and periodically; download in background when found
     use_future(move || {
-        let mut update_dialog_open = update_dialog_open;
-        let mut update_info = update_info;
         let mut manual_update_check = manual_update_check;
         let mut update_check_in_progress = update_check_in_progress;
+        let mut update_downloading = update_downloading;
+        let mut update_ready = update_ready;
+        let mut has_pending_install = has_pending_install;
+        let mut pending_update_info = pending_update_info;
         async move {
-            // Wait for app state to be ready
             while !app_state_ready() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
@@ -243,47 +338,103 @@ fn App() -> Element {
                 Ok(repo) => repo,
                 Err(e) => {
                     tracing::warn!("Failed to open repo for update checking: {e:#}");
-                    return ();
+                    return;
                 }
             };
 
-            let checker = lib::UpdateChecker::new(repo);
+            // Dev bypass: inject fake update when DATUM_UPDATE_FAKE=1 (for testing toast/Settings UI)
+            if std::env::var("DATUM_UPDATE_FAKE").as_deref() == Ok("1") {
+                let path = repo.path().join("update_temp.bin");
+                tokio::fs::write(&path, b"").await.ok();
+                let info = lib::UpdateInfo {
+                    version: "99.0.0".to_string(),
+                    release_name: "Test Update (fake)".to_string(),
+                    published_at: chrono::Utc::now(),
+                    download_url: String::new(),
+                    download_size: 0,
+                };
+                let pending = PendingUpdate {
+                    info: info.clone(),
+                    path: path.clone(),
+                };
+                update_ready.set(Some(pending));
+                has_pending_install.set(true);
+                pending_update_info.set(Some(info));
+                tracing::info!("DATUM_UPDATE_FAKE=1: injected fake update ready");
+
+                // Still run the loop to handle Later/Install now, but skip real updates
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<PendingUpdate>>();
+                let checker = lib::UpdateChecker::new(repo.clone());
+                let mut last_periodic_check = std::time::Instant::now();
+                loop {
+                    tokio::select! {
+                        result = rx.recv() => {
+                            if let Some(Some(r)) = result {
+                                update_ready.set(Some(r.clone()));
+                                update_downloading.set(false);
+                                has_pending_install.set(true);
+                                pending_update_info.set(Some(r.info));
+                            }
+                        }
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+                            let should_check_manually = manual_update_check();
+                            if should_check_manually {
+                                manual_update_check.set(false);
+                                update_check_in_progress.set(false);
+                            }
+                            if last_periodic_check.elapsed().as_secs() >= 12 * 3600 {
+                                last_periodic_check = std::time::Instant::now();
+                            }
+                        }
+                    }
+                }
+            }
+
+            let checker = lib::UpdateChecker::new(repo.clone());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<PendingUpdate>>();
 
             // Check for updates on startup
             if let Ok(should_check) = checker.should_check().await {
                 if should_check {
                     if let Ok(Some(info)) = checker.check_for_updates().await {
-                        update_info.set(Some(info));
-                        update_dialog_open.set(true);
+                        update_downloading.set(true);
+                        spawn_update_download(repo.clone(), tx.clone(), info);
                     }
                 }
             }
 
-            // Periodic update check (every 12 hours by default) and manual checks
+            // Periodic and manual checks; also process download completion
             let mut last_periodic_check = std::time::Instant::now();
             loop {
-                // Check for manual update check trigger (poll every 5 seconds)
-                let should_check_manually = manual_update_check();
-                if should_check_manually {
-                    manual_update_check.set(false);
-                    // Force check regardless of interval
-                    if let Ok(Some(info)) = checker.check_for_updates().await {
-                        update_info.set(Some(info));
-                        update_dialog_open.set(true);
+                tokio::select! {
+                    result = rx.recv() => {
+                        if let Some(Some(r)) = result {
+                            update_ready.set(Some(r.clone()));
+                            update_downloading.set(false);
+                            has_pending_install.set(true);
+                            pending_update_info.set(Some(r.info));
+                        }
                     }
-                    update_check_in_progress.set(false);
-                }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+                        let should_check_manually = manual_update_check();
+                        if should_check_manually {
+                            manual_update_check.set(false);
+                            if let Ok(Some(info)) = checker.check_for_updates().await {
+                                update_downloading.set(true);
+                                spawn_update_download(repo.clone(), tx.clone(), info);
+                            }
+                            update_check_in_progress.set(false);
+                        }
 
-                // Periodic update check (every 12 hours)
-                if last_periodic_check.elapsed().as_secs() >= 12 * 3600 {
-                    if let Ok(Some(info)) = checker.check_for_updates().await {
-                        update_info.set(Some(info));
-                        update_dialog_open.set(true);
+                        if last_periodic_check.elapsed().as_secs() >= 12 * 3600 {
+                            if let Ok(Some(info)) = checker.check_for_updates().await {
+                                update_downloading.set(true);
+                                spawn_update_download(repo.clone(), tx.clone(), info);
+                            }
+                            last_periodic_check = std::time::Instant::now();
+                        }
                     }
-                    last_periodic_check = std::time::Instant::now();
                 }
-
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         }
     });
@@ -343,6 +494,15 @@ fn App() -> Element {
         });
     }
 
+    if installing_update() {
+        return rsx! {
+            div { class: "theme-alpha",
+                Head {}
+                InstallingSplash {}
+            }
+        };
+    }
+
     if !app_state_ready() {
         return rsx! {
             div { class: "theme-alpha",
@@ -376,10 +536,50 @@ fn App() -> Element {
         }
     });
 
-    // Provide manual update check trigger and in-progress state for Settings page
+    // Provide update context for Settings and toast
     provide_context(UpdateCheckContext {
         trigger: manual_update_check,
         in_progress: update_check_in_progress,
+        downloading: update_downloading,
+        update_ready,
+        has_pending_install,
+        pending_update_info,
+        install_now_trigger,
+    });
+
+    // Handle install now trigger (from Settings when update_ready is None)
+    use_effect(move || {
+        if !install_now_trigger() {
+            return;
+        }
+        install_now_trigger.set(false);
+        let path = update_ready()
+            .as_ref()
+            .map(|p| p.path.clone())
+            .or_else(|| None);
+        if path.is_none() {
+            // Path not in memory - need to load from checker (async)
+            let repo = lib::Repo::from_path(lib::Repo::default_location());
+            let checker = lib::UpdateChecker::new(repo);
+            tokio::spawn(async move {
+                if let Ok(Some(path)) = checker.get_pending_install_path().await {
+                    if let Err(e) = checker.spawn_install_and_restart(&path) {
+                        tracing::warn!("Failed to spawn install: {e:#}");
+                        return;
+                    }
+                    std::process::exit(0);
+                }
+            });
+        } else {
+            let path = path.unwrap();
+            let repo = lib::Repo::from_path(lib::Repo::default_location());
+            let checker = lib::UpdateChecker::new(repo);
+            if let Err(e) = checker.spawn_install_and_restart(&path) {
+                tracing::warn!("Failed to spawn install: {e:#}");
+                return;
+            }
+            std::process::exit(0);
+        }
     });
 
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
@@ -391,14 +591,18 @@ fn App() -> Element {
             div { class: "flex-1 overflow-hidden",
                 Head {}
                 Router::<Route> {}
-                if let Some(info) = update_info() {
-                    UpdateDialog {
-                        open: update_dialog_open,
-                        update_info: info.clone(),
-                        on_restart: move |_| -> () {}, //TODO: Implement proper restart mechanism
-                        on_dismiss: move |_| {
-                            update_dialog_open.set(false);
+            }
+            if let Some(ref pending) = update_ready() {
+                div { class: "fixed bottom-4 right-4 z-[100]",
+                    UpdateToast {
+                        pending: pending.clone(),
+                        on_later: move |_| {
+                            if let Some(p) = update_ready() {
+                                pending_update_info.set(Some(p.info));
+                            }
+                            update_ready.set(None);
                         },
+                        on_install_now: move |_| install_now_trigger.set(true),
                     }
                 }
             }

@@ -89,6 +89,41 @@ pub fn Settings() -> Element {
                         p { class: "text-1xs text-foreground/60",
                             "Datum automatically checks for updates on startup and periodically."
                         }
+                        if (update_ctx.downloading)() {
+                            p { class: "text-xs text-foreground/80 flex items-center gap-2",
+                                Icon {
+                                    source: IconSource::Named("loader-circle".into()),
+                                    size: 14,
+                                    class: "animate-spin",
+                                }
+                                "Downloading update..."
+                            }
+                        }
+                    }
+                    if (update_ctx.has_pending_install)() {
+                        div { class: "flex flex-col gap-2 p-3 rounded-lg bg-background/50 border border-app-border",
+                            p { class: "text-sm text-foreground font-medium",
+                                "Update ready to install"
+                            }
+                            if let Some(ref info) = (update_ctx.pending_update_info)() {
+                                p { class: "text-xs text-foreground/80",
+                                    "{info.release_name} (v{info.version})"
+                                }
+                            }
+                            p { class: "text-1xs text-foreground/60",
+                                "The update will install when you restart the app. Or install now to restart immediately."
+                            }
+                            div { class: "flex gap-2",
+                                Button {
+                                    class: "w-fit",
+                                    text: "Install now",
+                                    kind: ButtonKind::Primary,
+                                    onclick: move |_| {
+                                        update_ctx.install_now_trigger.set(true);
+                                    },
+                                }
+                            }
+                        }
                     }
                     Button {
                         class: "w-fit",
