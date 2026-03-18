@@ -1,5 +1,6 @@
 use std::io::{Error as IoError, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -23,6 +24,12 @@ pub struct UpdateSettings {
     /// Whether auto-update is enabled
     #[serde(default = "default_auto_update_enabled")]
     pub auto_update_enabled: bool,
+    /// Path to downloaded update ready to install (for "install on next restart")
+    #[serde(default)]
+    pub pending_install_path: Option<String>,
+    /// Version of the pending update (for display in Settings)
+    #[serde(default)]
+    pub pending_update_version: Option<String>,
 }
 
 fn default_check_interval() -> u64 {
@@ -39,6 +46,8 @@ impl Default for UpdateSettings {
             check_interval_hours: 12,
             last_check_time: None,
             auto_update_enabled: true,
+            pending_install_path: None,
+            pending_update_version: None,
         }
     }
 }
@@ -349,6 +358,323 @@ impl UpdateChecker {
             .context("failed to write update file")?;
 
         Ok(temp_file)
+    }
+
+    /// Check if there is a pending update ready to install
+    pub async fn has_pending_install(&self) -> Result<bool> {
+        let settings = self.load_settings().await?;
+        Ok(settings
+            .pending_install_path
+            .as_ref()
+            .map(|p| Path::new(p).exists())
+            .unwrap_or(false))
+    }
+
+    /// Get the path of the pending update, if any
+    pub async fn get_pending_install_path(&self) -> Result<Option<PathBuf>> {
+        let settings = self.load_settings().await?;
+        Ok(settings.pending_install_path.as_ref().and_then(|p| {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// Set the pending install path and version (call after download completes)
+    pub async fn set_pending_install(&self, path: &Path, version: &str) -> Result<()> {
+        let mut settings = self.load_settings().await?;
+        settings.pending_install_path = Some(path.to_string_lossy().to_string());
+        settings.pending_update_version = Some(version.to_string());
+        self.save_settings(&settings).await
+    }
+
+    /// Clear the pending install path
+    pub async fn clear_pending_install(&self) -> Result<()> {
+        let mut settings = self.load_settings().await?;
+        settings.pending_install_path = None;
+        settings.pending_update_version = None;
+        self.save_settings(&settings).await
+    }
+
+    /// Get the pending update version, if any
+    pub async fn get_pending_update_version(&self) -> Result<Option<String>> {
+        let settings = self.load_settings().await?;
+        Ok(settings.pending_update_version)
+    }
+
+    /// Apply the update (install the downloaded file). Blocks until complete.
+    /// Call this when the app is about to exit or on next startup.
+    pub fn apply_update(&self, downloaded_path: &Path) -> Result<()> {
+        Self::apply_update_static(downloaded_path)
+    }
+
+    /// Apply the update without needing a checker instance (for use in blocking contexts).
+    pub fn apply_update_static(downloaded_path: &Path) -> Result<()> {
+        if !downloaded_path.exists() {
+            return Err(IoError::new(
+                ErrorKind::NotFound,
+                "Downloaded update file does not exist",
+            ))
+            .anyerr();
+        }
+
+        // Dev bypass: skip actual install when DATUM_UPDATE_FAKE=1 (for testing toast/Settings UI)
+        if std::env::var("DATUM_UPDATE_FAKE").as_deref() == Ok("1") {
+            tracing::info!("DATUM_UPDATE_FAKE=1: skipping actual install");
+            return Ok(());
+        }
+
+        #[cfg(target_os = "macos")]
+        Self::apply_update_macos_static(downloaded_path)?;
+
+        #[cfg(target_os = "windows")]
+        Self::apply_update_windows_static(downloaded_path)?;
+
+        #[cfg(target_os = "linux")]
+        Self::apply_update_linux_static(downloaded_path)?;
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = downloaded_path;
+            return Err(IoError::new(
+                ErrorKind::Unsupported,
+                "Automatic updates not supported on this platform",
+            ))
+            .anyerr();
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_update_macos_static(dmg_path: &Path) -> Result<()> {
+        use std::process::Stdio;
+
+        // Mount DMG
+        let output = Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-readonly", "-quiet"])
+            .arg(dmg_path)
+            .output()
+            .anyerr()?;
+
+        if !output.status.success() {
+            return Err(IoError::new(
+                ErrorKind::Other,
+                format!(
+                    "Failed to mount DMG: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ))
+            .anyerr();
+        }
+
+        // Get mount point - last line of stdout is typically "/Volumes/VolumeName"
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let volume = stdout
+            .lines()
+            .last()
+            .ok_or_else(|| IoError::new(ErrorKind::Other, "No mount point from hdiutil"))?;
+
+        // Find .app in the volume
+        let app_path = std::fs::read_dir(volume)
+            .anyerr()?
+            .filter_map(|e| e.ok())
+            .find(|e| e.path().extension().map_or(false, |ext| ext == "app"))
+            .map(|e| e.path())
+            .ok_or_else(|| IoError::new(ErrorKind::NotFound, "No .app found in DMG"))?;
+
+        let dest = Path::new("/Applications").join(app_path.file_name().unwrap());
+
+        // Copy to Applications
+        let status = Command::new("rsync")
+            .args(["-a", "--delete"])
+            .arg(&app_path)
+            .arg(&dest)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .status()
+            .anyerr()?;
+
+        // Unmount
+        let _ = Command::new("hdiutil")
+            .args(["detach", "-force", "-quiet"])
+            .arg(volume)
+            .status();
+
+        if !status.success() {
+            return Err(IoError::new(
+                ErrorKind::Other,
+                "Failed to copy app to Applications",
+            ))
+            .anyerr();
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn apply_update_windows_static(installer_path: &Path) -> Result<()> {
+        // NSIS installer - /S for silent install
+        let status = Command::new(installer_path)
+            .arg("/S")
+            .status()
+            .anyerr()?;
+
+        if !status.success() {
+            return Err(IoError::new(
+                ErrorKind::Other,
+                "Installer failed",
+            ))
+            .anyerr();
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_update_linux_static(new_appimage_path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let current_exe = std::env::current_exe().anyerr()?;
+        let temp_backup = current_exe.with_extension("appimage.bak");
+
+        // Move current to backup, new to current location
+        std::fs::rename(&current_exe, &temp_backup).anyerr()?;
+        std::fs::copy(new_appimage_path, &current_exe).anyerr()?;
+
+        let mut perms = std::fs::metadata(&current_exe).anyerr()?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&current_exe, perms).anyerr()?;
+
+        // Remove backup on success
+        let _ = std::fs::remove_file(&temp_backup);
+
+        Ok(())
+    }
+
+    /// Spawn a process that waits for this app to exit, then applies the update and restarts.
+    /// Call this before exiting for "Install now".
+    pub fn spawn_install_and_restart(&self, downloaded_path: &Path) -> Result<()> {
+        let path = downloaded_path.to_path_buf();
+        let path_str = path.to_string_lossy().to_string();
+        let parent_pid = std::process::id();
+
+        #[cfg(unix)]
+        {
+            let exe = std::env::current_exe().anyerr()?;
+            let exe_str = exe.to_string_lossy().to_string();
+
+            // Write helper script to repo
+            let script_path = self.repo.path().join("update_install.sh");
+            let install_script = self.get_install_script_unix();
+            std::fs::write(&script_path, install_script).anyerr()?;
+
+            #[cfg(target_os = "macos")]
+            let (shell, arg) = ("/bin/bash", "-c");
+            #[cfg(target_os = "linux")]
+            let (shell, arg) = ("/bin/bash", "-c");
+
+            let script_path_str = script_path.to_string_lossy();
+            let wait_and_run = format!(
+                "while kill -0 {} 2>/dev/null; do sleep 0.5; done; chmod +x \"{}\" && \"{}\" \"{}\" \"{}\"",
+                parent_pid,
+                script_path_str,
+                script_path_str,
+                path_str.replace('"', "\\\""),
+                exe_str.replace('"', "\\\"")
+            );
+
+            Command::new(shell)
+                .arg(arg)
+                .arg(wait_and_run)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .anyerr()?;
+        }
+
+        #[cfg(windows)]
+        {
+            let exe = std::env::current_exe().anyerr()?;
+            let exe_str = exe.to_string_lossy().to_string();
+
+            // Use PowerShell to wait for process and run installer
+            let ps_script = if std::env::var("DATUM_UPDATE_FAKE").as_deref() == Ok("1") {
+                // Dev bypass: skip installer, just restart the app
+                format!(
+                    r#"while (Get-Process -Id {} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }}
+Start-Process -FilePath '{}'
+"#,
+                    parent_pid,
+                    exe_str.replace('\'', "''")
+                )
+            } else {
+                format!(
+                    r#"while (Get-Process -Id {} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }}
+Start-Process -FilePath '{}' -ArgumentList '/S' -Wait
+Start-Process -FilePath '{}'
+"#,
+                    parent_pid,
+                    path_str.replace('\'', "''"),
+                    exe_str.replace('\'', "''")
+                )
+            };
+
+            Command::new("powershell")
+                .args(["-NoProfile", "-Command", &ps_script])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .anyerr()?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn get_install_script_unix(&self) -> String {
+        // Dev bypass: when DATUM_UPDATE_FAKE=1, just restart the app (skip actual install)
+        if std::env::var("DATUM_UPDATE_FAKE").as_deref() == Ok("1") {
+            #[cfg(target_os = "macos")]
+            return "open -a \"Datum\"".to_string();
+            #[cfg(target_os = "linux")]
+            return r#"#!/bin/bash
+exec "$2"
+"#
+            .to_string();
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            r#"#!/bin/bash
+set -e
+DMG="$1"
+VOLUME=$(hdiutil attach -nobrowse -readonly -quiet "$DMG" | tail -n1 | cut -f3-)
+APP=$(find "$VOLUME" -maxdepth 1 -name "*.app" | head -1)
+rsync -a --delete "$APP" /Applications/
+hdiutil detach -force -quiet "$VOLUME"
+open -a "Datum"
+"#
+            .to_string()
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            r#"#!/bin/bash
+set -e
+NEW="$1"
+CURRENT="$2"
+cp -f "$NEW" "$CURRENT"
+chmod +x "$CURRENT"
+exec "$CURRENT"
+"#
+            .to_string()
+        }
     }
 
     /// Get current version
