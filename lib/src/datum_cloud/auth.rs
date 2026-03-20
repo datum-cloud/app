@@ -170,11 +170,10 @@ impl StatelessClient {
         Ok(Self { oidc, http, env })
     }
 
-    pub async fn login<F, Fut, C>(&self, open_url: F) -> Result<AuthState>
+    pub async fn login<F, Fut>(&self, open_url: F) -> Result<AuthState>
     where
         F: FnOnce(String, CancellationToken) -> Fut,
-        Fut: Future<Output = Option<C>>,
-        C: FnOnce() + Send + 'static,
+        Fut: Future<Output = ()>,
     {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -199,19 +198,11 @@ impl StatelessClient {
         let cancel_token = CancellationToken::new();
         let cancel_token_for_opener = cancel_token.clone();
 
-        // Open the auth URL; opener may return a close handle to close the window when done.
-        let mut close_handle = open_url(auth_url.to_string(), cancel_token_for_opener).await;
+        open_url(auth_url.to_string(), cancel_token_for_opener).await;
 
-        let recv_result = redirect_server
+        let authorization_code = redirect_server
             .recv_with_timeout(LOGIN_TIMEOUT, Some(&cancel_token))
-            .await;
-
-        // Close the auth window if one was opened (e.g. in-app webview), on success or error.
-        if let Some(close) = close_handle.take() {
-            close();
-        }
-
-        let authorization_code = recv_result?;
+            .await?;
         debug!("received redirect with authorization code");
 
         // Exchange auth code for ID and access tokens.
@@ -572,9 +563,8 @@ impl AuthClient {
     /// Fetch fresh OIDC provider metadata (including JWKs) and swap in a new client.
     /// Call before login/refresh to avoid "No matching key found" when keys rotate.
     async fn ensure_fresh_client(&self) -> Result<Arc<StatelessClient>> {
-        let fresh = Arc::new(
-            StatelessClient::with_provider(self.env, self.env.auth_provider()).await?,
-        );
+        let fresh =
+            Arc::new(StatelessClient::with_provider(self.env, self.env.auth_provider()).await?);
         self.client.store(fresh.clone());
         Ok(fresh)
     }
@@ -667,27 +657,18 @@ impl AuthClient {
     }
 
     pub async fn login(&self) -> Result<()> {
-        self.login_with_opener(|url, _cancel_token| async move {
-            if let Err(err) = open::that(&url) {
-                warn!("Failed to auto-open url: {err}");
-                eprintln!("Open this URL in a browser to complete the login:\n{url}");
-            }
-            None::<Box<dyn FnOnce() + Send>>
-        })
-        .await
-    }
-
-    pub async fn login_with_opener<F, Fut, C>(&self, open_url: F) -> Result<()>
-    where
-        F: FnOnce(String, CancellationToken) -> Fut,
-        Fut: Future<Output = Option<C>>,
-        C: FnOnce() + Send + 'static,
-    {
         let auth = self.state.load();
         let auth = match auth.get() {
             Err(_) => {
                 let client = self.ensure_fresh_client().await?;
-                client.login(open_url).await?
+                client
+                    .login(|url, _cancel_token| async move {
+                        if let Err(err) = open::that(&url) {
+                            warn!("Failed to auto-open url: {err}");
+                            eprintln!("Open this URL in a browser to complete the login:\n{url}");
+                        }
+                    })
+                    .await?
             }
             Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
                 let client = self.ensure_fresh_client().await?;
@@ -700,9 +681,10 @@ impl AuthClient {
                             .login(|url, _cancel_token| async move {
                                 if let Err(e) = open::that(&url) {
                                     warn!("Failed to auto-open url: {e}");
-                                    eprintln!("Open this URL in a browser to complete the login:\n{url}");
+                                    eprintln!(
+                                        "Open this URL in a browser to complete the login:\n{url}"
+                                    );
                                 }
-                                None::<Box<dyn FnOnce() + Send>>
                             })
                             .await?
                     }
@@ -828,8 +810,7 @@ mod redirect_server {
     use tokio_util::sync::CancellationToken;
     use tracing::{Instrument, debug, instrument, warn};
 
-    static LOGIN_SUCCESS_PNG: &[u8] =
-        include_bytes!("../../../ui/assets/images/login-success.png");
+    static LOGIN_SUCCESS_PNG: &[u8] = include_bytes!("../../../ui/assets/images/login-success.png");
     static ALLIANCE_NO1_REGULAR_TTF: &[u8] =
         include_bytes!("../../../ui/assets/fonts/AllianceNo1-Regular.ttf");
     static FAVICON_LIGHT_32: &[u8] =
@@ -944,13 +925,15 @@ mod redirect_server {
         sender: mpsc::Sender<n0_error::Result<OauthRedirectData>>,
     }
 
-    async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> axum::response::Html<String> {
+    async fn oauth_redirect(
+        state: State<AppState>,
+        query: Query<OauthRedirectData>,
+    ) -> axum::response::Html<String> {
         let data = query.0;
         state.sender.send(Ok(data)).await.ok();
 
         let hero_b64 = BASE64.encode(LOGIN_SUCCESS_PNG);
         let font_b64 = BASE64.encode(ALLIANCE_NO1_REGULAR_TTF);
-        let favicon_light_b64 = BASE64.encode(FAVICON_LIGHT_32);
         let favicon_dark_b64 = BASE64.encode(FAVICON_DARK_32);
         let html = OAUTH_REDIRECT_HTML
             .replace("{{HERO_B64}}", &hero_b64)
