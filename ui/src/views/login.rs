@@ -1,13 +1,11 @@
 use dioxus::prelude::*;
 use lib::datum_cloud::LoginState;
 use open::that;
-use tracing::warn;
 
 use crate::{
     components::{Button, ButtonKind, IconSource},
     state::AppState,
-    IsLoginPageSignal,
-    Route,
+    IsLoginPageSignal, Route,
 };
 
 #[component]
@@ -47,17 +45,7 @@ pub fn Login() -> Element {
         let mut auth_changed = consume_context::<Signal<u32>>();
         let datum = state.datum();
         let state_for_login = state.clone();
-        let do_login = move || async move {
-            state_for_login.datum().auth()
-                .login_with_opener(|url, _cancel_token| async move {
-                    if let Err(err) = open::that(&url) {
-                        warn!("Failed to auto-open url: {err}");
-                        eprintln!("Open this URL in a browser to complete the login:\n{url}");
-                    }
-                    None::<Box<dyn FnOnce() + Send>>
-                })
-                .await
-        };
+        let do_login = move || async move { state_for_login.datum().auth().login().await };
         match datum.login_state() {
             LoginState::Missing => do_login().await?,
             LoginState::NeedsRefresh => {
