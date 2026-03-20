@@ -9,7 +9,7 @@ pub fn Splash() -> Element {
         div {
             class: "w-full grid h-screen bg-cover place-items-center",
             style: "background-image: url(\"{HERO_ILLUSTRATION}\");",
-            div { class: "text-center pb-48",
+            div { class: "text-center pb-[154px]",
                 img { class: "w-20 h-20 mx-auto", src: "{LOGO}" }
             }
         }

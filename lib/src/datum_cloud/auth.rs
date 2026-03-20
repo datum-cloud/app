@@ -814,7 +814,9 @@ mod redirect_server {
         extract::{Query, State},
         routing::get,
     };
+    use data_encoding::BASE64;
     use n0_error::{StdResultExt, anyerr};
+
     use openidconnect::{CsrfToken, RedirectUrl};
     use serde::Deserialize;
     use std::{
@@ -825,6 +827,15 @@ mod redirect_server {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
     use tracing::{Instrument, debug, instrument, warn};
+
+    static LOGIN_SUCCESS_PNG: &[u8] =
+        include_bytes!("../../../ui/assets/images/login-success.png");
+    static ALLIANCE_NO1_REGULAR_TTF: &[u8] =
+        include_bytes!("../../../ui/assets/fonts/AllianceNo1-Regular.ttf");
+    static FAVICON_LIGHT_32: &[u8] =
+        include_bytes!("../../../ui/assets/icons/favicon-light-32x32.png");
+    static FAVICON_DARK_32: &[u8] =
+        include_bytes!("../../../ui/assets/icons/favicon-dark-32x32.png");
 
     pub const REDIRECT_SERVER_PORT: u16 = 7076;
 
@@ -936,16 +947,298 @@ mod redirect_server {
     async fn oauth_redirect(state: State<AppState>, query: Query<OauthRedirectData>) -> axum::response::Html<String> {
         let data = query.0;
         state.sender.send(Ok(data)).await.ok();
-        axum::response::Html(
-            r#"<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Login complete</title></head>
-<body>
-<p>You are now logged in. This window will close automatically.</p>
-<script>window.close();</script>
-</body>
-</html>"#
-                .to_string(),
-        )
+
+        let hero_b64 = BASE64.encode(LOGIN_SUCCESS_PNG);
+        let font_b64 = BASE64.encode(ALLIANCE_NO1_REGULAR_TTF);
+        let favicon_light_b64 = BASE64.encode(FAVICON_LIGHT_32);
+        let favicon_dark_b64 = BASE64.encode(FAVICON_DARK_32);
+        let html = OAUTH_REDIRECT_HTML
+            .replace("{{HERO_B64}}", &hero_b64)
+            .replace("{{FONT_B64}}", &font_b64)
+            .replace("{{FAVICON_DARK_B64}}", &favicon_dark_b64);
+
+        axum::response::Html(html)
     }
+
+    static OAUTH_REDIRECT_HTML: &str = r##"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login successful - Datum</title>
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="data:image/png;base64,{{FAVICON_DARK_B64}}"
+    />
+    <style>
+      @font-face {
+        font-family: "Alliance No1";
+        src: url("data:font/ttf;base64,{{FONT_B64}}") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100svh;
+        background-color: #0c1d31;
+        color: #90969c;
+        font-family:
+          "Alliance No1",
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem 1rem;
+      }
+
+      .header {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+
+      .logo-icon {
+        width: 81px;
+        height: 66px;
+        margin-bottom: 1rem;
+      }
+
+      .success-card {
+        background-color: #18273a;
+        border: 1px solid #384555;
+        border-radius: 12px;
+        padding: 48px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        width: 400px;
+      }
+
+      .success-title {
+        font-size: 1.25rem;
+        color: #F6F6F5;
+        text-align: center;
+      }
+
+      .success-message {
+        font-size: 0.9375rem;
+        color: #90969c;
+        text-align: center;
+      }
+
+      .footer {
+        margin-top: 3rem;
+        display: flex;
+        align-items: center;
+        gap: 3rem;
+      }
+
+      .footer a {
+        color: #90969c;
+        text-decoration: none;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: opacity 0.2s;
+      }
+
+      .footer a:hover {
+        opacity: 0.8;
+      }
+
+      .footer svg.icon {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+      }
+
+      .hero-image {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        max-width: 50%;
+        object-fit: contain;
+        object-position: bottom left;
+        pointer-events: none;
+      }
+
+      @media (max-width: 768px) {
+        body {
+          padding: 1.5rem 1rem;
+          margin-top: 2rem;
+          justify-content: flex-start;
+        }
+
+        .header {
+          margin-bottom: 0.75rem;
+        }
+
+        .logo-icon {
+          width: 64px;
+          height: 52px;
+          margin-bottom: 0.75rem;
+        }
+
+        .success-card {
+          max-width: 100%;
+          padding: 2rem 1.25rem;
+        }
+
+        .success-title {
+          font-size: 1.1rem;
+        }
+
+        .success-message {
+          font-size: 0.875rem;
+        }
+
+        .footer {
+          margin-top: 2rem;
+          gap: 2rem;
+          flex-wrap: wrap;
+          justify-content: center;
+        }
+
+        .footer a {
+          font-size: 11px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        body {
+          padding: 1rem 0.75rem;
+        }
+
+        .success-title {
+          font-size: 1rem;
+        }
+
+        .success-message {
+          font-size: 0.8125rem;
+        }
+
+        .footer {
+          flex-direction: column;
+          gap: 1rem;
+          margin-top: 1.5rem;
+        }
+
+        .footer a {
+          font-size: 12px;
+        }
+
+        .hero-image {
+          max-width: 80%; 
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <img class="hero-image" src="data:image/png;base64,{{HERO_B64}}" alt="" />
+    <header class="header">
+      <svg
+        class="logo-icon"
+        width="81"
+        height="66"
+        viewBox="0 0 81 66"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M35.9866 0.000595093C35.4722 0.000595093 35.0528 0.418663 35.0528 0.934326C35.0528 1.44999 35.0528 10.058 35.0528 10.058C35.0528 10.5724 35.4709 10.9686 35.9866 10.9686L40.4172 10.9918C42.2478 10.9918 43.9913 11.7066 45.3273 13.003C46.6712 14.3086 47.4216 16.0324 47.4427 17.8589C47.4638 19.7304 46.7503 21.4923 45.4354 22.8217C44.1205 24.1511 42.3665 24.8831 40.4964 24.8831H40.4172C38.5907 24.862 36.8669 24.1115 35.5613 22.7677C34.2649 21.433 33.5295 19.6882 33.5295 17.8576V13.3749C33.5295 12.8606 33.132 12.4919 32.6163 12.4919H23.4953C22.9809 12.4919 22.5615 12.8592 22.5615 13.3749V22.4986C22.5615 23.013 22.9796 23.4599 23.4953 23.4599H30.6948C31.6628 23.4599 32.2866 23.4455 32.801 23.5154C33.4841 23.6078 33.9418 23.8029 34.2873 24.1472C34.6328 24.4914 34.8267 24.9503 34.919 25.6335C34.9889 26.1491 35.0528 26.7716 35.0528 27.741V34.9392C35.0528 35.4535 35.4202 35.9512 35.9358 35.9512H40.4977C42.5458 35.9512 44.5571 35.5287 46.476 34.8508C53.628 32.3226 58.4339 25.5253 58.4339 17.9368C58.4339 10.3482 53.628 3.5509 46.476 1.02269C44.5571 0.34481 42.5458 0.000595093 40.4977 0.000595093H35.9879H35.9866Z"
+          fill="#E6F59E"
+        />
+        <path
+          d="M67.2503 55.1795H67.2173L66.4593 64.8685H64.3823L65.1404 52.8848H68.2888L72.6432 62.1486L77.0635 52.8848H80.146L80.904 64.8685H78.8271L78.069 55.1795H78.036L73.5827 64.8685H71.7201L67.2503 55.1795Z"
+          fill="#F6F6F5"
+        />
+        <path
+          d="M60.6992 59.7256C60.6992 60.6926 60.5508 61.5223 60.2541 62.2146C59.9574 62.896 59.5343 63.4564 58.9848 63.896C58.4354 64.3355 57.765 64.6597 56.9738 64.8685C56.1936 65.0663 55.3144 65.1652 54.3364 65.1652C53.3584 65.1652 52.4737 65.0663 51.6825 64.8685C50.9023 64.6597 50.2374 64.3355 49.688 63.896C49.1385 63.4564 48.7154 62.896 48.4187 62.2146C48.122 61.5223 47.9736 60.6926 47.9736 59.7256V52.8848H50.3143V59.5607C50.3143 60.0552 50.3693 60.5223 50.4792 60.9619C50.5891 61.3904 50.7924 61.7696 51.0891 62.0992C51.3858 62.4289 51.7924 62.6872 52.3089 62.874C52.8364 63.0608 53.5122 63.1542 54.3364 63.1542C55.1606 63.1542 55.8309 63.0608 56.3474 62.874C56.8749 62.6872 57.287 62.4289 57.5837 62.0992C57.8804 61.7696 58.0837 61.3904 58.1936 60.9619C58.3035 60.5223 58.3585 60.0552 58.3585 59.5607V52.8848H60.6992V59.7256Z"
+          fill="#F6F6F5"
+        />
+        <path
+          d="M36.6463 54.8958H31.2891V52.8848H44.3443V54.8958H38.987V64.8685H36.6463V54.8958Z"
+          fill="#F6F6F5"
+        />
+        <path
+          d="M21.8299 52.8848H24.5003L30.3191 64.8685H27.8465L26.5938 62.1157H19.687L18.4178 64.8685H15.9287L21.8299 52.8848ZM25.6707 60.1047L23.1651 54.7639L20.6596 60.1047H25.6707Z"
+          fill="#F6F6F5"
+        />
+        <path
+          d="M0.000976562 52.8848H5.77033C6.7154 52.8848 7.60003 52.9947 8.42422 53.2144C9.25941 53.4232 9.98469 53.7639 10.6001 54.2364C11.2155 54.698 11.699 55.3079 12.0507 56.0661C12.4133 56.8134 12.5946 57.7255 12.5946 58.8025C12.5946 59.8245 12.4298 60.7146 12.1001 61.4728C11.7704 62.2311 11.3089 62.863 10.7155 63.3685C10.1221 63.874 9.41325 64.2531 8.58906 64.5059C7.76487 64.7476 6.85826 64.8685 5.86923 64.8685H0.000976562V52.8848ZM4.71536 62.8575C5.71538 62.8575 6.56155 62.7806 7.25387 62.6267C7.95718 62.4729 8.52862 62.2311 8.96819 61.9014C9.41875 61.5718 9.74293 61.1542 9.94073 60.6487C10.1495 60.1432 10.2539 59.5387 10.2539 58.8354C10.2539 58.0992 10.1495 57.4838 9.94073 56.9892C9.73194 56.4837 9.40226 56.0771 8.95171 55.7694C8.51214 55.4617 7.9407 55.242 7.23739 55.1101C6.53408 54.9672 5.6934 54.8958 4.71536 54.8958H2.34168V62.8575H4.71536Z"
+          fill="#F6F6F5"
+        />
+      </svg>
+    </header>
+
+    <main class="success-card">
+<svg width="34" height="34" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="34" height="34" rx="4" fill="#4D6356"/>
+<path d="M23.6666 12.4414L14.5 21.6081L10.3333 17.4414" stroke="#E6F59F" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+
+
+      <h1 class="success-title">Login confirmed!</h1>
+      <p class="success-message">Feel free to close this window</p>
+    </main>
+
+    <footer class="footer">
+      <a href="https://datum.net" target="_blank" rel="noopener">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="lucide lucide-app-window-icon lucide-app-window"
+          style="width: 18px; height: 18px"
+        >
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M10 4v4" />
+          <path d="M2 8h20" />
+          <path d="M6 4v4" />
+        </svg>
+        datum.net
+      </a>
+      <a href="https://link.datum.net/discord" target="_blank" rel="noopener">
+        <svg class="icon" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"
+          />
+        </svg>
+        Discord
+      </a>
+      <a href="https://github.com/datum-cloud" target="_blank" rel="noopener">
+        <svg class="icon" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
+          />
+        </svg>
+        Github
+      </a>
+    </footer>
+  </body>
+</html>"##;
 }

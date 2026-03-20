@@ -19,7 +19,6 @@ use dioxus_desktop::{
     use_muda_event_handler, use_window,
 };
 
-mod auth_window;
 mod components;
 mod state;
 mod util;
@@ -125,10 +124,6 @@ fn main() {
             // Make "close" behave like hide, so the tray icon can restore it.
             .with_close_behaviour(WindowCloseBehaviour::WindowHides)
             .with_window(window_builder);
-
-        config = config.with_custom_event_handler(move |event, target| {
-            crate::auth_window::process_auth_window(event, target);
-        });
 
         dioxus::LaunchBuilder::desktop()
             .with_cfg(desktop! { config })
