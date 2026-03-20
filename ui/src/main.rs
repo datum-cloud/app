@@ -26,6 +26,10 @@ mod views;
 
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
+/// Signal indicating we're on the login page (for TitleBar background color).
+#[derive(Clone)]
+pub struct IsLoginPageSignal(pub Signal<bool>);
+
 /// Context for manual update check: trigger starts a check, in_progress is true while checking.
 #[derive(Clone)]
 pub struct UpdateCheckContext {
@@ -116,13 +120,13 @@ fn main() {
             .with_has_shadow(true)
             .with_fullsize_content_view(true);
 
+        let mut config = Config::new()
+            // Make "close" behave like hide, so the tray icon can restore it.
+            .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+            .with_window(window_builder);
+
         dioxus::LaunchBuilder::desktop()
-            .with_cfg(desktop! {
-                Config::new()
-                    // Make "close" behave like hide, so the tray icon can restore it.
-                    .with_close_behaviour(WindowCloseBehaviour::WindowHides)
-                    .with_window(window_builder)
-            })
+            .with_cfg(desktop! { config })
             .launch(App);
     }
 
@@ -154,24 +158,38 @@ fn init_tracing() {
 /// Custom title bar (drag region + favicon) shown only on macOS; empty on Windows/Linux which use the native title bar.
 #[component]
 fn TitleBar() -> Element {
+    let IsLoginPageSignal(is_login_page) = consume_context::<IsLoginPageSignal>();
+    let title_bar_bg = if is_login_page() {
+        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-[var(--midnight-fjord)]"
+    } else {
+        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-background"
+    };
+
     #[cfg(target_os = "macos")]
     {
         rsx! {
             div {
-                class: "h-[32px] flex items-center pl-20 bg-background z-50 cursor-default",
+                class: "{title_bar_bg}",
                 onmousedown: move |_| {
                     #[cfg(feature = "desktop")]
                     {
                         use_window().drag();
                     }
                 },
-                img {
-                    src: "{FAVICON_DARK_196}",
-                    class: "w-6 h-6 ml-auto mr-2 dark:hidden",
-                }
-                img {
-                    src: "{FAVICON_LIGHT_196}",
-                    class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
+                if is_login_page() {
+                    img {
+                        src: "{FAVICON_LIGHT_196}",
+                        class: "w-6 h-6 ml-auto mr-2 block",
+                    }
+                } else {
+                    img {
+                        src: "{FAVICON_DARK_196}",
+                        class: "w-6 h-6 ml-auto mr-2 dark:hidden",
+                    }
+                    img {
+                        src: "{FAVICON_LIGHT_196}",
+                        class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
+                    }
                 }
             }
         }
@@ -384,6 +402,11 @@ fn App() -> Element {
 
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
     provide_context(open_add_tunnel_from_tray);
+
+    // Signal for whether we're on the login page (used by TitleBar for background color).
+    // Start true since we always land on login after splash; Login's use_effect/use_drop keep it in sync.
+    let is_login_page = use_signal(|| true);
+    provide_context(IsLoginPageSignal(is_login_page));
 
     rsx! {
         div { class: "theme-alpha",

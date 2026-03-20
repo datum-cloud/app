@@ -84,8 +84,8 @@
   /* Button Colors */
   --button-primary-background: var(--aurora-moss);
   --button-primary-foreground: var(--midnight-fjord);
-  --button-secondary-background: var(--app-dark-utility-2);
-  --button-secondary-foreground: var(--glacier-mist-800);
+  --button-secondary-background: var(--aurora-moss);
+  --button-secondary-foreground: var(--midnight-fjord);
   --button-outline-background: var(--app-dark-utility-5);
   --button-outline-foreground: var(--glacier-mist-700);
   --button-link-foreground: var(--canyon-clay);
