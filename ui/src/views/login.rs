@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 use lib::datum_cloud::LoginState;
+use open::that;
+use tracing::warn;
 
 use crate::{
     components::{Button, ButtonKind, IconSource},
@@ -47,8 +49,12 @@ pub fn Login() -> Element {
         let state_for_login = state.clone();
         let do_login = move || async move {
             state_for_login.datum().auth()
-                .login_with_opener(|url, cancel_token| async move {
-                    crate::auth_window::open_auth_window(url, cancel_token)
+                .login_with_opener(|url, _cancel_token| async move {
+                    if let Err(err) = open::that(&url) {
+                        warn!("Failed to auto-open url: {err}");
+                        eprintln!("Open this URL in a browser to complete the login:\n{url}");
+                    }
+                    None::<Box<dyn FnOnce() + Send>>
                 })
                 .await
         };
@@ -104,30 +110,14 @@ pub fn Login() -> Element {
             .map(|approval| approval == "Pending")
             .unwrap_or(false);
 
-    let title_text = if registration_pending {
-        if let Ok(auth) = auth_state.get() {
-            format!(
-                "Hey {}!",
-                auth.profile.first_name.as_deref().unwrap_or("there")
-            )
-        } else {
-            "Registration Pending".to_string()
-        }
-    } else {
-        "".to_string()
-    };
+    let create_account_url = state.datum().web_url().trim_end_matches('/').to_string();
 
     rsx! {
         div {
             class: "w-full h-screen bg-bottom bg-no-repeat bg-contain flex items-center justify-center",
             style: "background-image: url(\"{HERO_ILLUSTRATION}\"); background-color: var(--midnight-fjord);",
-            div { class: "flex flex-col items-center justify-center w-64 mx-auto gap-4 -mt-[20%]",
+            div { class: "flex flex-col items-center justify-center w-64 mx-auto gap-6 -mt-[20%]",
                 img { class: "w-20 h-20", src: "{LOGO_DARK}", alt: "Datum" }
-                h1 {
-                    class: "text-2xl font-semibold text-center font-sans",
-                    style: "color: var(--glacier-mist-700);",
-                    "{title_text}"
-                }
                 if registration_pending {
                     div {
                         class: "rounded-lg border border-button-secondary-background bg-button-secondary-background/80 p-4 w-full",
@@ -139,12 +129,21 @@ pub fn Login() -> Element {
                     }
                 }
                 if !registration_pending {
-                    Button {
-                        kind: ButtonKind::Secondary,
-                        class: if login.pending() { Some("opacity-40 pointer-events-none".to_string()) } else { None },
-                        onclick: move |_| login.call(()),
-                        text: if login.pending() { "Waiting for log in confirmation".to_string() } else { "Log in to Datum".to_string() },
-                        trailing_icon: if login.pending() { Some(IconSource::Named("loader-circle".into())) } else { Some(IconSource::Named("move-right".into())) },
+                    div { class: "flex flex-col items-center gap-4 w-full",
+                        Button {
+                            kind: ButtonKind::Secondary,
+                            class: if login.pending() { Some("opacity-40 pointer-events-none".to_string()) } else { None },
+                            onclick: move |_| login.call(()),
+                            text: if login.pending() { "Waiting for log in confirmation".to_string() } else { "Log in to Datum".to_string() },
+                            trailing_icon: if login.pending() { Some(IconSource::Named("loader-circle".into())) } else { Some(IconSource::Named("move-right".into())) },
+                        }
+                        a {
+                            class: "text-xs text-white/50 cursor-pointer underline",
+                            onclick: move |_| {
+                                let _ = that(create_account_url.clone());
+                            },
+                            "Create an account"
+                        }
                     }
                 }
                 if let Some(Err(err)) = login.value() {
