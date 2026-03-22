@@ -11,7 +11,6 @@ mod installing_splash;
 mod invite_user_dialog;
 mod splash;
 mod typography;
-mod update_dialog;
 mod update_toast;
 
 pub use add_tunnel_dialog::AddTunnelDialog;
@@ -26,7 +25,6 @@ pub use splash::Splash;
 #[allow(unused)]
 pub use typography::Subhead;
 #[allow(unused)]
-pub use update_dialog::UpdateDialog;
 pub use update_toast::UpdateToast;
 #[allow(unused)]
 pub mod dialog;
