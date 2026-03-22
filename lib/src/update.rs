@@ -4,6 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
+use semver::{BuildMetadata, Prerelease, Version};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,37 @@ use crate::Repo;
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const REPO_OWNER: &str = "datum-cloud";
 const REPO_NAME: &str = "app";
+
+/// Parse a tag or Cargo-style version into a [`Version`] for ordering.
+/// Accepts optional `v` prefix, optional minor/patch (default 0), and optional pre-release after `-`.
+/// Strips build metadata (`+...`). Invalid numeric core or invalid pre-release identifiers return `None`.
+fn parse_update_version(raw: &str) -> Option<Version> {
+    let s = raw.trim().trim_start_matches('v');
+    let s = s.split('+').next()?.trim();
+    let (core, pre_str) = match s.split_once('-') {
+        Some((c, p)) => (c.trim(), p.trim()),
+        None => (s, ""),
+    };
+    if core.is_empty() {
+        return None;
+    }
+    let nums: Vec<&str> = core.split('.').collect();
+    let major = nums.first()?.parse::<u64>().ok()?;
+    let minor = nums.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = nums.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let pre = if pre_str.is_empty() {
+        Prerelease::EMPTY
+    } else {
+        Prerelease::new(pre_str).ok()?
+    };
+    Some(Version {
+        major,
+        minor,
+        patch,
+        pre,
+        build: BuildMetadata::EMPTY,
+    })
+}
 
 /// Which GitHub release stream to follow for automatic updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,12 +151,6 @@ pub struct UpdateInfo {
     pub published_at: DateTime<Utc>,
     pub download_url: String,
     pub download_size: u64,
-}
-
-struct VersionParts {
-    major: u32,
-    minor: u32,
-    patch: u32,
 }
 
 fn release_eligible_for_channel(release: &GitHubRelease, channel: UpdateChannel) -> bool {
@@ -306,60 +332,15 @@ impl UpdateChecker {
         tag.trim_start_matches('v').to_string()
     }
 
-    /// Compare semantic version strings - returns true if version1 > version2
-    /// Handles semantic versions like "0.0.3", "0.1.0", "1.0.0", etc.
+    /// Compare semantic version strings — true if `version1` is strictly newer than `version2`.
+    /// Uses full SemVer 2.0 ordering (including pre-release); build metadata is ignored.
     pub(crate) fn is_newer_version(version1: &str, version2: &str) -> bool {
-        let v1_parts = Self::parse_semantic_version(version1);
-        let v2_parts = Self::parse_semantic_version(version2);
-
-        // Compare major, minor, patch versions
-        match v1_parts.major.cmp(&v2_parts.major) {
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Equal => {}
-        }
-
-        match v1_parts.minor.cmp(&v2_parts.minor) {
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Equal => {}
-        }
-
-        match v1_parts.patch.cmp(&v2_parts.patch) {
-            std::cmp::Ordering::Greater => true,
-            std::cmp::Ordering::Less => false,
-            std::cmp::Ordering::Equal => {
-                // If versions are equal, check for pre-release/build metadata
-                // For now, if versions are equal, consider it not newer
-                false
-            }
-        }
-    }
-
-    /// Parse semantic version string (e.g., "0.0.3" or "0.0.3-beta")
-    fn parse_semantic_version(version: &str) -> VersionParts {
-        // Remove any pre-release or build metadata (everything after '-')
-        let version = version.split('-').next().unwrap_or(version);
-
-        let parts: Vec<&str> = version.split('.').collect();
-
-        let major = parts
-            .get(0)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        let minor = parts
-            .get(1)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        let patch = parts
-            .get(2)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-
-        VersionParts {
-            major,
-            minor,
-            patch,
+        match (
+            parse_update_version(version1),
+            parse_update_version(version2),
+        ) {
+            (Some(v1), Some(v2)) => v1 > v2,
+            _ => false,
         }
     }
 
@@ -873,5 +854,25 @@ mod tests {
         let releases = vec![gh_release("v2.0.0", false, false, true)];
         let picked = select_release_for_channel(releases, UpdateChannel::Stable, "2.0.0", |_| true);
         assert!(picked.is_none());
+    }
+
+    #[test]
+    fn newer_orders_prerelease_suffixes() {
+        assert!(UpdateChecker::is_newer_version("1.0.0-beta.2", "1.0.0-beta.1"));
+        assert!(!UpdateChecker::is_newer_version("1.0.0-beta.1", "1.0.0-beta.2"));
+        assert!(UpdateChecker::is_newer_version("1.0.0-rc.1", "1.0.0-beta.99"));
+    }
+
+    #[test]
+    fn release_newer_than_prerelease_same_core() {
+        assert!(UpdateChecker::is_newer_version("1.0.0", "1.0.0-beta.99"));
+        assert!(!UpdateChecker::is_newer_version("1.0.0-beta.99", "1.0.0"));
+    }
+
+    #[test]
+    fn newer_accepts_v_prefix_build_metadata_ignored() {
+        assert!(UpdateChecker::is_newer_version("v1.2.4", "1.2.3"));
+        // SemVer: build metadata does not affect precedence
+        assert!(!UpdateChecker::is_newer_version("1.2.3+build2", "1.2.3+build1"));
     }
 }

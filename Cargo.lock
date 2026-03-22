@@ -5006,6 +5006,7 @@ dependencies = [
  "rand 0.9.2",
  "reqwest",
  "secrecy",
+ "semver",
  "sentry",
  "serde",
  "serde_json",
