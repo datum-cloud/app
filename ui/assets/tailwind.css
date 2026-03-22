@@ -273,6 +273,9 @@
   .z-\[60\] {
     z-index: 60;
   }
+  .z-\[100\] {
+    z-index: 100;
+  }
   .container {
     width: 100%;
     @media (width >= 40rem) {
@@ -401,6 +404,9 @@
   .h-9 {
     height: calc(var(--spacing) * 9);
   }
+  .h-12 {
+    height: calc(var(--spacing) * 12);
+  }
   .h-20 {
     height: calc(var(--spacing) * 20);
   }
@@ -439,9 +445,6 @@
   }
   .min-h-\[200px\] {
     min-height: 200px;
-  }
-  .min-h-screen {
-    min-height: 100vh;
   }
   .w-3\.5 {
     width: calc(var(--spacing) * 3.5);
@@ -603,6 +606,9 @@
   }
   .flex-nowrap {
     flex-wrap: nowrap;
+  }
+  .flex-wrap {
+    flex-wrap: wrap;
   }
   .place-items-center {
     place-items: center;
@@ -961,26 +967,11 @@
   .pb-12 {
     padding-bottom: calc(var(--spacing) * 12);
   }
-  .pb-\[129px\] {
-    padding-bottom: 129px;
-  }
-  .pb-\[132px\] {
-    padding-bottom: 132px;
-  }
-  .pb-\[140px\] {
-    padding-bottom: 140px;
-  }
-  .pb-\[145px\] {
-    padding-bottom: 145px;
-  }
-  .pb-\[150px\] {
-    padding-bottom: 150px;
+  .pb-48 {
+    padding-bottom: calc(var(--spacing) * 48);
   }
   .pb-\[154px\] {
     padding-bottom: 154px;
-  }
-  .pb-\[155px\] {
-    padding-bottom: 155px;
   }
   .pl-2\.5 {
     padding-left: calc(var(--spacing) * 2.5);
@@ -1136,9 +1127,6 @@
   }
   .text-slate-500 {
     color: var(--color-slate-500);
-  }
-  .text-white {
-    color: var(--color-white);
   }
   .text-white\/50 {
     color: color-mix(in srgb, #fff 50%, transparent);

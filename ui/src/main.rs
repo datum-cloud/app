@@ -75,6 +75,8 @@ pub struct UpdateCheckContext {
     pub pending_update_info: Signal<Option<lib::UpdateInfo>>,
     /// When set to true, triggers install now (from Settings or toast)
     pub install_now_trigger: Signal<bool>,
+    /// Stable (production) or beta (GitHub pre-releases)
+    pub update_channel: Signal<lib::UpdateChannel>,
 }
 
 // Assets for favicons
@@ -252,6 +254,7 @@ fn App() -> Element {
     let mut has_pending_install = use_signal(|| false);
     let mut pending_update_info = use_signal(|| None::<lib::UpdateInfo>);
     let mut install_now_trigger = use_signal(|| false);
+    let update_channel = use_signal(|| lib::UpdateChannel::infer_from_installed_version());
 
     // Poll for macOS menu bar update check flag
     #[cfg(all(feature = "desktop", target_os = "macos"))]
@@ -344,6 +347,7 @@ fn App() -> Element {
         let mut update_ready = update_ready;
         let mut has_pending_install = has_pending_install;
         let mut pending_update_info = pending_update_info;
+        let mut update_channel = update_channel;
         async move {
             while !app_state_ready() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -406,6 +410,9 @@ fn App() -> Element {
             }
 
             let checker = lib::UpdateChecker::new(repo.clone());
+            if let Ok(s) = checker.load_settings().await {
+                update_channel.set(s.update_channel);
+            }
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<PendingUpdate>>();
 
             // Check for updates on startup
@@ -560,6 +567,7 @@ fn App() -> Element {
         has_pending_install,
         pending_update_info,
         install_now_trigger,
+        update_channel,
     });
 
     // Handle install now trigger (from Settings when update_ready is None)
@@ -622,7 +630,13 @@ fn App() -> Element {
                             }
                             update_ready.set(None);
                         },
-                        on_install_now: move |_| install_now_trigger.set(true),
+                        on_install_now: move |_| {
+                            if let Some(p) = update_ready() {
+                                pending_update_info.set(Some(p.info));
+                            }
+                            install_now_trigger.set(true);
+                            update_ready.set(None);
+                        },
                     }
                 }
             }
