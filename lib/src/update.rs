@@ -13,9 +13,42 @@ const GITHUB_API_BASE: &str = "https://api.github.com";
 const REPO_OWNER: &str = "datum-cloud";
 const REPO_NAME: &str = "app";
 
+/// Which GitHub release stream to follow for automatic updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// Latest non-draft, non-prerelease release (excluding `rolling`).
+    Stable,
+    /// GitHub pre-releases only (excluding `rolling`). Does not jump to stable; switch channel for that.
+    Beta,
+}
+
+impl UpdateChannel {
+    /// Use the same rule as release tags: a semver pre-release suffix (`1.0.0-beta.1`) => beta track.
+    pub fn infer_from_pkg_version(pkg_version: &str) -> Self {
+        let v = pkg_version.trim_start_matches('v');
+        if v.contains('-') {
+            Self::Beta
+        } else {
+            Self::Stable
+        }
+    }
+
+    /// Channel implied by this crate's `CARGO_PKG_VERSION` (the running app).
+    pub fn infer_from_installed_version() -> Self {
+        Self::infer_from_pkg_version(env!("CARGO_PKG_VERSION"))
+    }
+}
+
+impl Default for UpdateChannel {
+    fn default() -> Self {
+        Self::infer_from_installed_version()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateSettings {
-    /// Check interval in hours (default: 12)
+    /// Check interval in hours (default: 6)
     #[serde(default = "default_check_interval")]
     pub check_interval_hours: u64,
     /// Last time we checked for updates (Unix timestamp)
@@ -30,24 +63,32 @@ pub struct UpdateSettings {
     /// Version of the pending update (for display in Settings)
     #[serde(default)]
     pub pending_update_version: Option<String>,
+    /// Stable (production) or beta (pre-release) update stream
+    #[serde(default = "default_update_channel")]
+    pub update_channel: UpdateChannel,
 }
 
 fn default_check_interval() -> u64 {
-    12
+    6
 }
 
 fn default_auto_update_enabled() -> bool {
     true
 }
 
+fn default_update_channel() -> UpdateChannel {
+    UpdateChannel::infer_from_installed_version()
+}
+
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self {
-            check_interval_hours: 12,
+            check_interval_hours: 6,
             last_check_time: None,
             auto_update_enabled: true,
             pending_install_path: None,
             pending_update_version: None,
+            update_channel: UpdateChannel::infer_from_installed_version(),
         }
     }
 }
@@ -58,6 +99,10 @@ struct GitHubRelease {
     name: String,
     published_at: String,
     assets: Vec<GitHubAsset>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,6 +125,52 @@ struct VersionParts {
     major: u32,
     minor: u32,
     patch: u32,
+}
+
+fn release_eligible_for_channel(release: &GitHubRelease, channel: UpdateChannel) -> bool {
+    if release.draft || release.tag_name == "rolling" {
+        return false;
+    }
+    match channel {
+        UpdateChannel::Stable => {
+            if release.prerelease {
+                return false;
+            }
+            let version_part = release.tag_name.trim_start_matches('v');
+            !version_part.contains('-')
+        }
+        UpdateChannel::Beta => {
+            // Never offer full releases on the beta track—even if a stable build is newer.
+            if release.prerelease {
+                return true;
+            }
+            let version_part = release.tag_name.trim_start_matches('v');
+            version_part.contains('-')
+        }
+    }
+}
+
+/// Pick the newest GitHub release (API order) that matches the channel, has a platform asset, and is newer than `current_version`.
+fn select_release_for_channel(
+    releases: Vec<GitHubRelease>,
+    channel: UpdateChannel,
+    current_version: &str,
+    has_platform_asset: impl Fn(&[GitHubAsset]) -> bool,
+) -> Option<GitHubRelease> {
+    let current = UpdateChecker::extract_version(current_version);
+    for release in releases {
+        if !release_eligible_for_channel(&release, channel) {
+            continue;
+        }
+        if !has_platform_asset(&release.assets) {
+            continue;
+        }
+        let v = UpdateChecker::extract_version(&release.tag_name);
+        if UpdateChecker::is_newer_version(&v, &current) {
+            return Some(release);
+        }
+    }
+    None
 }
 
 pub struct UpdateChecker {
@@ -149,10 +240,8 @@ impl UpdateChecker {
             return Ok(None);
         }
 
-        // Fetch all releases and filter out "rolling" tag
-        // We want the latest tagged release (like v0.0.3), not the rolling release
         let url = format!(
-            "{}/repos/{}/{}/releases",
+            "{}/repos/{}/{}/releases?per_page=100",
             GITHUB_API_BASE, REPO_OWNER, REPO_NAME
         );
 
@@ -173,26 +262,13 @@ impl UpdateChecker {
 
         let releases: Vec<GitHubRelease> = response.json().await.anyerr()?;
 
-        // Find the latest release that is not "rolling" and not a pre-release (beta, rc, etc.)
-        // Pre-release tags contain a hyphen after the version (e.g., "v0.0.3-beta", "0.1.0-rc.1")
-        // We check if the tag (after removing 'v' prefix) contains a hyphen
-        let release = releases
-            .into_iter()
-            .find(|r| {
-                if r.tag_name == "rolling" {
-                    return false;
-                }
-                // Remove 'v' prefix if present, then check for hyphens (pre-release indicator)
-                let version_part = r.tag_name.trim_start_matches('v');
-                !version_part.contains('-')
-            })
-            .ok_or_else(|| {
-                IoError::new(
-                    ErrorKind::NotFound,
-                    "No stable release found (excluding rolling and pre-releases)",
-                )
-            })
-            .anyerr()?;
+        let channel = settings.update_channel;
+        let release = select_release_for_channel(
+            releases,
+            channel,
+            &self.current_version,
+            |assets| Self::try_find_platform_asset(assets).is_some(),
+        );
 
         // Update last check time
         let mut settings = settings;
@@ -204,40 +280,35 @@ impl UpdateChecker {
         );
         self.save_settings(&settings).await?;
 
-        // Extract version from tag_name (format: "v0.0.3" or "0.0.3")
+        let Some(release) = release else {
+            return Ok(None);
+        };
+
         let latest_version = Self::extract_version(&release.tag_name);
-        let current_version = Self::extract_version(&self.current_version);
+        let asset = self.find_platform_asset(&release.assets)?;
 
-        // Compare versions - if latest is newer, return update info
-        if Self::is_newer_version(&latest_version, &current_version) {
-            // Find the appropriate binary asset for the current platform
-            let asset = self.find_platform_asset(&release.assets)?;
+        let published_at = DateTime::parse_from_rfc3339(&release.published_at)
+            .std_context("failed to parse published_at")?
+            .with_timezone(&Utc);
 
-            let published_at = DateTime::parse_from_rfc3339(&release.published_at)
-                .std_context("failed to parse published_at")?
-                .with_timezone(&Utc);
-
-            Ok(Some(UpdateInfo {
-                version: latest_version,
-                release_name: release.name,
-                published_at,
-                download_url: asset.browser_download_url.clone(),
-                download_size: asset.size,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(Some(UpdateInfo {
+            version: latest_version,
+            release_name: release.name,
+            published_at,
+            download_url: asset.browser_download_url.clone(),
+            download_size: asset.size,
+        }))
     }
 
     /// Extract version string from tag (handles formats like "v0.0.3" or "0.0.3")
-    fn extract_version(tag: &str) -> String {
+    pub(crate) fn extract_version(tag: &str) -> String {
         // Remove 'v' prefix if present
         tag.trim_start_matches('v').to_string()
     }
 
     /// Compare semantic version strings - returns true if version1 > version2
     /// Handles semantic versions like "0.0.3", "0.1.0", "1.0.0", etc.
-    fn is_newer_version(version1: &str, version2: &str) -> bool {
+    pub(crate) fn is_newer_version(version1: &str, version2: &str) -> bool {
         let v1_parts = Self::parse_semantic_version(version1);
         let v2_parts = Self::parse_semantic_version(version2);
 
@@ -292,8 +363,7 @@ impl UpdateChecker {
         }
     }
 
-    /// Find the appropriate binary asset for the current platform
-    fn find_platform_asset<'a>(&self, assets: &'a [GitHubAsset]) -> Result<&'a GitHubAsset> {
+    fn try_find_platform_asset<'a>(assets: &'a [GitHubAsset]) -> Option<&'a GitHubAsset> {
         let (platform_ext, arch_pattern) = if cfg!(target_os = "macos") {
             if cfg!(target_arch = "aarch64") {
                 (".dmg", Some("aarch64"))
@@ -305,31 +375,28 @@ impl UpdateChecker {
         } else if cfg!(target_os = "linux") {
             (".AppImage", None)
         } else {
-            return Err(IoError::new(ErrorKind::Unsupported, "Unsupported platform")).anyerr();
+            return None;
         };
 
-        // Prefer assets with architecture match, then fall back to any matching extension
         if let Some(arch) = arch_pattern {
             if let Some(asset) = assets
                 .iter()
                 .find(|asset| asset.name.ends_with(platform_ext) && asset.name.contains(arch))
             {
-                return Ok(asset);
+                return Some(asset);
             }
         }
 
-        // Fall back to any asset with matching extension
-        match assets
+        assets
             .iter()
             .find(|asset| asset.name.ends_with(platform_ext))
-        {
-            Some(asset) => Ok(asset),
-            None => Err(IoError::new(
-                ErrorKind::NotFound,
-                "No asset found for platform",
-            ))
-            .anyerr(),
-        }
+    }
+
+    /// Find the appropriate binary asset for the current platform
+    fn find_platform_asset<'a>(&self, assets: &'a [GitHubAsset]) -> Result<&'a GitHubAsset> {
+        Self::try_find_platform_asset(assets).ok_or_else(|| {
+            IoError::new(ErrorKind::NotFound, "No asset found for platform")
+        }).anyerr()
     }
 
     /// Download the update binary to a temporary location
@@ -669,5 +736,142 @@ exec "$CURRENT"
     /// Get current version
     pub fn current_version(&self) -> &str {
         &self.current_version
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_infer_stable_pkg_version() {
+        assert_eq!(
+            UpdateChannel::infer_from_pkg_version("1.2.3"),
+            UpdateChannel::Stable
+        );
+        assert_eq!(
+            UpdateChannel::infer_from_pkg_version("v1.2.3"),
+            UpdateChannel::Stable
+        );
+    }
+
+    #[test]
+    fn channel_infer_beta_pkg_version() {
+        assert_eq!(
+            UpdateChannel::infer_from_pkg_version("1.2.3-beta.1"),
+            UpdateChannel::Beta
+        );
+        assert_eq!(
+            UpdateChannel::infer_from_pkg_version("v2.0.0-rc.1"),
+            UpdateChannel::Beta
+        );
+    }
+
+    fn sample_asset() -> GitHubAsset {
+        GitHubAsset {
+            name: "Datum_aarch64.dmg".to_string(),
+            browser_download_url: "https://example.com/a.dmg".to_string(),
+            size: 1,
+        }
+    }
+
+    fn gh_release(
+        tag: &str,
+        draft: bool,
+        prerelease: bool,
+        with_asset: bool,
+    ) -> GitHubRelease {
+        GitHubRelease {
+            tag_name: tag.to_string(),
+            name: format!("Release {tag}"),
+            published_at: "2020-01-01T00:00:00Z".to_string(),
+            assets: if with_asset {
+                vec![sample_asset()]
+            } else {
+                vec![]
+            },
+            draft,
+            prerelease,
+        }
+    }
+
+    #[test]
+    fn stable_skips_draft_prerelease_and_rolling() {
+        let releases = vec![
+            gh_release("v9.0.0", true, false, true),
+            gh_release("v8.0.0", false, true, true),
+            gh_release("rolling", false, false, true),
+            gh_release("v2.0.0", false, false, true),
+        ];
+        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |_| true);
+        assert_eq!(picked.unwrap().tag_name, "v2.0.0");
+    }
+
+    #[test]
+    fn stable_prefers_full_release_over_newer_prerelease() {
+        let releases = vec![
+            gh_release("v3.0.0", false, true, true),
+            gh_release("v2.0.0", false, false, true),
+        ];
+        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |_| true);
+        assert_eq!(picked.unwrap().tag_name, "v2.0.0");
+    }
+
+    #[test]
+    fn beta_takes_newest_eligible_including_prerelease() {
+        let releases = vec![
+            gh_release("v3.0.0", false, true, true),
+            gh_release("v2.0.0", false, false, true),
+        ];
+        let picked = select_release_for_channel(releases, UpdateChannel::Beta, "1.0.0", |_| true);
+        assert_eq!(picked.unwrap().tag_name, "v3.0.0");
+    }
+
+    #[test]
+    fn beta_skips_newer_stable_and_takes_prerelease() {
+        let releases = vec![
+            gh_release("v2.0.0", false, false, true),
+            gh_release("v1.5.0-beta", false, true, true),
+        ];
+        let picked = select_release_for_channel(releases, UpdateChannel::Beta, "1.0.0", |_| true);
+        assert_eq!(picked.unwrap().tag_name, "v1.5.0-beta");
+    }
+
+    #[test]
+    fn beta_offers_no_update_when_only_stable_is_newer() {
+        let releases = vec![gh_release("v2.0.0", false, false, true)];
+        let picked = select_release_for_channel(releases, UpdateChannel::Beta, "1.0.0", |_| true);
+        assert!(picked.is_none());
+    }
+
+    #[test]
+    fn beta_accepts_hyphen_tag_without_prerelease_flag() {
+        let releases = vec![gh_release("v2.0.0-beta", false, false, true)];
+        let picked = select_release_for_channel(releases, UpdateChannel::Beta, "1.0.0", |_| true);
+        assert_eq!(picked.unwrap().tag_name, "v2.0.0-beta");
+    }
+
+    #[test]
+    fn stable_excludes_hyphen_tag_even_without_prerelease_flag() {
+        let releases = vec![gh_release("v2.0.0-beta", false, false, true)];
+        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |_| true);
+        assert!(picked.is_none());
+    }
+
+    #[test]
+    fn skips_release_without_matching_asset_predicate() {
+        let releases = vec![
+            gh_release("v3.0.0", false, false, false),
+            gh_release("v2.0.0", false, false, true),
+        ];
+        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |a| !a.is_empty());
+        assert_eq!(picked.unwrap().tag_name, "v2.0.0");
+    }
+
+    #[test]
+    fn none_when_nothing_newer() {
+        let releases = vec![gh_release("v2.0.0", false, false, true)];
+        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "2.0.0", |_| true);
+        assert!(picked.is_none());
     }
 }
