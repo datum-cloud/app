@@ -4,8 +4,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
-use semver::{BuildMetadata, Prerelease, Version};
 use n0_error::{Result, StackResultExt, StdResultExt};
+use semver::{BuildMetadata, Prerelease, Version};
 use serde::{Deserialize, Serialize};
 
 use crate::Repo;
@@ -289,12 +289,10 @@ impl UpdateChecker {
         let releases: Vec<GitHubRelease> = response.json().await.anyerr()?;
 
         let channel = settings.update_channel;
-        let release = select_release_for_channel(
-            releases,
-            channel,
-            &self.current_version,
-            |assets| Self::try_find_platform_asset(assets).is_some(),
-        );
+        let release =
+            select_release_for_channel(releases, channel, &self.current_version, |assets| {
+                Self::try_find_platform_asset(assets).is_some()
+            });
 
         // Update last check time
         let mut settings = settings;
@@ -375,9 +373,9 @@ impl UpdateChecker {
 
     /// Find the appropriate binary asset for the current platform
     fn find_platform_asset<'a>(&self, assets: &'a [GitHubAsset]) -> Result<&'a GitHubAsset> {
-        Self::try_find_platform_asset(assets).ok_or_else(|| {
-            IoError::new(ErrorKind::NotFound, "No asset found for platform")
-        }).anyerr()
+        Self::try_find_platform_asset(assets)
+            .ok_or_else(|| IoError::new(ErrorKind::NotFound, "No asset found for platform"))
+            .anyerr()
     }
 
     /// Download the update binary to a temporary location
@@ -756,12 +754,7 @@ mod tests {
         }
     }
 
-    fn gh_release(
-        tag: &str,
-        draft: bool,
-        prerelease: bool,
-        with_asset: bool,
-    ) -> GitHubRelease {
+    fn gh_release(tag: &str, draft: bool, prerelease: bool, with_asset: bool) -> GitHubRelease {
         GitHubRelease {
             tag_name: tag.to_string(),
             name: format!("Release {tag}"),
@@ -845,7 +838,8 @@ mod tests {
             gh_release("v3.0.0", false, false, false),
             gh_release("v2.0.0", false, false, true),
         ];
-        let picked = select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |a| !a.is_empty());
+        let picked =
+            select_release_for_channel(releases, UpdateChannel::Stable, "1.0.0", |a| !a.is_empty());
         assert_eq!(picked.unwrap().tag_name, "v2.0.0");
     }
 
@@ -858,9 +852,18 @@ mod tests {
 
     #[test]
     fn newer_orders_prerelease_suffixes() {
-        assert!(UpdateChecker::is_newer_version("1.0.0-beta.2", "1.0.0-beta.1"));
-        assert!(!UpdateChecker::is_newer_version("1.0.0-beta.1", "1.0.0-beta.2"));
-        assert!(UpdateChecker::is_newer_version("1.0.0-rc.1", "1.0.0-beta.99"));
+        assert!(UpdateChecker::is_newer_version(
+            "1.0.0-beta.2",
+            "1.0.0-beta.1"
+        ));
+        assert!(!UpdateChecker::is_newer_version(
+            "1.0.0-beta.1",
+            "1.0.0-beta.2"
+        ));
+        assert!(UpdateChecker::is_newer_version(
+            "1.0.0-rc.1",
+            "1.0.0-beta.99"
+        ));
     }
 
     #[test]
@@ -873,6 +876,9 @@ mod tests {
     fn newer_accepts_v_prefix_build_metadata_ignored() {
         assert!(UpdateChecker::is_newer_version("v1.2.4", "1.2.3"));
         // SemVer: build metadata does not affect precedence
-        assert!(!UpdateChecker::is_newer_version("1.2.3+build2", "1.2.3+build1"));
+        assert!(!UpdateChecker::is_newer_version(
+            "1.2.3+build2",
+            "1.2.3+build1"
+        ));
     }
 }
