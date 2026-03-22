@@ -375,11 +375,7 @@ impl UpdateChecker {
         let settings = self.load_settings().await?;
         Ok(settings.pending_install_path.as_ref().and_then(|p| {
             let path = PathBuf::from(p);
-            if path.exists() {
-                Some(path)
-            } else {
-                None
-            }
+            if path.exists() { Some(path) } else { None }
         }))
     }
 
@@ -518,17 +514,10 @@ impl UpdateChecker {
     #[cfg(target_os = "windows")]
     fn apply_update_windows_static(installer_path: &Path) -> Result<()> {
         // NSIS installer - /S for silent install
-        let status = Command::new(installer_path)
-            .arg("/S")
-            .status()
-            .anyerr()?;
+        let status = Command::new(installer_path).arg("/S").status().anyerr()?;
 
         if !status.success() {
-            return Err(IoError::new(
-                ErrorKind::Other,
-                "Installer failed",
-            ))
-            .anyerr();
+            return Err(IoError::new(ErrorKind::Other, "Installer failed")).anyerr();
         }
 
         Ok(())

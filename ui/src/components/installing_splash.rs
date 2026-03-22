@@ -1,7 +1,5 @@
+use crate::components::{Icon, IconSource};
 use dioxus::prelude::*;
-use crate::{
-    components::{ Icon, IconSource},
-};
 
 #[component]
 pub fn InstallingSplash() -> Element {
