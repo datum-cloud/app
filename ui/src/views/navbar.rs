@@ -241,9 +241,6 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
                                 DropdownMenuTrigger {
                                     class: "flex items-center gap-2 cursor-default focus:outline-none hover:opacity-80 transition-opacity",
                                     tabindex: "-1",
-                                    span { class: "text-sm text-foreground font-medium",
-                                        "{user_name}"
-                                    }
                                     div { class: "w-[37px] h-[37px] rounded-lg border border-app-border bg-white flex items-center justify-center overflow-hidden shrink-0",
                                         if let Some(avatar_url) = user_avatar_url.as_ref() {
                                             img {

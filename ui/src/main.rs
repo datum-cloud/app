@@ -58,7 +58,11 @@ pub struct PendingUpdate {
     pub path: std::path::PathBuf,
 }
 
-/// Context for update checks and pending updates
+/// Signal indicating we're on the login page (for TitleBar background color).
+#[derive(Clone)]
+pub struct IsLoginPageSignal(pub Signal<bool>);
+
+/// Context for update checks, downloads, pending installs, and manual check triggers.
 #[derive(Clone)]
 pub struct UpdateCheckContext {
     pub trigger: Signal<bool>,
@@ -156,13 +160,13 @@ fn main() {
             .with_has_shadow(true)
             .with_fullsize_content_view(true);
 
+        let mut config = Config::new()
+            // Make "close" behave like hide, so the tray icon can restore it.
+            .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+            .with_window(window_builder);
+
         dioxus::LaunchBuilder::desktop()
-            .with_cfg(desktop! {
-                Config::new()
-                    // Make "close" behave like hide, so the tray icon can restore it.
-                    .with_close_behaviour(WindowCloseBehaviour::WindowHides)
-                    .with_window(window_builder)
-            })
+            .with_cfg(desktop! { config })
             .launch(App);
     }
 
@@ -194,24 +198,38 @@ fn init_tracing() {
 /// Custom title bar (drag region + favicon) shown only on macOS; empty on Windows/Linux which use the native title bar.
 #[component]
 fn TitleBar() -> Element {
+    let IsLoginPageSignal(is_login_page) = consume_context::<IsLoginPageSignal>();
+    let title_bar_bg = if is_login_page() {
+        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-[var(--midnight-fjord)]"
+    } else {
+        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-background"
+    };
+
     #[cfg(target_os = "macos")]
     {
         rsx! {
             div {
-                class: "h-[32px] flex items-center pl-20 bg-background z-50 cursor-default",
+                class: "{title_bar_bg}",
                 onmousedown: move |_| {
                     #[cfg(feature = "desktop")]
                     {
                         use_window().drag();
                     }
                 },
-                img {
-                    src: "{FAVICON_DARK_196}",
-                    class: "w-6 h-6 ml-auto mr-2 dark:hidden",
-                }
-                img {
-                    src: "{FAVICON_LIGHT_196}",
-                    class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
+                if is_login_page() {
+                    img {
+                        src: "{FAVICON_LIGHT_196}",
+                        class: "w-6 h-6 ml-auto mr-2 block",
+                    }
+                } else {
+                    img {
+                        src: "{FAVICON_DARK_196}",
+                        class: "w-6 h-6 ml-auto mr-2 dark:hidden",
+                    }
+                    img {
+                        src: "{FAVICON_LIGHT_196}",
+                        class: "w-6 h-6 ml-auto mr-2 hidden dark:block",
+                    }
                 }
             }
         }
@@ -225,9 +243,8 @@ fn TitleBar() -> Element {
 #[component]
 fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
-    let mut installing_update = use_signal(|| {
-        std::env::var("DATUM_UPDATE_FAKE_INSTALLING").as_deref() == Ok("1")
-    });
+    let mut installing_update =
+        use_signal(|| std::env::var("DATUM_UPDATE_FAKE_INSTALLING").as_deref() == Ok("1"));
     let mut manual_update_check = use_signal(|| false);
     let mut update_check_in_progress = use_signal(|| false);
     let mut update_downloading = use_signal(|| false);
@@ -308,17 +325,15 @@ fn App() -> Element {
         }
     });
 
-    use_future(move || {
-        async move {
-            let state = AppState::load().await.unwrap();
-            if state.datum().login_state() != lib::datum_cloud::LoginState::Missing {
-                if let Err(err) = state.datum().auth().refresh_profile().await {
-                    tracing::warn!("Failed to refresh user profile on startup: {err:#}");
-                }
+    use_future(move || async move {
+        let state = AppState::load().await.unwrap();
+        if state.datum().login_state() != lib::datum_cloud::LoginState::Missing {
+            if let Err(err) = state.datum().auth().refresh_profile().await {
+                tracing::warn!("Failed to refresh user profile on startup: {err:#}");
             }
-            provide_context(state);
-            app_state_ready.set(true);
         }
+        provide_context(state);
+        app_state_ready.set(true);
     });
 
     // Check for updates on startup and periodically; download in background when found
@@ -584,6 +599,11 @@ fn App() -> Element {
 
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
     provide_context(open_add_tunnel_from_tray);
+
+    // Signal for whether we're on the login page (used by TitleBar for background color).
+    // Start true since we always land on login after splash; Login's use_effect/use_drop keep it in sync.
+    let is_login_page = use_signal(|| true);
+    provide_context(IsLoginPageSignal(is_login_page));
 
     rsx! {
         div { class: "theme-alpha",
