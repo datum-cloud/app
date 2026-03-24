@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use http::HeaderValue;
+use http::header::USER_AGENT;
 use kube::{Client, Config};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
@@ -8,6 +10,7 @@ use secrecy::SecretString;
 use tracing::warn;
 
 use crate::datum_cloud::{DatumCloudClient, LoginState};
+use crate::http_user_agent::datum_http_user_agent;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct ProjectControlPlaneClient {
@@ -70,6 +73,9 @@ impl ProjectControlPlaneClient {
             .std_context("Invalid project control plane URL")?;
         let mut config = Config::new(uri);
         config.auth_info.token = Some(SecretString::new(access_token.to_string().into_boxed_str()));
+        let ua = HeaderValue::from_str(&datum_http_user_agent())
+            .std_context("Invalid User-Agent for kube client")?;
+        config.headers.push((USER_AGENT, ua));
         Client::try_from(config).std_context("Failed to create project control plane client")
     }
 

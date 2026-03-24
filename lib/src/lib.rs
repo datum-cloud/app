@@ -4,6 +4,7 @@ pub mod datum_apis;
 pub mod datum_cloud;
 pub mod gateway;
 pub mod heartbeat;
+mod http_user_agent;
 mod node;
 pub mod project_control_plane;
 mod repo;
@@ -13,6 +14,7 @@ pub mod update;
 
 pub use config::{Config, DiscoveryMode, GatewayConfig};
 pub use heartbeat::HeartbeatAgent;
+pub use http_user_agent::datum_http_user_agent;
 pub use node::*;
 pub use project_control_plane::ProjectControlPlaneClient;
 pub use repo::Repo;
