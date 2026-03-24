@@ -511,14 +511,17 @@ async fn select_best_relays_for_startup(relays: Vec<RelayUrl>, max_relays: usize
     selected
 }
 
-async fn probe_relay_latency(client: &reqwest::Client, relay: &RelayUrl) -> std::result::Result<Duration, String> {
+async fn probe_relay_latency(
+    client: &reqwest::Client,
+    relay: &RelayUrl,
+) -> std::result::Result<Duration, String> {
     let host = relay
         .host_str()
         .ok_or_else(|| "missing host in relay url".to_string())?
         // RelayUrl canonicalizes with trailing dot, which can fail strict TLS hostname checks.
         .trim_end_matches('.');
-    let mut https_url =
-        reqwest::Url::parse(&format!("https://{host}/ping")).map_err(|err| format!("url parse: {err}"))?;
+    let mut https_url = reqwest::Url::parse(&format!("https://{host}/ping"))
+        .map_err(|err| format!("url parse: {err}"))?;
     https_url.set_query(None);
     debug!(
         relay = %relay,
