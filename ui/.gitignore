@@ -7,3 +7,6 @@
 **/*.rs.bk
 
 /node_modules
+/packaging/dmg/node_modules
+/packaging/dmg/appdmg.build.json
+/packaging/dmg/Datum-dmg.iconset
