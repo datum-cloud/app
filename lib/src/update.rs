@@ -491,13 +491,32 @@ impl UpdateChecker {
         Ok(())
     }
 
+    /// Parse mount point from `hdiutil attach` stdout. Must not use `-quiet` (it closes stdout).
+    #[cfg(target_os = "macos")]
+    fn parse_hdiutil_attach_mount_point(stdout: &str) -> Option<PathBuf> {
+        for line in stdout.lines().rev() {
+            if !line.contains("/Volumes/") {
+                continue;
+            }
+            let last_col = line
+                .split('\t')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .last()?;
+            if last_col.starts_with("/Volumes/") {
+                return Some(PathBuf::from(last_col));
+            }
+        }
+        None
+    }
+
     #[cfg(target_os = "macos")]
     fn apply_update_macos_static(dmg_path: &Path) -> Result<()> {
         use std::process::Stdio;
 
-        // Mount DMG
+        // Do not pass `-quiet`: it closes stdout, so the mount point cannot be parsed (man hdiutil).
         let output = Command::new("hdiutil")
-            .args(["attach", "-nobrowse", "-readonly", "-quiet"])
+            .args(["attach", "-nobrowse", "-readonly"])
             .arg(dmg_path)
             .output()
             .anyerr()?;
@@ -513,15 +532,19 @@ impl UpdateChecker {
             .anyerr();
         }
 
-        // Get mount point - last line of stdout is typically "/Volumes/VolumeName"
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let volume = stdout
-            .lines()
-            .last()
-            .ok_or_else(|| IoError::new(ErrorKind::Other, "No mount point from hdiutil"))?;
+        let volume = Self::parse_hdiutil_attach_mount_point(&stdout).ok_or_else(|| {
+            IoError::new(
+                ErrorKind::Other,
+                format!(
+                    "No /Volumes mount point in hdiutil output: {}",
+                    stdout.trim()
+                ),
+            )
+        })?;
 
         // Find .app in the volume
-        let app_path = std::fs::read_dir(volume)
+        let app_path = std::fs::read_dir(&volume)
             .anyerr()?
             .filter_map(|e| e.ok())
             .find(|e| e.path().extension().map_or(false, |ext| ext == "app"))
@@ -543,7 +566,7 @@ impl UpdateChecker {
         // Unmount
         let _ = Command::new("hdiutil")
             .args(["detach", "-force", "-quiet"])
-            .arg(volume)
+            .arg(&volume)
             .status();
 
         if !status.success() {
@@ -686,14 +709,19 @@ exec "$2"
 
         #[cfg(target_os = "macos")]
         {
+            // Do not use hdiutil -quiet when capturing the mount point (quiet closes stdout).
             r#"#!/bin/bash
-set -e
+set -euo pipefail
 DMG="$1"
-VOLUME=$(hdiutil attach -nobrowse -readonly -quiet "$DMG" | tail -n1 | cut -f3-)
-APP=$(find "$VOLUME" -maxdepth 1 -name "*.app" | head -1)
+ATTACH_OUT=$(hdiutil attach -nobrowse -readonly "$DMG")
+VOLUME=$(echo "$ATTACH_OUT" | grep '/Volumes/' | tail -n1 | awk -F'	' '{gsub(/^ +| +$/,"",$NF); print $NF}')
+[ -n "$VOLUME" ] || { echo "hdiutil attach: no /Volumes mount in output" >&2; exit 1; }
+APP=$(find "$VOLUME" -maxdepth 1 -name "*.app" -print -quit)
+[ -n "$APP" ] || { echo "No .app bundle in DMG at $VOLUME" >&2; exit 1; }
+DEST="/Applications/$(basename "$APP")"
 rsync -a --delete "$APP" /Applications/
 hdiutil detach -force -quiet "$VOLUME"
-open -a "Datum"
+open "$DEST"
 "#
             .to_string()
         }

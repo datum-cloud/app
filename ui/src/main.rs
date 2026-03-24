@@ -570,31 +570,17 @@ fn App() -> Element {
         update_channel,
     });
 
-    // Handle install now trigger (from Settings when update_ready is None)
+    // Handle install now (toast or Settings). Read path from update_ready before clearing it —
+    // the toast handler must not clear update_ready before this runs, or we rely only on disk.
     use_effect(move || {
         if !install_now_trigger() {
             return;
         }
         install_now_trigger.set(false);
-        let path = update_ready()
-            .as_ref()
-            .map(|p| p.path.clone())
-            .or_else(|| None);
-        if path.is_none() {
-            // Path not in memory - need to load from checker (async)
-            let repo = lib::Repo::from_path(lib::Repo::default_location());
-            let checker = lib::UpdateChecker::new(repo);
-            tokio::spawn(async move {
-                if let Ok(Some(path)) = checker.get_pending_install_path().await {
-                    if let Err(e) = checker.spawn_install_and_restart(&path) {
-                        tracing::warn!("Failed to spawn install: {e:#}");
-                        return;
-                    }
-                    std::process::exit(0);
-                }
-            });
-        } else {
-            let path = path.unwrap();
+        let path_from_ui = update_ready().as_ref().map(|p| p.path.clone());
+        update_ready.set(None);
+
+        if let Some(path) = path_from_ui {
             let repo = lib::Repo::from_path(lib::Repo::default_location());
             let checker = lib::UpdateChecker::new(repo);
             if let Err(e) = checker.spawn_install_and_restart(&path) {
@@ -603,6 +589,28 @@ fn App() -> Element {
             }
             std::process::exit(0);
         }
+
+        let repo = lib::Repo::from_path(lib::Repo::default_location());
+        let checker = lib::UpdateChecker::new(repo);
+        tokio::spawn(async move {
+            match checker.get_pending_install_path().await {
+                Ok(Some(path)) => {
+                    if let Err(e) = checker.spawn_install_and_restart(&path) {
+                        tracing::warn!("Failed to spawn install: {e:#}");
+                        return;
+                    }
+                    std::process::exit(0);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "Install now: no pending update on disk (settings missing or file gone)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Install now: failed to read pending update path: {e:#}");
+                }
+            }
+        });
     });
 
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
@@ -635,7 +643,7 @@ fn App() -> Element {
                                 pending_update_info.set(Some(p.info));
                             }
                             install_now_trigger.set(true);
-                            update_ready.set(None);
+                            // update_ready cleared in install effect after copying the DMG path
                         },
                     }
                 }
