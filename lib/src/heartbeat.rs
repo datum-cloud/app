@@ -176,11 +176,7 @@ impl HeartbeatAgent {
     }
 
     pub async fn refresh_projects(&self) -> Result<()> {
-        let orgs = self
-            .inner
-            .datum
-            .orgs_and_projects_with_source("heartbeat.refresh_projects")
-            .await?;
+        let orgs = self.inner.datum.orgs_and_projects().await?;
         let mut next_projects = HashSet::new();
         for org in orgs {
             for project in org.projects {
