@@ -1,0 +1,19 @@
+{
+  "title": "Install Datum",
+  "icon": "Datum-dmg.icns",
+  "background": "dmg-background.png",
+  "icon-size": 80,
+  "window": {
+    "position": {
+      "x": 400,
+      "y": 400
+    }
+  },
+  "contents": [
+    { "x": 165, "y": 200, "type": "file", "path": "../../dist/Datum.app" },
+    { "x": 370, "y": 200, "type": "link", "path": "/Applications" },
+    { "x": 1200, "y": 800, "type": "position", "path": ".background" },
+    { "x": 1200, "y": 800, "type": "position", "path": ".DS_Store" },
+    { "x": 1200, "y": 800, "type": "position", "path": ".Trashes" }
+  ]
+}

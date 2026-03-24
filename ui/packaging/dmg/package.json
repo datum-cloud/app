@@ -1,0 +1,8 @@
+{
+  "name": "datum-dmg-packaging",
+  "private": true,
+  "description": "Pinned appdmg for macOS CI DMG layout",
+  "dependencies": {
+    "appdmg": "0.6.6"
+  }
+}
