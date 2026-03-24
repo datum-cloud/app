@@ -227,6 +227,13 @@ jobs:
             exit 1
           fi
 
+      # DMG build leaves Datum.app under ui/dist; upload-artifact uses ui/dist/** and the release
+      # step used artifacts/**/*, so every file inside the bundle (fonts, PNGs, CodeResources, …)
+      # became a separate GitHub release asset. The DMG already contains the app.
+      - name: Remove unpacked macOS .app from dist before artifact upload
+        if: runner.os == 'macOS'
+        run: rm -rf ui/dist/Datum.app
+
       - name: Cleanup macOS Keychain
         if: runner.os == 'macOS' && always()
         run: |
@@ -368,7 +375,12 @@ jobs:
             Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Assets: Datum.dmg, Datum.AppImage, Datum-setup.exe (see SHA256 checksums below).
-          files: artifacts/**/*
+          # Do not use artifacts/**/* — that uploads every nested file from historical artifact layouts.
+          files: |
+            artifacts/aliases/*
+            artifacts/**/ui/dist/*.dmg
+            artifacts/**/ui/dist/*.AppImage
+            artifacts/**/ui/dist/*.exe
           generate_release_notes: false
 
   update-homebrew:
