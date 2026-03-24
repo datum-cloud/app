@@ -344,6 +344,7 @@ pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Re
 }
 
 const DATUM_CONNECT_RELAY_URLS: &str = "DATUM_CONNECT_RELAY_URLS";
+const BUILD_DATUM_CONNECT_RELAY_URLS: &str = "BUILD_DATUM_CONNECT_RELAY_URLS";
 const STARTUP_RELAY_SELECTION_MAX: usize = 5;
 const STARTUP_RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 
@@ -362,6 +363,24 @@ async fn relay_mode_from_env_or_build() -> Result<iroh::endpoint::RelayMode> {
             }
             Err(err) => {
                 warn!("invalid relay urls in {DATUM_CONNECT_RELAY_URLS}: {err:#}");
+            }
+        }
+    }
+
+    if let Some(raw_urls) = option_env!("BUILD_DATUM_CONNECT_RELAY_URLS") {
+        match parse_relay_urls(raw_urls) {
+            Ok(relays) => {
+                let relays =
+                    select_best_relays_for_startup(relays, STARTUP_RELAY_SELECTION_MAX).await;
+                info!(
+                    source = %BUILD_DATUM_CONNECT_RELAY_URLS,
+                    count = relays.len(),
+                    "using custom iroh relay list from build environment"
+                );
+                return Ok(iroh::endpoint::RelayMode::Custom(relays_to_map(relays)));
+            }
+            Err(err) => {
+                warn!("invalid relay urls in {BUILD_DATUM_CONNECT_RELAY_URLS}: {err:#}");
             }
         }
     }
