@@ -231,7 +231,10 @@ impl DatumCloudClient {
 
         let orgs = self.orgs().await?;
         let org_count = orgs.len();
-        info!(call_id, source, org_count, "orgs_and_projects: org list loaded");
+        info!(
+            call_id,
+            source, org_count, "orgs_and_projects: org list loaded"
+        );
 
         let stream = n0_future::stream::iter(orgs.into_iter().map(async |org| {
             let projects = self.projects(&org.resource_id).await?;
@@ -240,7 +243,8 @@ impl DatumCloudClient {
         let mut list: Vec<OrganizationWithProjects> =
             stream.buffered_unordered(16).try_collect().await?;
         for org in &mut list {
-            org.projects.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+            org.projects
+                .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
         }
         list.sort_by(|a, b| a.org.resource_id.cmp(&b.org.resource_id));
         let total_projects: usize = list.iter().map(|org| org.projects.len()).sum();
@@ -292,7 +296,10 @@ impl DatumCloudClient {
             )
             .await?;
         let orgs = parse_orgs(&json).context("Failed to parse reply")?;
-        info!(org_count = orgs.len(), "orgs: parsed /organizationmemberships");
+        info!(
+            org_count = orgs.len(),
+            "orgs: parsed /organizationmemberships"
+        );
         Ok(orgs)
     }
 
@@ -425,7 +432,9 @@ impl DatumCloudClient {
 
     pub async fn refresh_orgs_projects_and_validate_context(&self) -> Result<()> {
         let list = self
-            .orgs_and_projects_with_source("session_sync.refresh_orgs_projects_and_validate_context")
+            .orgs_and_projects_with_source(
+                "session_sync.refresh_orgs_projects_and_validate_context",
+            )
             .await?;
         let selected = self.selected_context();
         let Some(selected) = selected else {
