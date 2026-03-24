@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::Repo;
+use crate::http_user_agent::datum_http_user_agent;
 
 use self::{redirect_server::RedirectServer, types::OidcTokenResponse};
 use super::ApiEnv;
@@ -142,6 +143,7 @@ impl StatelessClient {
         let http = reqwest::ClientBuilder::new()
             // Following redirects opens the client up to SSRF vulnerabilities.
             .redirect(reqwest::redirect::Policy::none())
+            .user_agent(datum_http_user_agent())
             .build()
             .expect("Client should build");
 
