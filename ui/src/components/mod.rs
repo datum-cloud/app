@@ -7,10 +7,11 @@ mod button;
 mod delete_tunnel_dialog;
 mod head;
 mod icon;
+mod installing_splash;
 mod invite_user_dialog;
 mod splash;
 mod typography;
-mod update_dialog;
+mod update_toast;
 
 pub use add_tunnel_dialog::AddTunnelDialog;
 pub use button::Button;
@@ -18,11 +19,14 @@ pub use button::ButtonKind;
 pub use delete_tunnel_dialog::DeleteTunnelDialog;
 pub use head::Head;
 pub use icon::{Icon, IconSource};
+pub use installing_splash::InstallingSplash;
 pub use invite_user_dialog::InviteUserDialog;
 pub use splash::Splash;
 #[allow(unused)]
 pub use typography::Subhead;
-pub use update_dialog::UpdateDialog;
+#[allow(unused)]
+pub use update_toast::UpdateToast;
+#[allow(unused)]
 pub mod dialog;
 pub mod input;
 pub mod switch;

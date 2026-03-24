@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag (e.g. v0.0.1)"
+        description: "Release tag (stable: v1.2.3 — beta: v1.2.3-beta.1; hyphen after v => GitHub pre-release, in-app beta channel)"
         required: true
         type: string
       publish_docker:
@@ -188,6 +188,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Classify stable vs beta (semver pre-release tag)
+        id: channel
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        run: |
+          V="${VERSION_TAG#v}"
+          if [[ "$V" == *-* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download All Artifacts
         uses: actions/download-artifact@v7
         with:
@@ -214,8 +226,9 @@ jobs:
         with:
           name: DatumConnect ${{ inputs.version }}
           tag_name: ${{ inputs.version }}
+          # Do not mark as "latest" — tag pushes from bundle.yml own that; beta still gets prerelease: true
           make_latest: false
-          prerelease: false
+          prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
           draft: false
           files: artifacts/**/*
 

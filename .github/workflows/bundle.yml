@@ -269,7 +269,21 @@ jobs:
       contents: write
     # Only create releases for v* tags (no rolling release on main)
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      # Matches desktop updater: pre-release tags (e.g. v1.0.0-beta.1) => beta channel + GitHub prerelease
+      is_prerelease: ${{ steps.channel.outputs.prerelease }}
     steps:
+      - name: Classify stable vs beta (semver pre-release tag)
+        id: channel
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          V="${TAG_NAME#v}"
+          if [[ "$V" == *-* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set Version Info and Paths
         id: set_paths
         run: |
@@ -305,8 +319,8 @@ jobs:
         with:
           name: ${{ env.RELEASE_NAME }}
           tag_name: ${{ env.RELEASE_TAG }}
-          make_latest: true
-          prerelease: false
+          make_latest: ${{ steps.channel.outputs.prerelease != 'true' }}
+          prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
           body: |
             Version: ${{ env.RELEASE_VERSION }}
             Tag: ${{ env.RELEASE_TAG }}
@@ -321,7 +335,8 @@ jobs:
   update-homebrew:
     needs: [release]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Stable tags only — beta/pre-release builds must not replace the Homebrew cask
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.release.outputs.is_prerelease == 'false'
     steps:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v7
