@@ -4980,6 +4980,7 @@ dependencies = [
  "gateway-api",
  "gethostname",
  "hex",
+ "http 1.4.0",
  "http-body-util",
  "httparse",
  "hyper",

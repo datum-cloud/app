@@ -272,7 +272,7 @@ impl UpdateChecker {
         );
 
         let client = reqwest::Client::builder()
-            .user_agent("DatumConnect/1.0")
+            .user_agent(crate::datum_http_user_agent())
             .build()
             .anyerr()?;
 
@@ -381,7 +381,7 @@ impl UpdateChecker {
     /// Download the update binary to a temporary location
     pub async fn download_update(&self, download_url: &str) -> Result<PathBuf> {
         let client = reqwest::Client::builder()
-            .user_agent("DatumConnect/1.0")
+            .user_agent(crate::datum_http_user_agent())
             .build()
             .anyerr()?;
 
