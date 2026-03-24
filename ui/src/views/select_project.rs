@@ -36,7 +36,11 @@ pub fn SelectProject() -> Element {
         let mut orgs = orgs;
         let mut load_error = load_error;
         async move {
-            match state.datum().orgs_and_projects().await {
+            match state
+                .datum()
+                .orgs_and_projects_with_source("ui.select_project.initial_load")
+                .await
+            {
                 Ok(list) => {
                     orgs.set(list);
                     load_error.set(None);
@@ -56,7 +60,11 @@ pub fn SelectProject() -> Element {
         let mut refreshing = refreshing;
         async move {
             refreshing.set(true);
-            match state.datum().orgs_and_projects().await {
+            match state
+                .datum()
+                .orgs_and_projects_with_source("ui.select_project.manual_refresh")
+                .await
+            {
                 Ok(list) => {
                     orgs.set(list);
                     load_error.set(None);
