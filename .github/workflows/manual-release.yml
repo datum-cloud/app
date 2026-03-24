@@ -194,6 +194,11 @@ jobs:
             exit 1
           fi
 
+      # See bundle.yml — avoid uploading Datum.app tree as hundreds of separate release assets.
+      - name: Remove unpacked macOS .app from dist before artifact upload
+        if: runner.os == 'macOS'
+        run: rm -rf ui/dist/Datum.app
+
       - name: Cleanup macOS Keychain
         if: runner.os == 'macOS' && always()
         run: |
@@ -269,7 +274,11 @@ jobs:
           make_latest: false
           prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
           draft: false
-          files: artifacts/**/*
+          files: |
+            artifacts/aliases/*
+            artifacts/**/ui/dist/*.dmg
+            artifacts/**/ui/dist/*.AppImage
+            artifacts/**/ui/dist/*.exe
 
   publish-docker:
     if: ${{ inputs.publish_docker }}
