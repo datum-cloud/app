@@ -432,8 +432,8 @@ async fn select_best_relays_for_startup(relays: Vec<RelayUrl>, max_relays: usize
     let mut failed = Vec::new();
     while let Some(joined) = joinset.join_next().await {
         match joined {
-            Ok((relay, Some(latency))) => successful.push((relay, latency)),
-            Ok((relay, None)) => failed.push(relay),
+            Ok((relay, Ok(latency))) => successful.push((relay, latency)),
+            Ok((relay, Err(reason))) => failed.push((relay, reason)),
             Err(err) => {
                 debug!("relay probe task join error: {err:#}");
             }
@@ -448,13 +448,13 @@ async fn select_best_relays_for_startup(relays: Vec<RelayUrl>, max_relays: usize
         .collect();
 
     if selected.len() < max_relays {
-        failed.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        for relay in failed {
+        failed.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        for (relay, _) in &failed {
             if selected.len() == max_relays {
                 break;
             }
-            if !selected.iter().any(|r| r == &relay) {
-                selected.push(relay);
+            if !selected.iter().any(|r| r == relay) {
+                selected.push(relay.clone());
             }
         }
     }
@@ -470,29 +470,74 @@ async fn select_best_relays_for_startup(relays: Vec<RelayUrl>, max_relays: usize
         }
     }
 
+    if !failed.is_empty() {
+        let failure_samples: Vec<String> = failed
+            .iter()
+            .take(5)
+            .map(|(relay, reason)| format!("{relay} -> {reason}"))
+            .collect();
+        warn!(
+            failed = failed.len(),
+            samples = ?failure_samples,
+            "relay ping probe failures observed"
+        );
+    }
     info!(
         total = total_candidates,
         successful = successful.len(),
         selected = selected.len(),
+        selected_relays = ?selected,
         "selected startup relay shortlist"
     );
     selected
 }
 
-async fn probe_relay_latency(client: &reqwest::Client, relay: &RelayUrl) -> Option<Duration> {
-    let mut https_url = reqwest::Url::parse(&relay.to_string()).ok()?;
-    https_url.set_path("/generate_204");
+async fn probe_relay_latency(client: &reqwest::Client, relay: &RelayUrl) -> std::result::Result<Duration, String> {
+    let host = relay
+        .host_str()
+        .ok_or_else(|| "missing host in relay url".to_string())?
+        // RelayUrl canonicalizes with trailing dot, which can fail strict TLS hostname checks.
+        .trim_end_matches('.');
+    let mut https_url =
+        reqwest::Url::parse(&format!("https://{host}/ping")).map_err(|err| format!("url parse: {err}"))?;
     https_url.set_query(None);
+    debug!(
+        relay = %relay,
+        url = %https_url,
+        timeout_ms = STARTUP_RELAY_PROBE_TIMEOUT.as_millis(),
+        "starting relay ping probe"
+    );
     let start = tokio::time::Instant::now();
-    match client.get(https_url).send().await {
-        Ok(resp) if resp.status() == reqwest::StatusCode::NO_CONTENT => Some(start.elapsed()),
+    match client.get(https_url.clone()).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let elapsed = start.elapsed();
+            debug!(
+                relay = %relay,
+                url = %https_url,
+                status = %resp.status(),
+                elapsed_ms = elapsed.as_millis(),
+                "relay ping probe succeeded"
+            );
+            Ok(elapsed)
+        }
         Ok(resp) => {
-            debug!(%relay, status = %resp.status(), "relay probe got non-204 response");
-            None
+            debug!(
+                relay = %relay,
+                url = %https_url,
+                status = %resp.status(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "relay ping probe got non-success response"
+            );
+            Err(format!("status {}", resp.status()))
         }
         Err(err) => {
-            debug!(%relay, "relay probe failed: {err:#}");
-            None
+            debug!(
+                relay = %relay,
+                url = %https_url,
+                elapsed_ms = start.elapsed().as_millis(),
+                "relay ping probe request failed: {err:#}"
+            );
+            Err(format!("{err:#}"))
         }
     }
 }
