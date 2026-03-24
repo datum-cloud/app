@@ -9,6 +9,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use crate::datum_apis::user_invitation::RoleReference;
+use crate::http_user_agent::datum_http_user_agent;
 use crate::{ProjectControlPlaneClient, Repo, SelectedContext};
 
 pub use self::{
@@ -32,7 +33,10 @@ impl DatumCloudClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
         let auth = AuthClient::with_repo(env, repo.clone()).await?;
         let session = SessionStateWrapper::from_repo(Some(repo)).await?;
-        let http = reqwest::Client::builder().build().anyerr()?;
+        let http = reqwest::Client::builder()
+            .user_agent(datum_http_user_agent())
+            .build()
+            .anyerr()?;
         let mut client = Self {
             env,
             auth,
@@ -47,7 +51,10 @@ impl DatumCloudClient {
     pub async fn new(env: ApiEnv) -> Result<Self> {
         let auth = AuthClient::new(env).await?;
         let session = SessionStateWrapper::empty();
-        let http = reqwest::Client::builder().build().anyerr()?;
+        let http = reqwest::Client::builder()
+            .user_agent(datum_http_user_agent())
+            .build()
+            .anyerr()?;
         let mut client = Self {
             env,
             auth,
