@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::{Duration as StdDuration, Instant};
 
 use arc_swap::ArcSwap;
 use chrono::{Duration, Utc};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::{BufferedStreamExt, TryStreamExt, task::AbortOnDropHandle};
 use rand::Rng;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 use tracing::warn;
 
 use crate::datum_apis::user_invitation::RoleReference;
@@ -20,12 +21,15 @@ pub use self::{
 mod auth;
 mod env;
 
+const ORGS_PROJECTS_DEDUP_WINDOW: StdDuration = StdDuration::from_secs(2);
+
 #[derive(derive_more::Debug, Clone)]
 pub struct DatumCloudClient {
     env: ApiEnv,
     auth: AuthClient,
     http: reqwest::Client,
     session: SessionStateWrapper,
+    orgs_projects_fetch_gate: Arc<Mutex<Option<Instant>>>,
     _session_task: Option<Arc<AbortOnDropHandle<()>>>,
 }
 
@@ -42,6 +46,7 @@ impl DatumCloudClient {
             auth,
             http,
             session,
+            orgs_projects_fetch_gate: Arc::new(Mutex::new(None)),
             _session_task: None,
         };
         client.start_session_sync();
@@ -60,6 +65,7 @@ impl DatumCloudClient {
             auth,
             http,
             session,
+            orgs_projects_fetch_gate: Arc::new(Mutex::new(None)),
             _session_task: None,
         };
         client.start_session_sync();
@@ -214,14 +220,32 @@ impl DatumCloudClient {
     }
 
     pub async fn orgs_and_projects(&self) -> Result<Vec<OrganizationWithProjects>> {
+        // Serialize callers and collapse startup bursts.
+        let mut last_fetch = self.orgs_projects_fetch_gate.lock().await;
+        let cached = self.session.orgs_projects();
+        if !cached.is_empty()
+            && last_fetch
+                .as_ref()
+                .is_some_and(|instant| instant.elapsed() < ORGS_PROJECTS_DEDUP_WINDOW)
+        {
+            return Ok(cached);
+        }
+
         let orgs = self.orgs().await?;
+
         let stream = n0_future::stream::iter(orgs.into_iter().map(async |org| {
             let projects = self.projects(&org.resource_id).await?;
             n0_error::Ok(OrganizationWithProjects { org, projects })
         }));
-        let list: Vec<OrganizationWithProjects> =
+        let mut list: Vec<OrganizationWithProjects> =
             stream.buffered_unordered(16).try_collect().await?;
-        self.session.set_orgs_projects(list.clone());
+        for org in &mut list {
+            org.projects
+                .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+        }
+        list.sort_by(|a, b| a.org.resource_id.cmp(&b.org.resource_id));
+        let _ = self.session.set_orgs_projects(list.clone());
+        *last_fetch = Some(Instant::now());
         Ok(list)
     }
 
@@ -507,26 +531,31 @@ impl SessionStateWrapper {
         self.orgs_projects_tx.subscribe()
     }
 
-    fn set_orgs_projects(&self, orgs_projects: Vec<OrganizationWithProjects>) {
+    fn set_orgs_projects(&self, orgs_projects: Vec<OrganizationWithProjects>) -> bool {
+        let current = self.orgs_projects.load_full();
+        if current.as_ref().as_slice() == orgs_projects.as_slice() {
+            return false;
+        }
         self.orgs_projects.store(Arc::new(orgs_projects.clone()));
         let _ = self.orgs_projects_tx.send(orgs_projects);
+        true
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Organization {
     pub resource_id: String,
     pub display_name: String,
     pub r#type: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrganizationWithProjects {
     pub org: Organization,
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub resource_id: String,
     pub display_name: String,
