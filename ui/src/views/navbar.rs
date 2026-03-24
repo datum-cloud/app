@@ -143,7 +143,11 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
             if state_for_orgs.datum().login_state() != LoginState::Valid {
                 return;
             }
-            if let Ok(list) = state_for_orgs.datum().orgs_and_projects().await {
+            if let Ok(list) = state_for_orgs
+                .datum()
+                .orgs_and_projects_with_source("ui.navbar.header_load")
+                .await
+            {
                 orgs.set(list);
             }
         }

@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use chrono::{Duration, Utc};
@@ -6,7 +8,7 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::{BufferedStreamExt, TryStreamExt, task::AbortOnDropHandle};
 use rand::Rng;
 use tokio::sync::watch;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::datum_apis::user_invitation::RoleReference;
 use crate::http_user_agent::datum_http_user_agent;
@@ -19,6 +21,8 @@ pub use self::{
 
 mod auth;
 mod env;
+
+static ORGS_PROJECTS_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(derive_more::Debug, Clone)]
 pub struct DatumCloudClient {
@@ -214,14 +218,42 @@ impl DatumCloudClient {
     }
 
     pub async fn orgs_and_projects(&self) -> Result<Vec<OrganizationWithProjects>> {
+        self.orgs_and_projects_with_source("unknown").await
+    }
+
+    pub async fn orgs_and_projects_with_source(
+        &self,
+        source: &'static str,
+    ) -> Result<Vec<OrganizationWithProjects>> {
+        let call_id = ORGS_PROJECTS_CALL_ID.fetch_add(1, Ordering::Relaxed);
+        let started = Instant::now();
+        info!(call_id, source, "orgs_and_projects: start");
+
         let orgs = self.orgs().await?;
+        let org_count = orgs.len();
+        info!(call_id, source, org_count, "orgs_and_projects: org list loaded");
+
         let stream = n0_future::stream::iter(orgs.into_iter().map(async |org| {
             let projects = self.projects(&org.resource_id).await?;
             n0_error::Ok(OrganizationWithProjects { org, projects })
         }));
-        let list: Vec<OrganizationWithProjects> =
+        let mut list: Vec<OrganizationWithProjects> =
             stream.buffered_unordered(16).try_collect().await?;
-        self.session.set_orgs_projects(list.clone());
+        for org in &mut list {
+            org.projects.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+        }
+        list.sort_by(|a, b| a.org.resource_id.cmp(&b.org.resource_id));
+        let total_projects: usize = list.iter().map(|org| org.projects.len()).sum();
+        let published = self.session.set_orgs_projects(list.clone());
+        info!(
+            call_id,
+            source,
+            org_count = list.len(),
+            total_projects,
+            published,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "orgs_and_projects: completed"
+        );
         Ok(list)
     }
 
@@ -252,13 +284,16 @@ impl DatumCloudClient {
             Some(parsed.collect())
         }
 
+        info!("orgs: requesting /organizationmemberships");
         let json = self
             .fetch(
                 Scope::user(&self.auth.load().get()?.profile),
                 Api::ResourceManager(ResourceManager::OrganizationMemberships),
             )
             .await?;
-        parse_orgs(&json).context("Failed to parse reply")
+        let orgs = parse_orgs(&json).context("Failed to parse reply")?;
+        info!(org_count = orgs.len(), "orgs: parsed /organizationmemberships");
+        Ok(orgs)
     }
 
     pub async fn projects(&self, org_id: &str) -> Result<Vec<Project>> {
@@ -282,13 +317,20 @@ impl DatumCloudClient {
             Some(parsed.collect())
         }
 
+        info!(%org_id, "projects: requesting /projects");
         let json = self
             .fetch(
                 Scope::Org(org_id.to_string()),
                 Api::ResourceManager(ResourceManager::Projects),
             )
             .await?;
-        parse_projects(&json).context("Failed to parse reply")
+        let projects = parse_projects(&json).context("Failed to parse reply")?;
+        info!(
+            %org_id,
+            project_count = projects.len(),
+            "projects: parsed /projects"
+        );
+        Ok(projects)
     }
 
     fn url(&self, scope: Scope, api: Api) -> String {
@@ -382,7 +424,9 @@ impl DatumCloudClient {
     }
 
     pub async fn refresh_orgs_projects_and_validate_context(&self) -> Result<()> {
-        let list = self.orgs_and_projects().await?;
+        let list = self
+            .orgs_and_projects_with_source("session_sync.refresh_orgs_projects_and_validate_context")
+            .await?;
         let selected = self.selected_context();
         let Some(selected) = selected else {
             return Ok(());
@@ -507,26 +551,31 @@ impl SessionStateWrapper {
         self.orgs_projects_tx.subscribe()
     }
 
-    fn set_orgs_projects(&self, orgs_projects: Vec<OrganizationWithProjects>) {
+    fn set_orgs_projects(&self, orgs_projects: Vec<OrganizationWithProjects>) -> bool {
+        let current = self.orgs_projects.load_full();
+        if current.as_ref().as_slice() == orgs_projects.as_slice() {
+            return false;
+        }
         self.orgs_projects.store(Arc::new(orgs_projects.clone()));
         let _ = self.orgs_projects_tx.send(orgs_projects);
+        true
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Organization {
     pub resource_id: String,
     pub display_name: String,
     pub r#type: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrganizationWithProjects {
     pub org: Organization,
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub resource_id: String,
     pub display_name: String,
