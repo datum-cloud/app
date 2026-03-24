@@ -236,3 +236,54 @@
     @apply focus:outline-1 focus:outline-app-border;
   }
 }
+
+/* Toast component - Tailwind-based styles (replaces toast/style.css) */
+@layer components {
+  .toast-container {
+    @apply fixed z-[9999] right-4 bottom-4 max-w-[350px];
+  }
+
+  .toast-list {
+    @apply flex flex-col-reverse p-0 m-0 gap-3;
+  }
+
+  .toast-item {
+    @apply flex;
+  }
+
+  .toast {
+    @apply flex overflow-hidden min-h-16 box-border items-center justify-between px-3 py-2 border border-app-border rounded-lg bg-card-background text-foreground shadow-lg transition-transform duration-200 ease-out;
+  }
+
+  .toast[data-type="success"] {
+    @apply bg-button-secondary-background/30 border-button-secondary-background text-foreground;
+  }
+
+  .toast[data-type="error"] {
+    @apply bg-alert-red-dark/20 border-alert-red-dark text-alert-red-dark;
+  }
+
+  .toast[data-type="warning"] {
+    @apply bg-button-link-foreground/20 border-button-link-foreground text-foreground;
+  }
+
+  .toast[data-type="info"] {
+    @apply bg-content-background border-app-border text-foreground;
+  }
+
+  .toast-content {
+    @apply flex-1 mr-2;
+  }
+
+  .toast-title {
+    @apply font-medium text-foreground;
+  }
+
+  .toast-description {
+    @apply text-sm text-foreground/80;
+  }
+
+  .toast-close {
+    @apply self-start p-0 border-0 m-0 bg-transparent text-foreground/60 cursor-pointer text-lg leading-none hover:text-foreground;
+  }
+}
