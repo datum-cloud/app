@@ -19,6 +19,7 @@ jobs:
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
+      BUILD_DATUM_CONNECT_RELAY_URLS: ${{ vars.BUILD_DATUM_CONNECT_RELAY_URLS }}
       DATUM_API_ENV: production
 
     steps:
