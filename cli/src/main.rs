@@ -335,7 +335,15 @@ async fn main() -> n0_error::Result<()> {
                 }
                 AuthCommands::Login => {
                     datum.login().await?;
-                    println!("Login successful");
+                    if let Ok(state) = datum.auth_state().get() {
+                        println!(
+                            "Logged in as {} ({})",
+                            state.profile.display_name(),
+                            state.profile.email
+                        );
+                    } else {
+                        println!("Login successful");
+                    }
                 }
                 AuthCommands::Logout => {
                     datum.logout().await?;
@@ -359,7 +367,15 @@ async fn main() -> n0_error::Result<()> {
                     datum.logout().await?;
                     println!("Switching users...");
                     datum.login().await?;
-                    println!("Switched to new user");
+                    if let Ok(state) = datum.auth_state().get() {
+                        println!(
+                            "Switched to {} ({})",
+                            state.profile.display_name(),
+                            state.profile.email
+                        );
+                    } else {
+                        println!("Switched to new user");
+                    }
                 }
             }
         }
