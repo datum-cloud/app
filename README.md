@@ -10,6 +10,17 @@ CLI, GUI app, and shared library for exposing local environments to the internet
 brew install datum-cloud/tap/desktop
 ```
 
+**nix**
+
+```
+# GUI app
+nix run github:datum-cloud/app#desktop
+
+# CLI
+nix run github:datum-cloud/app#cli -- auth login
+nix run github:datum-cloud/app#cli -- tunnel list
+```
+
 **Direct download:**
 
 [![Download for macOS](https://img.shields.io/badge/Download-macOS-000000?logo=apple&logoColor=white)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum.dmg)
