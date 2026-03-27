@@ -151,7 +151,7 @@
         formatter = pkgs.nixpkgs-fmt;
 
         apps.desktop = let
-          script = pkgs.writeShellScriptBin "desktop-app" ''
+          script = pkgs.writeShellScriptBin "datum-desktop" ''
             cd "$PWD/ui"
             export DATUM_CONNECT_PUBLISH_TICKETS=1
             export RUST_LOG=info,lib::heartbeat=debug,lib::tunnels=debug
@@ -159,16 +159,16 @@
           '';
         in {
           type = "app";
-          program = "${script}/bin/desktop-app";
+          program = "${script}/bin/datum-desktop";
         };
 
         apps.cli = let
-          script = pkgs.writeShellScriptBin "cli" ''
+          script = pkgs.writeShellScriptBin "datum-connect-cli" ''
             exec ${self.packages.${system}.cli}/bin/datum-connect "$@"
           '';
         in {
           type = "app";
-          program = "${script}/bin/cli";
+          program = "${script}/bin/datum-connect-cli";
         };
       }
     );
