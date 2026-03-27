@@ -5,8 +5,10 @@ mod tunnel_dev;
 
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, ListenNode, ProxyState, Repo, TcpProxyData,
+    TunnelService,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
+use n0_error::StdResultExt;
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::info;
 use tracing_subscriber::prelude::*;
@@ -41,6 +43,10 @@ enum Commands {
     /// Add proxies.
     #[clap(subcommand, alias = "ls")]
     Add(AddCommands),
+
+    /// Manage tunnels (create, list, update, delete) that expose local services to public hostnames.
+    #[clap(subcommand)]
+    Tunnel(TunnelCommands),
 }
 
 #[derive(Debug, clap::Parser)]
@@ -132,9 +138,52 @@ pub struct ConnectArgs {
     pub ticket: AdvertismentTicket,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum TunnelCommands {
+    /// List all tunnels in the current project.
+    List,
+
+    /// Start a tunnel that exposes a local service to a public hostname.
+    Listen {
+        /// Display name for the tunnel (auto-generated if not provided).
+        #[clap(long)]
+        label: Option<String>,
+        /// Local address to expose (host:port, e.g. 127.0.0.1:8080).
+        #[clap(long)]
+        endpoint: String,
+        /// Skip confirmation prompt if tunnel already exists.
+        #[clap(long, default_value = "false")]
+        yes: bool,
+    },
+
+    /// Update an existing tunnel.
+    Update {
+        /// Tunnel ID (resource name).
+        #[clap(long)]
+        id: String,
+        /// New display name for the tunnel.
+        #[clap(long)]
+        label: Option<String>,
+        /// New local address to expose (host:port, e.g. 127.0.0.1:8080).
+        #[clap(long)]
+        endpoint: Option<String>,
+    },
+
+    /// Delete a tunnel.
+    Delete {
+        /// Tunnel ID (resource name) to delete.
+        #[clap(long)]
+        id: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
     tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .with(tracing_subscriber::fmt::layer())
         .with(sentry::integrations::tracing::layer())
         .init();
@@ -279,6 +328,122 @@ async fn main() -> n0_error::Result<()> {
         },
         Commands::TunnelDev(args) => {
             tunnel_dev::serve(args).await?;
+        }
+        Commands::Tunnel(args) => {
+            let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
+            let node = ListenNode::new(repo.clone()).await?;
+            let service = TunnelService::new(datum, node.clone());
+
+            match args {
+                TunnelCommands::List => {
+                    let tunnels = service.list_active().await?;
+                    if tunnels.is_empty() {
+                        println!("No tunnels found in current project.");
+                    } else {
+                        for t in tunnels {
+                            let status = if t.accepted && t.programmed {
+                                "ready"
+                            } else if t.accepted {
+                                "accepted"
+                            } else {
+                                "pending"
+                            };
+                            let enabled = if t.enabled { "enabled" } else { "disabled" };
+                            println!("{} [{}] {} -> {}", t.id, status, t.label, t.endpoint);
+                            if !t.hostnames.is_empty() {
+                                for h in &t.hostnames {
+                                    println!("  hostname: {}", h);
+                                }
+                            }
+                            println!("  status: {}, {}", enabled, status);
+                        }
+                    }
+                }
+                TunnelCommands::Listen { label, endpoint, yes } => {
+                    let endpoint_id = node.endpoint_id();
+                    let label = label.unwrap_or_else(|| {
+                        let random: u16 = rand::random();
+                        format!("tunnel-{}", random)
+                    });
+                    
+                    let existing = service.get_active_by_endpoint(&endpoint).await?;
+                    let tunnel_id = if let Some(t) = existing {
+                        println!("Found existing tunnel for {}:", endpoint);
+                        println!("  id: {}", t.id);
+                        println!("  label: {}", t.label);
+                        println!("  endpoint: {}", t.endpoint);
+                        println!();
+                        
+                        if t.endpoint != endpoint || t.label != label {
+                            if yes {
+                                println!("Updating tunnel (--yes specified)");
+                            } else {
+                                print!("Update tunnel to label='{}', endpoint='{}'? [y/N] ", label, endpoint);
+                                std::io::Write::flush(&mut std::io::stdout())?;
+                                let mut input = String::new();
+                                std::io::stdin().read_line(&mut input)?;
+                                if !input.trim().eq_ignore_ascii_case("y") {
+                                    println!("Aborted.");
+                                    return Ok(());
+                                }
+                            }
+                            let updated = service.update_active(&t.id, &label, &endpoint).await?;
+                            println!("Updated tunnel:");
+                            println!("  id: {}", updated.id);
+                            updated.id
+                        } else {
+                            println!("Tunnel already configured correctly.");
+                            t.id
+                        }
+                    } else {
+                        let tunnel = service.create_active(&label, &endpoint).await?;
+                        println!("Created tunnel:");
+                        tunnel.id
+                    };
+                    
+                    let tunnel = service.set_enabled_active(&tunnel_id, true).await?;
+                    println!();
+                    println!("Tunnel is running:");
+                    println!("  id: {}", tunnel.id);
+                    println!("  label: {}", tunnel.label);
+                    println!("  endpoint: {}", tunnel.endpoint);
+                    if !tunnel.hostnames.is_empty() {
+                        println!("  hostnames:");
+                        for h in &tunnel.hostnames {
+                            println!("    {}", h);
+                        }
+                    }
+                    println!();
+                    println!("Your endpoint ID: {}", endpoint_id);
+                    println!("Press Ctrl+C to stop and disable the tunnel...");
+                    
+                    tokio::signal::ctrl_c().await?;
+                    println!();
+                    println!("Disabling tunnel...");
+                    service.set_enabled_active(&tunnel_id, false).await?;
+                    println!("Tunnel disabled.");
+                }
+                TunnelCommands::Update { id, label, endpoint } => {
+                    let current = service.get_active(&id).await?;
+                    let current = current.std_context("Tunnel not found")?;
+                    let new_label = label.unwrap_or(current.label);
+                    let new_endpoint = endpoint.unwrap_or(current.endpoint);
+                    let tunnel = service.update_active(&id, &new_label, &new_endpoint).await?;
+                    println!("Updated tunnel {}:", tunnel.id);
+                    println!("  label: {}", tunnel.label);
+                    println!("  endpoint: {}", tunnel.endpoint);
+                    if !tunnel.hostnames.is_empty() {
+                        println!("  hostnames:");
+                        for h in &tunnel.hostnames {
+                            println!("    {}", h);
+                        }
+                    }
+                }
+                TunnelCommands::Delete { id } => {
+                    let result = service.delete_active(&id).await?;
+                    println!("Deleted tunnel {} (connector deleted: {})", id, result.connector_deleted);
+                }
+            }
         }
     }
     Ok(())

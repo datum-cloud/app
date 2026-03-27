@@ -138,6 +138,12 @@ impl TunnelService {
         Ok(tunnels.into_iter().find(|tunnel| tunnel.id == tunnel_id))
     }
 
+    pub async fn get_active_by_endpoint(&self, endpoint: &str) -> Result<Option<TunnelSummary>> {
+        let tunnels = self.list_active().await?;
+        let normalized = normalize_endpoint(endpoint);
+        Ok(tunnels.into_iter().find(|tunnel| tunnel.endpoint == normalized))
+    }
+
     pub async fn create_active(&self, label: &str, endpoint: &str) -> Result<TunnelSummary> {
         let Some(selected) = self.datum.selected_context() else {
             n0_error::bail_any!("No project selected");
@@ -179,7 +185,7 @@ impl TunnelService {
     }
 
     pub async fn list_project(&self, project_id: &str) -> Result<Vec<TunnelSummary>> {
-        let connector = self.find_connector(project_id).await?;
+        let connector = self.find_connector_readonly(project_id).await?;
         let Some(connector) = connector else {
             return Ok(Vec::new());
         };
@@ -790,6 +796,29 @@ impl TunnelService {
             project_id: project_id.to_string(),
             connector_deleted,
         })
+    }
+
+    async fn find_connector_readonly(&self, project_id: &str) -> Result<Option<Connector>> {
+        let pcp = self.datum.project_control_plane_client(project_id).await?;
+        let client = pcp.client();
+        let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+        let endpoint_id = self.listen.endpoint_id().to_string();
+        let selector = format!("{CONNECTOR_SELECTOR_FIELD}={endpoint_id}");
+        let list = connectors
+            .list(&ListParams::default().fields(&selector))
+            .await
+            .std_context("Failed to list connectors")?;
+        if list.items.is_empty() {
+            return Ok(None);
+        }
+        if list.items.len() > 1 {
+            debug!(
+                %selector,
+                count = list.items.len(),
+                "Multiple connectors found for endpoint, using first"
+            );
+        }
+        Ok(Some(list.items.into_iter().next().unwrap()))
     }
 
     async fn find_connector(&self, project_id: &str) -> Result<Option<Connector>> {
