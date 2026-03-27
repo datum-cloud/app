@@ -44,6 +44,10 @@ enum Commands {
     #[clap(subcommand, alias = "ls")]
     Add(AddCommands),
 
+    /// Authenticate with Datum Cloud (login, logout, status).
+    #[clap(subcommand)]
+    Auth(AuthCommands),
+
     /// Manage tunnels (create, list, update, delete) that expose local services to public hostnames.
     #[clap(subcommand)]
     Tunnel(TunnelCommands),
@@ -136,6 +140,24 @@ pub struct ConnectArgs {
     /// provide a ticket to drive connection directly.
     #[clap(long, conflicts_with = "codename")]
     pub ticket: AdvertismentTicket,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuthCommands {
+    /// Show current authentication status.
+    Status,
+
+    /// Log in to Datum Cloud (opens browser for OAuth).
+    Login,
+
+    /// Log out and clear stored credentials.
+    Logout,
+
+    /// List all locally authenticated users.
+    List,
+
+    /// Switch to a different authenticated user (clears current and prompts for new login).
+    Switch,
 }
 
 #[derive(Subcommand, Debug)]
@@ -250,6 +272,50 @@ async fn main() -> n0_error::Result<()> {
                 })
                 .await?;
             println!("OK.");
+        }
+        Commands::Auth(args) => {
+            let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
+            match args {
+                AuthCommands::Status => {
+                    if datum.is_authenticated().await? {
+                        println!("Authenticated");
+                        if let Some(ctx) = datum.selected_context() {
+                            println!("  org: {}", ctx.org_id);
+                            println!("  project: {}", ctx.project_id);
+                        }
+                    } else {
+                        println!("Not authenticated");
+                    }
+                }
+                AuthCommands::Login => {
+                    datum.login().await?;
+                    println!("Login successful");
+                }
+                AuthCommands::Logout => {
+                    datum.logout().await?;
+                    println!("Logged out");
+                }
+                AuthCommands::List => {
+                    let is_auth = datum.is_authenticated().await?;
+                    if is_auth {
+                        println!("Current user (active):");
+                        if let Some(ctx) = datum.selected_context() {
+                            println!("  org: {}", ctx.org_id);
+                            println!("  project: {}", ctx.project_id);
+                        }
+                    } else {
+                        println!("No authenticated users");
+                    }
+                    println!();
+                    println!("Note: Multi-user storage not yet implemented. Use 'auth switch' to log in as a different user.");
+                }
+                AuthCommands::Switch => {
+                    datum.logout().await?;
+                    println!("Switching users...");
+                    datum.login().await?;
+                    println!("Switched to new user");
+                }
+            }
         }
         Commands::Serve => {
             let node = ListenNode::new(repo).await?;
