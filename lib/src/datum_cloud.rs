@@ -96,6 +96,19 @@ impl DatumCloudClient {
         self.auth.load()
     }
 
+    pub async fn is_authenticated(&self) -> Result<bool> {
+        let state = self.auth.load_refreshed().await?;
+        Ok(state.get().is_ok())
+    }
+
+    pub async fn login(&self) -> Result<()> {
+        self.auth.login().await
+    }
+
+    pub async fn logout(&self) -> Result<()> {
+        self.auth.logout().await
+    }
+
     pub fn selected_context(&self) -> Option<SelectedContext> {
         self.session.selected_context()
     }

@@ -190,6 +190,7 @@ impl StatelessClient {
             .add_scope(Scope::new("profile".to_string()))
             .add_scope(Scope::new("email".to_string()))
             .add_scope(Scope::new("offline_access".to_string()))
+            .add_extra_param("prompt", "select_account")
             .set_pkce_challenge(pkce_challenge)
             .url();
         debug!(auth_uri=%self.oidc.auth_uri(), "attempting login");
