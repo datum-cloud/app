@@ -161,6 +161,15 @@
           type = "app";
           program = "${script}/bin/desktop-app";
         };
+
+        apps.cli = let
+          script = pkgs.writeShellScriptBin "cli" ''
+            exec ${self.packages.${system}.cli}/bin/datum-connect "$@"
+          '';
+        in {
+          type = "app";
+          program = "${script}/bin/cli";
+        };
       }
     );
 }
