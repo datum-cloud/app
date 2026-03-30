@@ -1120,4 +1120,3 @@ fn publish_tickets_enabled() -> bool {
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
-
