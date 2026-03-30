@@ -87,7 +87,6 @@ pub struct TunnelService {
     datum: DatumCloudClient,
     listen: ListenNode,
     publish_tickets: bool,
-    create_traffic_protection_policies: bool,
 }
 
 // TODO(zachsmith1): Use connectors + ConnectorAdvertisements across all projects to
@@ -122,7 +121,6 @@ impl TunnelService {
             datum,
             listen,
             publish_tickets: publish_tickets_enabled(),
-            create_traffic_protection_policies: create_traffic_protection_policies_enabled(),
         }
     }
 
@@ -359,64 +357,56 @@ impl TunnelService {
             "created ConnectorAdvertisement"
         );
 
-        if self.create_traffic_protection_policies {
-            let tpps: Api<TrafficProtectionPolicy> =
-                Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
-            debug!(
-                %project_id,
-                proxy = %proxy_name,
-                "creating TrafficProtectionPolicy"
-            );
-            let tpp = TrafficProtectionPolicy {
-                metadata: ObjectMeta {
-                    name: Some(proxy_name.clone()),
-                    ..Default::default()
-                },
-                spec: TrafficProtectionPolicySpec {
-                    target_refs: vec![LocalPolicyTargetReferenceWithSectionName {
-                        group: "gateway.networking.k8s.io".to_string(),
-                        kind: "Gateway".to_string(),
-                        name: proxy_name.clone(),
-                        section_name: None,
-                    }],
-                    mode: Some(TrafficProtectionPolicyMode::Enforce),
-                    sampling_percentage: None,
-                    rule_sets: Some(vec![TrafficProtectionPolicyRuleSet {
-                        rule_set_type: TrafficProtectionPolicyRuleSetType::OWASPCoreRuleSet,
-                        owasp_core_rule_set: Some(OWASPCRS {
-                            paranoia_levels: Some(ParanoiaLevels {
-                                blocking: Some(1),
-                                detection: Some(1),
-                            }),
-                            score_thresholds: None,
-                            rule_exclusions: None,
+        let tpps: Api<TrafficProtectionPolicy> =
+            Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        debug!(
+            %project_id,
+            proxy = %proxy_name,
+            "creating TrafficProtectionPolicy"
+        );
+        let tpp = TrafficProtectionPolicy {
+            metadata: ObjectMeta {
+                name: Some(proxy_name.clone()),
+                ..Default::default()
+            },
+            spec: TrafficProtectionPolicySpec {
+                target_refs: vec![LocalPolicyTargetReferenceWithSectionName {
+                    group: "gateway.networking.k8s.io".to_string(),
+                    kind: "Gateway".to_string(),
+                    name: proxy_name.clone(),
+                    section_name: None,
+                }],
+                mode: Some(TrafficProtectionPolicyMode::Enforce),
+                sampling_percentage: None,
+                rule_sets: Some(vec![TrafficProtectionPolicyRuleSet {
+                    rule_set_type: TrafficProtectionPolicyRuleSetType::OWASPCoreRuleSet,
+                    owasp_core_rule_set: Some(OWASPCRS {
+                        paranoia_levels: Some(ParanoiaLevels {
+                            blocking: Some(1),
+                            detection: Some(1),
                         }),
-                    }]),
-                },
-                status: None,
-            };
-            tpps.create(&PostParams::default(), &tpp)
-                .await
-                .std_context("Failed to create TrafficProtectionPolicy")
-                .inspect_err(|err| {
-                    warn!(
-                        %project_id,
-                        proxy = %proxy_name,
-                        "TrafficProtectionPolicy create failed: {err:#}"
-                    );
-                })?;
-            debug!(
-                %project_id,
-                proxy = %proxy_name,
-                "created TrafficProtectionPolicy"
-            );
-        } else {
-            debug!(
-                %project_id,
-                proxy = %proxy_name,
-                "skipping TrafficProtectionPolicy creation (env disabled)"
-            );
-        }
+                        score_thresholds: None,
+                        rule_exclusions: None,
+                    }),
+                }]),
+            },
+            status: None,
+        };
+        tpps.create(&PostParams::default(), &tpp)
+            .await
+            .std_context("Failed to create TrafficProtectionPolicy")
+            .inspect_err(|err| {
+                warn!(
+                    %project_id,
+                    proxy = %proxy_name,
+                    "TrafficProtectionPolicy create failed: {err:#}"
+                );
+            })?;
+        debug!(
+            %project_id,
+            proxy = %proxy_name,
+            "created TrafficProtectionPolicy"
+        );
 
         let proxy_state = proxy_state_from_summary(&proxy_name, &endpoint, label, true)?;
         if self.publish_tickets {
@@ -1131,8 +1121,3 @@ fn publish_tickets_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn create_traffic_protection_policies_enabled() -> bool {
-    std::env::var("DATUM_CONNECT_CREATE_TRAFFIC_PROTECTION_POLICIES")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
-}
