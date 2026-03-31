@@ -7,6 +7,8 @@ use std::{
 use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
+use crate::SelectedContext;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscoveryMode {
@@ -49,6 +51,10 @@ pub struct Config {
     /// Useful for local development (e.g. 127.0.0.1:53535).
     #[serde(default)]
     pub dns_resolver: Option<SocketAddr>,
+
+    /// The currently selected org/project context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_context: Option<SelectedContext>,
 }
 
 impl Config {

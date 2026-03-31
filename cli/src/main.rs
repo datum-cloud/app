@@ -5,7 +5,7 @@ mod tunnel_dev;
 
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, HeartbeatAgent, ListenNode, ProxyState, Repo,
-    TcpProxyData, TunnelService,
+    SelectedContext, TcpProxyData, TunnelService,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
 use n0_error::StdResultExt;
@@ -49,8 +49,11 @@ enum Commands {
     Auth(AuthCommands),
 
     /// Manage tunnels (create, list, update, delete) that expose local services to public hostnames.
+    Tunnel(TunnelArgs),
+
+    /// Manage Datum Cloud projects.
     #[clap(subcommand)]
-    Tunnel(TunnelCommands),
+    Projects(ProjectsCommands),
 }
 
 #[derive(Debug, clap::Parser)]
@@ -143,6 +146,15 @@ pub struct ConnectArgs {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum ProjectsCommands {
+    /// List all available projects across your organizations.
+    List,
+
+    /// Switch the active project.
+    Switch,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum AuthCommands {
     /// Show current authentication status.
     Status,
@@ -158,6 +170,15 @@ pub enum AuthCommands {
 
     /// Switch to a different authenticated user (clears current and prompts for new login).
     Switch,
+}
+
+#[derive(Parser, Debug)]
+pub struct TunnelArgs {
+    /// Project ID to use for this command (overrides the currently selected project).
+    #[clap(long)]
+    project: Option<String>,
+    #[clap(subcommand)]
+    command: TunnelCommands,
 }
 
 #[derive(Subcommand, Debug)]
@@ -298,6 +319,7 @@ async fn main() -> n0_error::Result<()> {
                     } else {
                         println!("Login successful");
                     }
+                    select_project_interactive(&datum).await?;
                 }
                 AuthCommands::Logout => {
                     datum.logout().await?;
@@ -330,6 +352,30 @@ async fn main() -> n0_error::Result<()> {
                     } else {
                         println!("Switched to new user");
                     }
+                    select_project_interactive(&datum).await?;
+                }
+            }
+        }
+        Commands::Projects(args) => {
+            let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
+            match args {
+                ProjectsCommands::List => {
+                    let orgs = datum.orgs_and_projects().await?;
+                    let selected = datum.selected_context();
+                    for org in &orgs {
+                        println!("{} ({})", org.org.display_name, org.org.resource_id);
+                        for project in &org.projects {
+                            let active = selected
+                                .as_ref()
+                                .map(|ctx| ctx.project_id == project.resource_id)
+                                .unwrap_or(false);
+                            let marker = if active { " *" } else { "" };
+                            println!("  {} ({}){}", project.display_name, project.resource_id, marker);
+                        }
+                    }
+                }
+                ProjectsCommands::Switch => {
+                    select_project_interactive(&datum).await?;
                 }
             }
         }
@@ -411,8 +457,16 @@ async fn main() -> n0_error::Result<()> {
         Commands::TunnelDev(args) => {
             tunnel_dev::serve(args).await?;
         }
-        Commands::Tunnel(args) => {
+        Commands::Tunnel(TunnelArgs { project, command: args }) => {
             let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
+
+            if let Some(project_id) = project {
+                let orgs = datum.orgs_and_projects().await?;
+                let ctx = resolve_project_context(&orgs, &project_id)
+                    .ok_or_else(|| n0_error::anyerr!("project '{}' not found", project_id))?;
+                datum.set_selected_context(Some(ctx)).await?;
+            }
+
             let node = ListenNode::new(repo.clone()).await?;
             let service = TunnelService::new(datum.clone(), node.clone());
             let heartbeat = HeartbeatAgent::new(datum.clone(), node.clone());
@@ -482,6 +536,8 @@ async fn main() -> n0_error::Result<()> {
                         });
                         let tunnel = service.create_active(&label, &endpoint).await?;
                         println!("Created tunnel:");
+                        println!("  id: {}", tunnel.id);
+                        println!("  label: {}", tunnel.label);
                         tunnel.id
                     };
                     
@@ -543,4 +599,98 @@ async fn main() -> n0_error::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Prompt the user to select an org and project, then persist it as the active context.
+async fn select_project_interactive(datum: &DatumCloudClient) -> n0_error::Result<()> {
+    use lib::datum_cloud::OrganizationWithProjects;
+    use std::io::{BufRead, Write};
+
+    let orgs = datum.orgs_and_projects().await?;
+    if orgs.is_empty() {
+        println!("No organizations found. Create a project at https://app.datum.net first.");
+        return Ok(());
+    }
+
+    // Flatten to (org_ref, project_index) for a simple numbered list.
+    let mut entries: Vec<(&OrganizationWithProjects, usize)> = Vec::new();
+    for org in &orgs {
+        for pi in 0..org.projects.len() {
+            entries.push((org, pi));
+        }
+    }
+
+    if entries.is_empty() {
+        println!("No projects found. Create a project at https://app.datum.net first.");
+        return Ok(());
+    }
+
+    if entries.len() == 1 {
+        let (org, pi) = entries[0];
+        let project = &org.projects[pi];
+        let ctx = SelectedContext {
+            org_id: org.org.resource_id.clone(),
+            org_name: org.org.display_name.clone(),
+            project_id: project.resource_id.clone(),
+            project_name: project.display_name.clone(),
+            org_type: org.org.r#type.clone(),
+        };
+        println!("Selected project: {} / {}", ctx.org_name, ctx.project_name);
+        datum.set_selected_context(Some(ctx)).await?;
+        return Ok(());
+    }
+
+    println!("\nSelect a project:");
+    for (i, (org, pi)) in entries.iter().enumerate() {
+        let project = &org.projects[*pi];
+        println!("  [{}] {} / {}", i + 1, org.org.display_name, project.display_name);
+    }
+    print!("Enter number [1-{}]: ", entries.len());
+    std::io::stdout().flush().ok();
+
+    let stdin = std::io::stdin();
+    let line = stdin
+        .lock()
+        .lines()
+        .next()
+        .ok_or_else(|| n0_error::anyerr!("no input"))??;
+    let choice: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| n0_error::anyerr!("invalid selection"))?;
+    if choice < 1 || choice > entries.len() {
+        return Err(n0_error::anyerr!("selection out of range"));
+    }
+
+    let (org, pi) = entries[choice - 1];
+    let project = &org.projects[pi];
+    let ctx = SelectedContext {
+        org_id: org.org.resource_id.clone(),
+        org_name: org.org.display_name.clone(),
+        project_id: project.resource_id.clone(),
+        project_name: project.display_name.clone(),
+        org_type: org.org.r#type.clone(),
+    };
+    println!("Selected project: {} / {}", ctx.org_name, ctx.project_name);
+    datum.set_selected_context(Some(ctx)).await?;
+    Ok(())
+}
+
+/// Find a project by ID across all orgs and build a `SelectedContext` for it.
+fn resolve_project_context(
+    orgs: &[lib::datum_cloud::OrganizationWithProjects],
+    project_id: &str,
+) -> Option<SelectedContext> {
+    for org in orgs {
+        if let Some(project) = org.projects.iter().find(|p| p.resource_id == project_id) {
+            return Some(SelectedContext {
+                org_id: org.org.resource_id.clone(),
+                org_name: org.org.display_name.clone(),
+                project_id: project.resource_id.clone(),
+                project_name: project.display_name.clone(),
+                org_type: org.org.r#type.clone(),
+            });
+        }
+    }
+    None
 }
