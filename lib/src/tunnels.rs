@@ -694,13 +694,7 @@ impl TunnelService {
         tunnel_id: &str,
     ) -> Result<TunnelDeleteOutcome> {
         let connector = self.find_connector(project_id).await?;
-        let Some(connector) = connector else {
-            return Ok(TunnelDeleteOutcome {
-                project_id: project_id.to_string(),
-                connector_deleted: false,
-            });
-        };
-        let connector_name = connector.name_any();
+        let connector_name = connector.as_ref().map(|c| c.name_any());
 
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let client = pcp.client();
@@ -754,41 +748,43 @@ impl TunnelService {
             warn!(%tunnel_id, "Failed to remove proxy state: {err:#}");
         }
 
-        let remaining = proxies
-            .list(&ListParams::default())
-            .await
-            .std_context("Failed to list remaining HTTPProxy objects")?;
         let mut connector_deleted = false;
-        let mut remaining_for_connector = remaining
-            .items
-            .into_iter()
-            .filter(|proxy| proxy_uses_connector(proxy, &connector_name))
-            .peekable();
-        if remaining_for_connector.peek().is_none() {
-            let ad_selector = format!("{ADVERTISEMENT_CONNECTOR_FIELD}={connector_name}");
-            let ads_list = ads
-                .list(&ListParams::default().fields(&ad_selector))
+        if let Some(connector_name) = connector_name {
+            let remaining = proxies
+                .list(&ListParams::default())
                 .await
-                .std_context("Failed to list remaining ConnectorAdvertisements")?;
-            for ad in ads_list.items {
-                if let Some(name) = ad.metadata.name.clone()
-                    && let Err(err) = ads.delete(&name, &DeleteParams::default()).await
-                {
-                    warn!(%name, "Failed to delete connector advertisement: {err:#}");
-                }
-            }
-
-            if connectors
-                .get_opt(&connector_name)
-                .await
-                .std_context("Failed to load Connector")?
-                .is_some()
-            {
-                connectors
-                    .delete(&connector_name, &DeleteParams::default())
+                .std_context("Failed to list remaining HTTPProxy objects")?;
+            let mut remaining_for_connector = remaining
+                .items
+                .into_iter()
+                .filter(|proxy| proxy_uses_connector(proxy, &connector_name))
+                .peekable();
+            if remaining_for_connector.peek().is_none() {
+                let ad_selector = format!("{ADVERTISEMENT_CONNECTOR_FIELD}={connector_name}");
+                let ads_list = ads
+                    .list(&ListParams::default().fields(&ad_selector))
                     .await
-                    .std_context("Failed to delete Connector")?;
-                connector_deleted = true;
+                    .std_context("Failed to list remaining ConnectorAdvertisements")?;
+                for ad in ads_list.items {
+                    if let Some(name) = ad.metadata.name.clone()
+                        && let Err(err) = ads.delete(&name, &DeleteParams::default()).await
+                    {
+                        warn!(%name, "Failed to delete connector advertisement: {err:#}");
+                    }
+                }
+
+                if connectors
+                    .get_opt(&connector_name)
+                    .await
+                    .std_context("Failed to load Connector")?
+                    .is_some()
+                {
+                    connectors
+                        .delete(&connector_name, &DeleteParams::default())
+                        .await
+                        .std_context("Failed to delete Connector")?;
+                    connector_deleted = true;
+                }
             }
         }
 
