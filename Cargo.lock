@@ -1682,6 +1682,7 @@ dependencies = [
  "async-trait",
  "clap",
  "dotenv",
+ "hex",
  "hickory-proto",
  "hickory-server",
  "humantime",
