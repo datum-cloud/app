@@ -4,8 +4,8 @@ mod dns_dev;
 mod tunnel_dev;
 
 use lib::{
-    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, ListenNode, ProxyState, Repo,
-    TcpProxyData, TunnelService,
+    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
+    ProxyState, Repo, TcpProxyData, TunnelService,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
 use n0_error::StdResultExt;
@@ -507,7 +507,8 @@ async fn main() -> n0_error::Result<()> {
         Commands::Tunnel(args) => {
             let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
             let node = ListenNode::new(repo.clone()).await?;
-            let service = TunnelService::new(datum, node.clone());
+            let service = TunnelService::new(datum.clone(), node.clone());
+            let heartbeat = HeartbeatAgent::new(datum.clone(), node.clone());
 
             match args {
                 TunnelCommands::List => {
@@ -536,11 +537,7 @@ async fn main() -> n0_error::Result<()> {
                 }
                 TunnelCommands::Listen { label, endpoint, yes } => {
                     let endpoint_id = node.endpoint_id();
-                    let label = label.unwrap_or_else(|| {
-                        let random: u16 = rand::random();
-                        format!("tunnel-{}", random)
-                    });
-                    
+
                     let existing = service.get_active_by_endpoint(&endpoint).await?;
                     let tunnel_id = if let Some(t) = existing {
                         println!("Found existing tunnel for {}:", endpoint);
@@ -548,12 +545,13 @@ async fn main() -> n0_error::Result<()> {
                         println!("  label: {}", t.label);
                         println!("  endpoint: {}", t.endpoint);
                         println!();
-                        
-                        if t.endpoint != endpoint || t.label != label {
+
+                        // Only update if an explicit label was given and it differs.
+                        if let Some(label) = label.filter(|l| l != &t.label) {
                             if yes {
                                 println!("Updating tunnel (--yes specified)");
                             } else {
-                                print!("Update tunnel to label='{}', endpoint='{}'? [y/N] ", label, endpoint);
+                                print!("Update tunnel label to '{}'? [y/N] ", label);
                                 std::io::Write::flush(&mut std::io::stdout())?;
                                 let mut input = String::new();
                                 std::io::stdin().read_line(&mut input)?;
@@ -571,27 +569,43 @@ async fn main() -> n0_error::Result<()> {
                             t.id
                         }
                     } else {
+                        let label = label.unwrap_or_else(|| {
+                            let bytes: [u8; 6] = rand::random();
+                            hex::encode(bytes)
+                        });
                         let tunnel = service.create_active(&label, &endpoint).await?;
                         println!("Created tunnel:");
                         tunnel.id
                     };
                     
-                    let tunnel = service.set_enabled_active(&tunnel_id, true).await?;
-                    println!();
-                    println!("Tunnel is running:");
-                    println!("  id: {}", tunnel.id);
-                    println!("  label: {}", tunnel.label);
-                    println!("  endpoint: {}", tunnel.endpoint);
-                    if !tunnel.hostnames.is_empty() {
-                        println!("  hostnames:");
-                        for h in &tunnel.hostnames {
-                            println!("    {}", h);
-                        }
+                    heartbeat.start().await;
+                    if let Some(ctx) = datum.selected_context() {
+                        heartbeat.register_project(ctx.project_id).await;
                     }
+
+                    service.set_enabled_active(&tunnel_id, true).await?;
                     println!();
                     println!("Your endpoint ID: {}", endpoint_id);
-                    println!("Press Ctrl+C to stop and disable the tunnel...");
-                    
+                    println!("Setting up tunnel...");
+                    let setup_start = std::time::Instant::now();
+
+                    let tunnel = loop {
+                        let t = service.get_active(&tunnel_id).await?;
+                        let Some(t) = t else {
+                            n0_error::bail_any!("Tunnel {} not found", tunnel_id);
+                        };
+                        if t.accepted && t.programmed && !t.hostnames.is_empty() {
+                            break t;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    };
+
+                    let elapsed = setup_start.elapsed().as_secs();
+                    for hostname in &tunnel.hostnames {
+                        println!("Tunnel ready after {} sec: https://{}", elapsed, hostname);
+                    }
+                    println!("Press Ctrl+C to stop...");
+
                     tokio::signal::ctrl_c().await?;
                     println!();
                     println!("Disabling tunnel...");
@@ -615,8 +629,8 @@ async fn main() -> n0_error::Result<()> {
                     }
                 }
                 TunnelCommands::Delete { id } => {
-                    let result = service.delete_active(&id).await?;
-                    println!("Deleted tunnel {} (connector deleted: {})", id, result.connector_deleted);
+                    service.delete_active(&id).await?;
+                    println!("Deleted tunnel {}", id);
                 }
             }
         }
