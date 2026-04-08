@@ -217,6 +217,99 @@ jobs:
           NO_STRIP: true
         run: dx bundle --locked --desktop --release --package-types appimage
 
+      - name: Repack AppImage using system libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          APPIMAGE=$(find ui/dist -name "*.AppImage" | head -1)
+          cd "$(dirname "$APPIMAGE")"
+          APPIMAGE_NAME=$(basename "$APPIMAGE")
+
+          # Extract the built AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 "./$APPIMAGE_NAME" --appimage-extract
+
+          # Remove all standard system libs bundled by linuxdeploy from Ubuntu.
+          # Bundling these causes symbol version conflicts on other distros (Fedora,
+          # Arch, etc.) because the Ubuntu-built WebKit/GTK/GStreamer/GLib are
+          # incompatible with the host's EGL and graphics stack.
+          # The AppImage relies on the system-provided versions instead.
+          #
+          # System deps required at runtime:
+          #   Fedora:        sudo dnf install webkit2gtk4.1
+          #   Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0
+          #   Arch:          sudo pacman -S webkit2gtk-4.1
+          rm -f squashfs-root/usr/lib/libwebkit2gtk-4.1.so*
+          rm -f squashfs-root/usr/lib/libjavascriptcoregtk-4.1.so*
+          rm -f squashfs-root/usr/lib/libgtk-3.so* squashfs-root/usr/lib/libgdk-3.so*
+          rm -f squashfs-root/usr/lib/libglib-2.0.so* squashfs-root/usr/lib/libgmodule-2.0.so*
+          rm -f squashfs-root/usr/lib/libgio-2.0.so* squashfs-root/usr/lib/libgobject-2.0.so*
+          rm -f squashfs-root/usr/lib/libgstreamer-1.0.so* squashfs-root/usr/lib/libgst*.so*
+          rm -f squashfs-root/usr/lib/libgdk_pixbuf-2.0.so*
+          rm -f squashfs-root/usr/lib/libcairo.so* squashfs-root/usr/lib/libcairo-gobject.so*
+          rm -f squashfs-root/usr/lib/libpango-1.0.so* squashfs-root/usr/lib/libpangocairo-1.0.so*
+          rm -f squashfs-root/usr/lib/libpangoft2-1.0.so* squashfs-root/usr/lib/libpixman-1.so*
+          rm -f squashfs-root/usr/lib/libatk-1.0.so* squashfs-root/usr/lib/libatk-bridge-2.0.so*
+          rm -f squashfs-root/usr/lib/libatspi.so* squashfs-root/usr/lib/libepoxy.so*
+          rm -f squashfs-root/usr/lib/libdbus-1.so* squashfs-root/usr/lib/libsoup-3.0.so*
+          rm -f squashfs-root/usr/lib/libsecret-1.so* squashfs-root/usr/lib/libssl.so*
+          rm -f squashfs-root/usr/lib/libcrypto.so* squashfs-root/usr/lib/libxml2.so*
+          rm -f squashfs-root/usr/lib/libxslt.so* squashfs-root/usr/lib/libsqlite3.so*
+          rm -f squashfs-root/usr/lib/libffi.so* squashfs-root/usr/lib/libpcre2-8.so*
+          rm -f squashfs-root/usr/lib/libsystemd.so* squashfs-root/usr/lib/libudev.so*
+          rm -f squashfs-root/usr/lib/libselinux.so* squashfs-root/usr/lib/libmount.so*
+          rm -f squashfs-root/usr/lib/libblkid.so* squashfs-root/usr/lib/libzstd.so*
+          rm -f squashfs-root/usr/lib/liblz4.so* squashfs-root/usr/lib/liblzma.so*
+          rm -f squashfs-root/usr/lib/libpng16.so* squashfs-root/usr/lib/libjpeg.so*
+          rm -f squashfs-root/usr/lib/libtiff.so* squashfs-root/usr/lib/libwebp*.so*
+          rm -f squashfs-root/usr/lib/libharfbuzz*.so* squashfs-root/usr/lib/libgraphite2.so*
+          rm -f squashfs-root/usr/lib/libfreetype*.so* squashfs-root/usr/lib/libfontconfig*.so*
+          rm -f squashfs-root/usr/lib/libicu*.so* squashfs-root/usr/lib/libseccomp.so*
+          rm -f squashfs-root/usr/lib/libwayland-*.so* squashfs-root/usr/lib/libxkbcommon.so*
+          rm -f squashfs-root/usr/lib/libX*.so* squashfs-root/usr/lib/libxcb*.so*
+          rm -f squashfs-root/usr/lib/libavahi-*.so* squashfs-root/usr/lib/libcups.so*
+          rm -f squashfs-root/usr/lib/libkrb5*.so* squashfs-root/usr/lib/libk5crypto.so*
+          rm -f squashfs-root/usr/lib/libgssapi_krb5.so* squashfs-root/usr/lib/libkeyutils.so*
+          rm -f squashfs-root/usr/lib/libgnutls.so* squashfs-root/usr/lib/libnettle.so*
+          rm -f squashfs-root/usr/lib/libhogweed.so* squashfs-root/usr/lib/libp11-kit.so*
+          rm -f squashfs-root/usr/lib/libtasn1.so* squashfs-root/usr/lib/libidn2.so*
+          rm -f squashfs-root/usr/lib/libunistring.so* squashfs-root/usr/lib/libpsl.so*
+          rm -f squashfs-root/usr/lib/libnghttp2.so* squashfs-root/usr/lib/libbrotli*.so*
+          rm -f squashfs-root/usr/lib/liborc-0.4.so* squashfs-root/usr/lib/libmanette-0.2.so*
+          rm -f squashfs-root/usr/lib/libenchant-2.so* squashfs-root/usr/lib/libhyphen.so*
+          rm -f squashfs-root/usr/lib/libcolord.so* squashfs-root/usr/lib/libgudev-1.0.so*
+          rm -f squashfs-root/usr/lib/librsvg-2.so* squashfs-root/usr/lib/libwoff2*.so*
+          rm -f squashfs-root/usr/lib/liblcms2.so* squashfs-root/usr/lib/libLerc.so*
+          rm -f squashfs-root/usr/lib/libdeflate.so* squashfs-root/usr/lib/libjbig.so*
+          rm -f squashfs-root/usr/lib/libsharpyuv.so* squashfs-root/usr/lib/libevdev.so*
+          rm -f squashfs-root/usr/lib/libdw.so* squashfs-root/usr/lib/libelf.so*
+          rm -f squashfs-root/usr/lib/libunwind.so* squashfs-root/usr/lib/libgcrypt.so*
+          rm -f squashfs-root/usr/lib/libcap.so* squashfs-root/usr/lib/libmd.so*
+          rm -f squashfs-root/usr/lib/libbsd.so* squashfs-root/usr/lib/libbz2.so*
+          rm -f squashfs-root/usr/lib/libdatrie.so* squashfs-root/usr/lib/libthai.so*
+          rm -f squashfs-root/usr/lib/im-*.so squashfs-root/usr/lib/libprintbackend-*.so
+          rm -f squashfs-root/usr/lib/libpixbufloader-*.so
+          rm -rf squashfs-root/usr/lib/x86_64-linux-gnu
+
+          # Replace the GTK apprun hook with a distro-agnostic version.
+          # The original uses Ubuntu-specific paths (x86_64-linux-gnu) that
+          # don't exist on Fedora/Arch. Keep GDK_BACKEND=x11 — WebKitGTK
+          # crashes with the Wayland backend (tauri-apps/tauri#8541).
+          cat > squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh << 'HOOK'
+#!/usr/bin/env bash
+gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | grep -qi "dark" && GTK_THEME_VARIANT="dark" || GTK_THEME_VARIANT="light"
+APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:$GTK_THEME_VARIANT"}"
+export APPDIR="${APPDIR:-"$(dirname "$(realpath "$0")")"}"
+export GTK_THEME="$APPIMAGE_GTK_THEME"
+export GDK_BACKEND=x11
+export XDG_DATA_DIRS="$APPDIR/usr/share:/usr/share:${XDG_DATA_DIRS:-}"
+HOOK
+
+          # Download appimagetool and repack
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          rm "$APPIMAGE_NAME"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool squashfs-root "$APPIMAGE_NAME"
+          rm -rf squashfs-root
+
       - name: Bundle (Windows)
         working-directory: ./ui
         if: runner.os == 'Windows'
