@@ -293,15 +293,16 @@ jobs:
           # The original uses Ubuntu-specific paths (x86_64-linux-gnu) that
           # don't exist on Fedora/Arch. Keep GDK_BACKEND=x11 — WebKitGTK
           # crashes with the Wayland backend (tauri-apps/tauri#8541).
-          cat > squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh << 'HOOK'
-#!/usr/bin/env bash
-gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | grep -qi "dark" && GTK_THEME_VARIANT="dark" || GTK_THEME_VARIANT="light"
-APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:$GTK_THEME_VARIANT"}"
-export APPDIR="${APPDIR:-"$(dirname "$(realpath "$0")")"}"
-export GTK_THEME="$APPIMAGE_GTK_THEME"
-export GDK_BACKEND=x11
-export XDG_DATA_DIRS="$APPDIR/usr/share:/usr/share:${XDG_DATA_DIRS:-}"
-HOOK
+          # (printf used instead of heredoc to avoid YAML indentation issues)
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | grep -qi "dark" && GTK_THEME_VARIANT="dark" || GTK_THEME_VARIANT="light"' \
+            'APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:$GTK_THEME_VARIANT"}"' \
+            'export APPDIR="${APPDIR:-"$(dirname "$(realpath "$0")")"}"' \
+            'export GTK_THEME="$APPIMAGE_GTK_THEME"' \
+            'export GDK_BACKEND=x11' \
+            'export XDG_DATA_DIRS="$APPDIR/usr/share:/usr/share:${XDG_DATA_DIRS:-}"' \
+            > squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
 
           # Download appimagetool and repack
           wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
