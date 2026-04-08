@@ -138,7 +138,16 @@ fn main() {
     });
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
-    gtk::init().unwrap();
+    {
+        // Disable WebKitGTK's DMA-BUF renderer by default. Without this, AppImage
+        // builds abort with "Could not create default EGL display: EGL_BAD_PARAMETER"
+        // on systems with missing/incompatible GPU drivers, VMs, or containers.
+        // Users who know their GPU works can override by setting the var to "0".
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        gtk::init().unwrap();
+    }
 
     #[cfg(feature = "desktop")]
     {
