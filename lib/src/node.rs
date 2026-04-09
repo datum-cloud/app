@@ -681,11 +681,11 @@ mod tests {
         assert_eq!(parsed[0].scheme(), "https");
         assert_eq!(
             parsed[0].host_str(),
-            Some("iroh-relay.us-east-1.datumconnect.net.")
+            Some("iroh-relay.us-east-1.datumconnect.net")
         );
         assert_eq!(
             parsed[1].host_str(),
-            Some("iroh-relay.us-west-1.datumconnect.net.")
+            Some("iroh-relay.us-west-1.datumconnect.net")
         );
     }
 
@@ -694,7 +694,7 @@ mod tests {
         let input = "  relay-a.example.com, relay-a.example.com;;relay-b.example.com  ";
         let parsed = parse_relay_urls(input).expect("should parse");
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].host_str(), Some("relay-a.example.com."));
-        assert_eq!(parsed[1].host_str(), Some("relay-b.example.com."));
+        assert_eq!(parsed[0].host_str(), Some("relay-a.example.com"));
+        assert_eq!(parsed[1].host_str(), Some("relay-b.example.com"));
     }
 }
