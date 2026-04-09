@@ -10,6 +10,10 @@ resolver = "2"
 [workspace.dependencies]
 iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "main" }
 lib = { path = "lib" }
+# n0-snafu 0.2.2 requires ^0.7.0 but color-backtrace 0.7.3 removed
+# `is_dependency_code` which n0-snafu uses. This constraint intersects with
+# n0-snafu's ^0.7.0 to force 0.7.2. Remove once n0-snafu publishes a fix.
+color-backtrace = ">=0.7.0, <0.7.3"
 arc-swap = "1.8.0"
 axum = "0.7"
 chrono = { version = "0.4", features = ["clock"] }
