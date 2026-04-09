@@ -300,15 +300,10 @@ impl ErrorResponseWriter {
 
 fn has_existing_peer_conn(endpoint: &Endpoint) -> bool {
     let endpoint_metrics = endpoint.metrics();
-    let direct_current = endpoint_metrics
-        .magicsock
-        .num_direct_conns_added
+    let conns_current = endpoint_metrics
+        .socket
+        .num_conns_opened
         .get()
-        .saturating_sub(endpoint_metrics.magicsock.num_direct_conns_removed.get());
-    let relay_current = endpoint_metrics
-        .magicsock
-        .num_relay_conns_added
-        .get()
-        .saturating_sub(endpoint_metrics.magicsock.num_relay_conns_removed.get());
-    direct_current + relay_current > 0
+        .saturating_sub(endpoint_metrics.socket.num_conns_closed.get());
+    conns_current > 0
 }

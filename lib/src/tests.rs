@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use http_body_util::BodyExt;
 use hyper::{Request, StatusCode, client::conn::http2};
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use iroh::{Endpoint, discovery::static_provider::StaticProvider};
+use iroh::{Endpoint, address_lookup::memory::MemoryLookup, endpoint::presets};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
@@ -15,11 +15,14 @@ use tokio::{
 use crate::{Advertisment, ListenNode, ProxyState, Repo, TcpProxyData, gateway};
 
 #[derive(Default)]
-struct TestDiscovery(StaticProvider);
+struct TestDiscovery(MemoryLookup);
 
 impl TestDiscovery {
     fn add(&self, endpoint: &Endpoint) {
-        endpoint.discovery().add(self.0.clone());
+        endpoint
+            .address_lookup()
+            .expect("address lookup not configured")
+            .add(self.0.clone());
         self.0.add_endpoint_info(endpoint.addr());
     }
 }
@@ -49,7 +52,7 @@ async fn gateway_end_to_end_to_upstream_http() -> Result<()> {
     let (gateway_addr, _gateway_task) = {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let endpoint = Endpoint::bind().await?;
+        let endpoint = Endpoint::bind(presets::N0).await?;
         discovery.add(&endpoint);
         let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
@@ -102,7 +105,7 @@ async fn gateway_forward_connect_tunnel() -> Result<()> {
     let (gateway_addr, _gateway_task) = {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let endpoint = Endpoint::bind().await?;
+        let endpoint = Endpoint::bind(presets::N0).await?;
         discovery.add(&endpoint);
         let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
@@ -170,7 +173,7 @@ async fn gateway_forward_h2c_requests_are_stable() -> Result<()> {
     let (gateway_addr, _gateway_task) = {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let endpoint = Endpoint::bind().await?;
+        let endpoint = Endpoint::bind(presets::N0).await?;
         discovery.add(&endpoint);
         let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
@@ -242,7 +245,7 @@ async fn gateway_forward_h2c_handles_closed_origin_connections() -> Result<()> {
     let (gateway_addr, _gateway_task) = {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let endpoint = Endpoint::bind().await?;
+        let endpoint = Endpoint::bind(presets::N0).await?;
         discovery.add(&endpoint);
         let task = tokio::task::spawn(gateway::serve(endpoint, listener));
         (addr, AbortOnDropHandle::new(task))
