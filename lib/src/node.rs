@@ -1,11 +1,12 @@
 use std::{fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
 use iroh::{
-    Endpoint, EndpointId, SecretKey, discovery::dns::DnsDiscovery, endpoint::default_relay_mode,
+    Endpoint, EndpointId, SecretKey,
+    address_lookup::dns::DnsAddressLookup,
+    endpoint::{default_relay_mode, presets},
     protocol::Router,
 };
 use iroh_base::RelayUrl;
-use iroh_n0des::ApiSecret;
 use iroh_proxy_utils::upstream::UpstreamMetrics;
 use iroh_proxy_utils::{
     ALPN as IROH_HTTP_CONNECT_ALPN, Authority, HttpProxyRequest, HttpProxyRequestKind,
@@ -16,6 +17,7 @@ use iroh_proxy_utils::{
 };
 use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_relay::{RelayConfig, RelayMap};
+use iroh_services::{ApiSecret, CLIENT_HOST_ALPN};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use tokio::{
     net::TcpListener,
@@ -24,6 +26,7 @@ use tokio::{
 };
 use tracing::{Instrument, debug, error_span, info, instrument, warn};
 
+use crate::diagnostics::{self, DiagnosticsHandle};
 use crate::{ProxyState, Repo, StateWrapper, TcpProxyData, config::Config};
 
 #[derive(Debug, Clone)]
@@ -52,7 +55,8 @@ pub struct ListenNode {
     state: StateWrapper,
     repo: Repo,
     metrics: Arc<UpstreamMetrics>,
-    _n0des: Option<Arc<iroh_n0des::Client>>,
+    _n0des: Option<Arc<iroh_services::Client>>,
+    _diagnostics: Option<DiagnosticsHandle>,
 }
 
 impl ListenNode {
@@ -75,6 +79,31 @@ impl ListenNode {
         let upstream_proxy = UpstreamProxy::new(state.clone())?;
         let metrics = upstream_proxy.metrics();
 
+        // Optionally start net diagnostics based on persisted settings.
+        let diagnostics_handle = match setup_diagnostics(&repo, &endpoint).await {
+            Ok(Some((host, handle))) => {
+                let router = Router::builder(endpoint)
+                    .accept(IROH_HTTP_CONNECT_ALPN, upstream_proxy)
+                    .accept(CLIENT_HOST_ALPN, host)
+                    .spawn();
+
+                let this = Self {
+                    repo,
+                    router,
+                    state,
+                    metrics,
+                    _n0des: n0des,
+                    _diagnostics: Some(handle),
+                };
+                return Ok(this);
+            }
+            Ok(None) => None,
+            Err(err) => {
+                warn!("Failed to start net diagnostics, continuing without: {err:#}");
+                None
+            }
+        };
+
         let router = Router::builder(endpoint)
             .accept(IROH_HTTP_CONNECT_ALPN, upstream_proxy)
             .spawn();
@@ -85,6 +114,7 @@ impl ListenNode {
             state,
             metrics,
             _n0des: n0des,
+            _diagnostics: diagnostics_handle,
         };
         Ok(this)
     }
@@ -217,7 +247,7 @@ impl AuthHandler for StateWrapper {
 pub struct ConnectNode {
     endpoint: Endpoint,
     proxy: DownstreamProxy,
-    _n0des: Option<Arc<iroh_n0des::Client>>,
+    _n0des: Option<Arc<iroh_services::Client>>,
 }
 
 impl ConnectNode {
@@ -305,20 +335,20 @@ impl OutboundProxyHandle {
 pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Result<Endpoint> {
     let relay_mode = relay_mode_from_env_or_build().await?;
     let mut builder = match common.discovery_mode {
-        crate::config::DiscoveryMode::Dns => {
-            Endpoint::empty_builder(relay_mode).secret_key(secret_key)
-        }
+        crate::config::DiscoveryMode::Dns => Endpoint::empty_builder()
+            .relay_mode(relay_mode)
+            .secret_key(secret_key),
         crate::config::DiscoveryMode::Default | crate::config::DiscoveryMode::Hybrid => {
-            Endpoint::builder()
+            Endpoint::builder(presets::N0)
                 .relay_mode(relay_mode)
                 .secret_key(secret_key)
         }
     };
     if let Some(addr) = common.ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
+        builder = builder.bind_addr(addr)?;
     }
     if let Some(addr) = common.ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
+        builder = builder.bind_addr(addr)?;
     }
     match common.discovery_mode {
         crate::config::DiscoveryMode::Default => {}
@@ -335,7 +365,7 @@ pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Re
                     .build();
                 builder = builder.dns_resolver(resolver);
             }
-            builder = builder.discovery(DnsDiscovery::builder(origin));
+            builder = builder.address_lookup(DnsAddressLookup::builder(origin));
         }
     }
     let endpoint = builder.bind().await?;
@@ -568,6 +598,30 @@ fn relays_to_map(relays: Vec<RelayUrl>) -> RelayMap {
     RelayMap::from_iter(relays.into_iter().map(RelayConfig::from))
 }
 
+/// Check diagnostics settings and API key availability; if enabled, start
+/// the diagnostics client and return a ClientHost to register on the Router.
+async fn setup_diagnostics(
+    repo: &Repo,
+    endpoint: &Endpoint,
+) -> Result<Option<(iroh_services::ClientHost, DiagnosticsHandle)>> {
+    let settings = repo.diagnostics_settings().await?;
+    if !settings.enabled {
+        info!("Net diagnostics disabled by user preference");
+        return Ok(None);
+    }
+
+    let api_secret = match diagnostics::iroh_services_api_key_from_env()? {
+        Some(s) => s,
+        None => {
+            info!("Net diagnostics disabled: IROH_SERVICES_API_KEY not set");
+            return Ok(None);
+        }
+    };
+
+    let (host, handle) = diagnostics::start_diagnostics(endpoint, api_secret).await?;
+    Ok(Some((host, handle)))
+}
+
 pub(crate) fn n0des_api_secret_from_env() -> Result<Option<ApiSecret>> {
     let api_secret_str = match std::env::var("N0DES_API_SECRET") {
         Ok(s) => s,
@@ -584,7 +638,7 @@ pub(crate) fn n0des_api_secret_from_env() -> Result<Option<ApiSecret>> {
 pub(crate) async fn build_n0des_client_opt(
     endpoint: &Endpoint,
     api_secret: Option<ApiSecret>,
-) -> Option<Arc<iroh_n0des::Client>> {
+) -> Option<Arc<iroh_services::Client>> {
     match api_secret {
         None => {
             info!("Disabling metrics collection: N0DES_API_SECRET is not set");
@@ -603,10 +657,10 @@ pub(crate) async fn build_n0des_client_opt(
 pub(crate) async fn build_n0des_client(
     endpoint: &Endpoint,
     api_secret: ApiSecret,
-) -> Result<Arc<iroh_n0des::Client>> {
+) -> Result<Arc<iroh_services::Client>> {
     let remote_id = api_secret.remote.id;
     debug!(remote=%remote_id.fmt_short(), "connecting to n0des endpoint");
-    let client = iroh_n0des::Client::builder(endpoint)
+    let client = iroh_services::Client::builder(endpoint)
         .api_secret(api_secret)?
         .build()
         .await

@@ -2,6 +2,7 @@ mod auth;
 pub mod config;
 pub mod datum_apis;
 pub mod datum_cloud;
+pub mod diagnostics;
 pub mod gateway;
 pub mod heartbeat;
 mod http_user_agent;
@@ -13,6 +14,7 @@ pub mod tunnels;
 pub mod update;
 
 pub use config::{Config, DiscoveryMode, GatewayConfig};
+pub use diagnostics::DiagnosticsSettings;
 pub use heartbeat::HeartbeatAgent;
 pub use http_user_agent::datum_http_user_agent;
 pub use node::*;

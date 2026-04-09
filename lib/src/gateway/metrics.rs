@@ -173,30 +173,21 @@ impl GatewayMetrics {
 
     fn render(&self, endpoint: &Endpoint, downstream_metrics: &Arc<DownstreamMetrics>) -> String {
         let endpoint_metrics = endpoint.metrics();
-        let direct_added = endpoint_metrics.magicsock.num_direct_conns_added.get();
-        let direct_removed = endpoint_metrics.magicsock.num_direct_conns_removed.get();
-        let relay_added = endpoint_metrics.magicsock.num_relay_conns_added.get();
-        let relay_removed = endpoint_metrics.magicsock.num_relay_conns_removed.get();
-        let relay_send_errors = endpoint_metrics.magicsock.send_relay_error.get();
-        let relay_home_changes = endpoint_metrics.magicsock.relay_home_change.get();
-        let handshake_success = endpoint_metrics
-            .magicsock
-            .connection_handshake_success
-            .get();
-        let endpoints_contacted = endpoint_metrics.magicsock.endpoints_contacted.get();
-        let endpoints_contacted_directly = endpoint_metrics
-            .magicsock
-            .endpoints_contacted_directly
-            .get();
-        let path_ping_failures = endpoint_metrics.magicsock.path_ping_failures.get();
-        let path_marked_outdated = endpoint_metrics.magicsock.path_marked_outdated.get();
-        let path_failure_resets = endpoint_metrics.magicsock.path_failure_resets.get();
+        let direct_added = endpoint_metrics.socket.transport_ip_paths_added.get();
+        let direct_removed = endpoint_metrics.socket.transport_ip_paths_removed.get();
+        let relay_added = endpoint_metrics.socket.transport_relay_paths_added.get();
+        let relay_removed = endpoint_metrics.socket.transport_relay_paths_removed.get();
+        let relay_home_changes = endpoint_metrics.socket.relay_home_change.get();
+        let conns_opened = endpoint_metrics.socket.num_conns_opened.get();
+        let holepunch_attempts = endpoint_metrics.socket.holepunch_attempts.get();
         let direct_current = direct_added.saturating_sub(direct_removed);
         let relay_current = relay_added.saturating_sub(relay_removed);
-        let recv_total = endpoint_metrics.magicsock.recv_data_ipv4.get()
-            + endpoint_metrics.magicsock.recv_data_ipv6.get()
-            + endpoint_metrics.magicsock.recv_data_relay.get();
-        let send_total = endpoint_metrics.magicsock.send_data.get();
+        let recv_total = endpoint_metrics.socket.recv_data_ipv4.get()
+            + endpoint_metrics.socket.recv_data_ipv6.get()
+            + endpoint_metrics.socket.recv_data_relay.get();
+        let send_total = endpoint_metrics.socket.send_ipv4.get()
+            + endpoint_metrics.socket.send_ipv6.get()
+            + endpoint_metrics.socket.send_relay.get();
 
         let mut downstream_openmetrics = String::new();
         let mut registry = Registry::default();
@@ -246,10 +237,10 @@ impl GatewayMetrics {
                 "# TYPE iroh_gateway_upstream_failures_total counter\n",
                 "iroh_gateway_upstream_failures_total{{class=\"5xx\",peer_conn_state=\"with_existing\"}} {}\n",
                 "iroh_gateway_upstream_failures_total{{class=\"5xx\",peer_conn_state=\"without_existing\"}} {}\n",
-                "# HELP iroh_gateway_iroh_recv_bytes_total Total iroh magicsock bytes received.\n",
+                "# HELP iroh_gateway_iroh_recv_bytes_total Total iroh socket bytes received.\n",
                 "# TYPE iroh_gateway_iroh_recv_bytes_total counter\n",
                 "iroh_gateway_iroh_recv_bytes_total {}\n",
-                "# HELP iroh_gateway_iroh_send_bytes_total Total iroh magicsock bytes sent.\n",
+                "# HELP iroh_gateway_iroh_send_bytes_total Total iroh socket bytes sent.\n",
                 "# TYPE iroh_gateway_iroh_send_bytes_total counter\n",
                 "iroh_gateway_iroh_send_bytes_total {}\n\n",
                 "# HELP iroh_gateway_quic_connections_opened_total QUIC peer connections opened by transport path.\n",
@@ -264,16 +255,11 @@ impl GatewayMetrics {
                 "# TYPE iroh_gateway_quic_connections_current gauge\n",
                 "iroh_gateway_quic_connections_current{{path=\"direct\"}} {}\n",
                 "iroh_gateway_quic_connections_current{{path=\"relay\"}} {}\n\n",
-                "# HELP iroh_gateway_tunnel_connectivity_events_total Tunnel connectivity events from iroh magicsock state.\n",
+                "# HELP iroh_gateway_tunnel_connectivity_events_total Tunnel connectivity events from iroh socket state.\n",
                 "# TYPE iroh_gateway_tunnel_connectivity_events_total counter\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"relay_send_error\"}} {}\n",
                 "iroh_gateway_tunnel_connectivity_events_total{{event=\"relay_home_change\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"connection_handshake_success\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"endpoints_contacted\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"endpoints_contacted_directly\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"path_ping_failures\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"path_marked_outdated\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"path_failure_resets\"}} {}\n\n",
+                "iroh_gateway_tunnel_connectivity_events_total{{event=\"conns_opened\"}} {}\n",
+                "iroh_gateway_tunnel_connectivity_events_total{{event=\"holepunch_attempts\"}} {}\n\n",
             ),
             self.requests_tunnel_total.load(Ordering::Relaxed),
             self.requests_origin_total.load(Ordering::Relaxed),
@@ -316,14 +302,9 @@ impl GatewayMetrics {
             relay_removed,
             direct_current,
             relay_current,
-            relay_send_errors,
             relay_home_changes,
-            handshake_success,
-            endpoints_contacted,
-            endpoints_contacted_directly,
-            path_ping_failures,
-            path_marked_outdated,
-            path_failure_resets,
+            conns_opened,
+            holepunch_attempts,
         ) + &downstream_openmetrics
     }
 }
