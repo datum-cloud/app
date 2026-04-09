@@ -177,9 +177,11 @@ impl StateWrapper {
     fn tcp_proxy_exists(&self, host: &str, port: u16) -> bool {
         // Strip scheme from incoming host (e.g., "http://127.0.0.1" -> "127.0.0.1")
         // The gateway may send the host with scheme, but local state stores without
-        let normalized_host = strip_host_scheme(host);
+        let normalized_host = normalize_loopback(strip_host_scheme(host));
         let exists = self.get().proxies.iter().any(|a| {
-            a.enabled && a.info.service().host == normalized_host && a.info.service().port == port
+            a.enabled
+                && normalize_loopback(&a.info.service().host) == normalized_host
+                && a.info.service().port == port
         });
         if !exists {
             debug!(
@@ -196,6 +198,15 @@ fn strip_host_scheme(host: &str) -> &str {
     host.strip_prefix("http://")
         .or_else(|| host.strip_prefix("https://"))
         .unwrap_or(host)
+}
+
+/// Normalize loopback hostnames so that "localhost", "127.0.0.1", and "::1" compare equal.
+/// The gateway may use either form regardless of how the tunnel was registered.
+fn normalize_loopback(host: &str) -> &str {
+    match host {
+        "localhost" | "::1" => "127.0.0.1",
+        _ => host,
+    }
 }
 
 impl AuthHandler for StateWrapper {
