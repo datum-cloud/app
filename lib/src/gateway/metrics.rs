@@ -179,6 +179,10 @@ impl GatewayMetrics {
         let relay_removed = endpoint_metrics.socket.transport_relay_paths_removed.get();
         let relay_home_changes = endpoint_metrics.socket.relay_home_change.get();
         let conns_opened = endpoint_metrics.socket.num_conns_opened.get();
+        let conns_closed = endpoint_metrics.socket.num_conns_closed.get();
+        let conns_direct = endpoint_metrics.socket.num_conns_direct.get();
+        let paths_direct = endpoint_metrics.socket.paths_direct.get();
+        let paths_relay = endpoint_metrics.socket.paths_relay.get();
         let holepunch_attempts = endpoint_metrics.socket.holepunch_attempts.get();
         let direct_current = direct_added.saturating_sub(direct_removed);
         let relay_current = relay_added.saturating_sub(relay_removed);
@@ -259,7 +263,13 @@ impl GatewayMetrics {
                 "# TYPE iroh_gateway_tunnel_connectivity_events_total counter\n",
                 "iroh_gateway_tunnel_connectivity_events_total{{event=\"relay_home_change\"}} {}\n",
                 "iroh_gateway_tunnel_connectivity_events_total{{event=\"conns_opened\"}} {}\n",
-                "iroh_gateway_tunnel_connectivity_events_total{{event=\"holepunch_attempts\"}} {}\n\n",
+                "iroh_gateway_tunnel_connectivity_events_total{{event=\"conns_closed\"}} {}\n",
+                "iroh_gateway_tunnel_connectivity_events_total{{event=\"conns_direct\"}} {}\n",
+                "iroh_gateway_tunnel_connectivity_events_total{{event=\"holepunch_attempts\"}} {}\n",
+                "# HELP iroh_gateway_active_paths Current active paths by transport type.\n",
+                "# TYPE iroh_gateway_active_paths gauge\n",
+                "iroh_gateway_active_paths{{transport=\"direct\"}} {}\n",
+                "iroh_gateway_active_paths{{transport=\"relay\"}} {}\n\n",
             ),
             self.requests_tunnel_total.load(Ordering::Relaxed),
             self.requests_origin_total.load(Ordering::Relaxed),
@@ -304,7 +314,11 @@ impl GatewayMetrics {
             relay_current,
             relay_home_changes,
             conns_opened,
+            conns_closed,
+            conns_direct,
             holepunch_attempts,
+            paths_direct,
+            paths_relay,
         ) + &downstream_openmetrics
     }
 }
