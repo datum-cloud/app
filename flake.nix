@@ -27,10 +27,11 @@
 
         linuxPackages = with pkgs; lib.optionals stdenv.isLinux [
           # For web/desktop rendering
-          webkitgtk
+          webkitgtk_4_1
           gtk3
-          libsoup
+          libsoup_3
           # X11 dependencies
+          xdo
           xorg.libX11
           xorg.libXcursor
           xorg.libXrandr
