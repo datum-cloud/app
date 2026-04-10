@@ -1145,6 +1145,11 @@ fn publish_tickets_enabled() -> bool {
 
 fn create_traffic_protection_policies_enabled() -> bool {
     std::env::var("DATUM_CONNECT_CREATE_TRAFFIC_PROTECTION_POLICIES")
+        .ok()
+        .or_else(|| {
+            option_env!("BUILD_DATUM_CONNECT_CREATE_TRAFFIC_PROTECTION_POLICIES")
+                .map(str::to_string)
+        })
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
