@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", branch = "main" }
+iroh-proxy-utils = { git = "https://github.com/n0-computer/iroh-proxy-utils", rev = "38ef14f7bc215348d47987563bb1b5198cc91f40" }
 lib = { path = "lib" }
 # n0-snafu 0.2.2 requires ^0.7.0 but color-backtrace 0.7.3 removed
 # `is_dependency_code` which n0-snafu uses. This constraint intersects with
