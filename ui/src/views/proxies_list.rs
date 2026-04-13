@@ -362,7 +362,7 @@ pub fn TunnelCard(
         let state = state.clone();
         let tunnel_id = tunnel_id_for_toggle.clone();
         async move {
-            let updated = state
+            state
                 .tunnel_service()
                 .set_enabled_active(&tunnel_id, next_enabled)
                 .await?;
@@ -374,7 +374,6 @@ pub fn TunnelCard(
                         .await;
                 }
             }
-            state.upsert_tunnel(updated);
             state.bump_tunnel_refresh();
             n0_error::Ok(())
         }
