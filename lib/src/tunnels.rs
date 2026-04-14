@@ -274,8 +274,7 @@ impl TunnelService {
             // Scoped to same-endpoint matches so we don't touch entries belonging
             // to other projects with different endpoints.
             for tunnel in &tunnels {
-                let Ok(data) =
-                    TcpProxyData::from_host_port_str(&strip_scheme(&tunnel.endpoint))
+                let Ok(data) = TcpProxyData::from_host_port_str(&strip_scheme(&tunnel.endpoint))
                 else {
                     continue;
                 };
