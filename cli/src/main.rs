@@ -1,17 +1,13 @@
 //! Command line arguments.
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 mod dns_dev;
 mod tunnel_dev;
 
 use lib::{
-    Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, ListenNode, ProxyState, Repo,
-    TcpProxyData,
+    Advertisment, AdvertismentTicket, ConnectNode, ListenNode, ProxyState, Repo, TcpProxyData,
     datum_cloud::{ApiEnv, DatumCloudClient},
 };
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-};
+use std::{net::SocketAddr, path::PathBuf};
 use tracing::info;
 use tracing_subscriber::prelude::*;
 
@@ -31,9 +27,6 @@ enum Commands {
 
     /// Join a proxy, i.e. connect to the proxy and expose the service locally.
     Connect(ConnectArgs),
-
-    /// Start a gateway server that forwards HTTP requests through a Datum Connect tunnel.
-    Gateway(ServeArgs),
 
     /// Run a local DNS server for development TXT records.
     #[clap(subcommand)]
@@ -137,46 +130,6 @@ pub struct ConnectArgs {
     /// provide a ticket to drive connection directly.
     #[clap(long, conflicts_with = "codename")]
     pub ticket: AdvertismentTicket,
-}
-
-#[derive(Parser, Debug)]
-pub struct ServeArgs {
-    #[clap(long, default_value = "0.0.0.0")]
-    pub bind_addr: IpAddr,
-    #[clap(long, default_value = "8080")]
-    pub port: u16,
-    /// Optional bind address for Prometheus metrics server.
-    #[clap(long)]
-    pub metrics_addr: Option<IpAddr>,
-    /// Optional port for Prometheus metrics server.
-    #[clap(long)]
-    pub metrics_port: Option<u16>,
-    /// Also listen on a Unix domain socket at this path (e.g. for Envoy to forward via UDS).
-    #[cfg(unix)]
-    #[clap(long)]
-    pub uds: Option<PathBuf>,
-    /// Discovery mode for connection details.
-    #[clap(long, value_enum)]
-    pub discovery: Option<DiscoveryModeArg>,
-    /// DNS origin for _iroh.<endpoint-id>.<origin> lookups.
-    #[clap(long)]
-    pub dns_origin: Option<String>,
-    /// DNS resolver address for discovery (e.g. 127.0.0.1:53535).
-    #[clap(long)]
-    pub dns_resolver: Option<SocketAddr>,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum GatewayModeArg {
-    Reverse,
-    Forward,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum DiscoveryModeArg {
-    Default,
-    Dns,
-    Hybrid,
 }
 
 #[tokio::main]
@@ -303,53 +256,6 @@ async fn main() -> n0_error::Result<()> {
             );
             tokio::signal::ctrl_c().await?;
             handle.abort();
-        }
-        Commands::Gateway(args) => {
-            let bind_addr: SocketAddr = (args.bind_addr, args.port).into();
-            let metrics_bind_addr = match (args.metrics_addr, args.metrics_port) {
-                (None, None) => None,
-                (Some(addr), Some(port)) => Some((addr, port).into()),
-                (Some(addr), None) => Some((addr, 9090).into()),
-                (None, Some(port)) => Some((args.bind_addr, port).into()),
-            };
-            let secret_key = repo.gateway_key().await?;
-            let mut config = repo.gateway_config().await?;
-            if let Some(discovery) = args.discovery {
-                config.common.discovery_mode = match discovery {
-                    DiscoveryModeArg::Default => DiscoveryMode::Default,
-                    DiscoveryModeArg::Dns => DiscoveryMode::Dns,
-                    DiscoveryModeArg::Hybrid => DiscoveryMode::Hybrid,
-                };
-            }
-            if let Some(origin) = args.dns_origin {
-                config.common.dns_origin = Some(origin);
-            }
-            if let Some(resolver) = args.dns_resolver {
-                config.common.dns_resolver = Some(resolver);
-            }
-            #[cfg(unix)]
-            let uds_listener = if let Some(uds_path) = &args.uds {
-                if uds_path.exists() {
-                    std::fs::remove_file(uds_path)?;
-                }
-                let listener = tokio::net::UnixListener::bind(uds_path)?;
-                println!("UDS gateway at {}", uds_path.display());
-                Some(listener)
-            } else {
-                None
-            };
-            println!("serving on port {bind_addr}");
-            tokio::select! {
-                res = lib::gateway::bind_and_serve(
-                    secret_key,
-                    config,
-                    bind_addr,
-                    metrics_bind_addr,
-                    #[cfg(unix)]
-                    uds_listener,
-                ) => res?,
-                _ = tokio::signal::ctrl_c() => {}
-            }
         }
         Commands::DnsDev(args) => match args {
             DnsDevArgs::Serve(args) => {
