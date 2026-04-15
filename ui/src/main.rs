@@ -79,6 +79,15 @@ pub struct UpdateCheckContext {
     pub update_channel: Signal<lib::UpdateChannel>,
 }
 
+/// Context for network diagnostics opt-in state.
+#[derive(Clone)]
+pub struct DiagnosticsContext {
+    /// Whether diagnostics collection is enabled.
+    pub enabled: Signal<bool>,
+    /// Whether the user has already seen the opt-in prompt.
+    pub prompted: Signal<bool>,
+}
+
 // Assets for favicons
 const FAVICON_DARK_196: Asset = asset!("/assets/icons/favicon-dark-196x196.png");
 const FAVICON_LIGHT_196: Asset = asset!("/assets/icons/favicon-light-196x196.png");
@@ -570,6 +579,33 @@ fn App() -> Element {
         update_channel,
     });
 
+    // Diagnostics opt-in state (loaded from repo settings).
+    let mut diag_enabled = use_signal(|| true);
+    let mut diag_prompted = use_signal(|| true); // default true to hide prompt until loaded
+    use_future(move || async move {
+        let repo = match lib::Repo::open_or_create(lib::Repo::default_location()).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to open repo for diagnostics settings: {e:#}");
+                return;
+            }
+        };
+        match repo.diagnostics_settings().await {
+            Ok(s) => {
+                diag_enabled.set(s.enabled);
+                diag_prompted.set(s.prompted);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load diagnostics settings: {e:#}");
+            }
+        }
+    });
+
+    provide_context(DiagnosticsContext {
+        enabled: diag_enabled,
+        prompted: diag_prompted,
+    });
+
     // Handle install now (toast or Settings). Read path from update_ready before clearing it —
     // the toast handler must not clear update_ready before this runs, or we rely only on disk.
     use_effect(move || {
@@ -645,6 +681,90 @@ fn App() -> Element {
                             install_now_trigger.set(true);
                             // update_ready cleared in install effect after copying the DMG path
                         },
+                    }
+                }
+            }
+            // One-time diagnostics opt-in prompt
+            if !diag_prompted() {
+                DiagnosticsPrompt {
+                    on_continue: move |_| {
+                        // Accept defaults (enabled: true) and mark prompted
+                        diag_prompted.set(true);
+                        spawn(async move {
+                            save_diagnostics_prompt(true).await;
+                        });
+                    },
+                    on_opt_out: move |_| {
+                        diag_enabled.set(false);
+                        diag_prompted.set(true);
+                        spawn(async move {
+                            save_diagnostics_prompt(false).await;
+                        });
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Save the diagnostics prompt response to disk.
+async fn save_diagnostics_prompt(enabled: bool) {
+    let repo = match lib::Repo::open_or_create(lib::Repo::default_location()).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("Failed to open repo for diagnostics prompt: {e:#}");
+            return;
+        }
+    };
+    let settings = lib::DiagnosticsSettings {
+        enabled,
+        prompted: true,
+    };
+    if let Err(e) = repo.write_diagnostics_settings(&settings).await {
+        tracing::warn!("Failed to save diagnostics settings: {e:#}");
+    }
+}
+
+/// One-time prompt shown on first launch for network diagnostics opt-in.
+#[component]
+fn DiagnosticsPrompt(
+    on_continue: EventHandler<MouseEvent>,
+    on_opt_out: EventHandler<MouseEvent>,
+) -> Element {
+    use crate::components::{Button, ButtonKind};
+
+    rsx! {
+        div {
+            class: "mt-[32px] fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            style: "background-color: rgba(0,0,0,0.2); -webkit-backdrop-filter: blur(1px); backdrop-filter: blur(1px);",
+            onclick: move |evt| {
+                evt.stop_propagation();
+                on_continue.call(evt);
+            },
+            div {
+                class: "w-full max-w-lg mx-auto p-8 bg-card-background rounded-lg border border-card-border shadow-card relative z-50",
+                onclick: move |evt| evt.stop_propagation(),
+                div { class: "mb-4",
+                    h2 { class: "text-sm font-semibold text-foreground",
+                        "Network diagnostics are enabled"
+                    }
+                }
+                p { class: "text-1xs text-foreground/80 leading-relaxed",
+                    "We collect network diagnostic data to help us identify and resolve connectivity issues faster. Your desktop identifier will always be anonymous."
+                }
+                p { class: "text-1xs text-foreground/60 leading-relaxed mt-4",
+                    "Not willing to help us improve reliability? No worries! You can always opt out at any time in Settings \u{2192} Privacy \u{2192} Network Diagnostics."
+                }
+                div { class: "flex gap-2 mt-6",
+                    Button {
+                        text: "Continue",
+                        kind: ButtonKind::Primary,
+                        onclick: move |evt| on_continue.call(evt),
+                    }
+                    Button {
+                        text: "Opt Out",
+                        kind: ButtonKind::Outline,
+                        onclick: move |evt| on_opt_out.call(evt),
                     }
                 }
             }
