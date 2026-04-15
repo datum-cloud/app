@@ -329,6 +329,18 @@ jobs:
           rm -f squashfs-root/usr/lib/libpixbufloader-*.so
           rm -rf squashfs-root/usr/lib/x86_64-linux-gnu
 
+          # Bundle libayatana-appindicator3 and its direct dependencies.
+          # libappindicator-sys uses dlopen at runtime, so linuxdeploy never
+          # detects it as an ELF dependency and never bundles it. On distros
+          # that don't ship it by default (e.g. Fedora Silverblue) the app
+          # panics immediately on startup with "Failed to load ayatana-appindicator3".
+          # libdbusmenu-gtk3/glib are also missing for the same reason — they are
+          # linked by appindicator but linuxdeploy never traversed that dep tree.
+          for lib_prefix in libayatana-appindicator3 libdbusmenu-gtk3 libdbusmenu-glib libayatana-ido3-0.4; do
+            find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "${lib_prefix}.so*" 2>/dev/null \
+              | xargs -I{} cp -P {} squashfs-root/usr/lib/ 2>/dev/null || true
+          done
+
           # Replace the GTK apprun hook with a distro-agnostic version.
           # The original uses Ubuntu-specific paths (x86_64-linux-gnu) that
           # don't exist on Fedora/Arch. Keep GDK_BACKEND=x11 — WebKitGTK
