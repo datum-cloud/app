@@ -3,7 +3,6 @@ pub mod config;
 pub mod datum_apis;
 pub mod datum_cloud;
 pub mod diagnostics;
-pub mod gateway;
 pub mod heartbeat;
 mod http_user_agent;
 mod node;
@@ -13,7 +12,7 @@ mod state;
 pub mod tunnels;
 pub mod update;
 
-pub use config::{Config, DiscoveryMode, GatewayConfig};
+pub use config::{Config, DiscoveryMode};
 pub use diagnostics::DiagnosticsSettings;
 pub use heartbeat::HeartbeatAgent;
 pub use http_user_agent::datum_http_user_agent;
@@ -27,6 +26,3 @@ pub use update::{UpdateChannel, UpdateChecker, UpdateInfo, UpdateSettings};
 /// The root domain for datum connect urls to subdomain from. A proxy URL will
 /// be a three-word-codename subdomain off this URL. eg: "https://vast-gold-mine.iroh.datum.net"
 pub const DATUM_CONNECT_GATEWAY_DOMAIN_NAME: &str = "iroh.datum.net";
-
-#[cfg(test)]
-mod tests;
