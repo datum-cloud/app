@@ -336,7 +336,7 @@ jobs:
           # panics immediately on startup with "Failed to load ayatana-appindicator3".
           # libdbusmenu-gtk3/glib are also missing for the same reason — they are
           # linked by appindicator but linuxdeploy never traversed that dep tree.
-          for lib_prefix in libayatana-appindicator3 libdbusmenu-gtk3 libdbusmenu-glib libayatana-ido3-0.4; do
+          for lib_prefix in libayatana-appindicator3 libayatana-indicator3 libdbusmenu-gtk3 libdbusmenu-glib libayatana-ido3-0.4; do
             find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "${lib_prefix}.so*" 2>/dev/null \
               | xargs -I{} cp -P {} squashfs-root/usr/lib/ 2>/dev/null || true
           done
