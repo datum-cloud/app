@@ -1,7 +1,7 @@
 use crate::{
-    components::{input::Input, Button, ButtonKind, Icon, IconSource},
+    components::{input::Input, Button, ButtonKind, Icon, IconSource, Switch, SwitchThumb},
     state::AppState,
-    Route, UpdateCheckContext,
+    DiagnosticsContext, Route, UpdateCheckContext,
 };
 use dioxus::prelude::*;
 use lib::UpdateChannel;
@@ -226,6 +226,69 @@ pub fn Settings() -> Element {
                                 update_ctx.in_progress.set(true);
                             }
                         },
+                    }
+                }
+            }
+            // Privacy section
+            {PrivacySection()}
+        }
+    }
+}
+
+#[component]
+fn PrivacySection() -> Element {
+    let diag_ctx = consume_context::<DiagnosticsContext>();
+    let enabled = (diag_ctx.enabled)();
+
+    rsx! {
+        div { class: "bg-card-background border border-card-border rounded-lg",
+            div { class: "px-4 py-3 border-b border-card-border",
+                h2 { class: "text-sm text-foreground", "Privacy" }
+            }
+            div { class: "p-4 flex flex-col gap-4 max-w-md",
+                div { class: "flex flex-col gap-2",
+                    p { class: "text-sm text-foreground font-medium", "Network Diagnostics" }
+                    p { class: "text-1xs text-foreground/60",
+                        "We collect network diagnostic data to help us identify and resolve connectivity issues faster. Your desktop identifier will always be anonymous."
+                    }
+                    div { class: "flex items-center gap-3 mt-1",
+                        Switch {
+                            checked: enabled,
+                            on_checked_change: move |next: bool| {
+                                let mut sig = diag_ctx.enabled;
+                                spawn(async move {
+                                    let repo = match lib::Repo::open_or_create(lib::Repo::default_location())
+                                        .await
+                                    {
+                                        Ok(r) => r,
+                                        Err(e) => {
+                                            tracing::warn!("Failed to open repo for diagnostics toggle: {e:#}");
+                                            return;
+                                        }
+                                    };
+                                    let mut settings = match repo.diagnostics_settings().await {
+                                        Ok(s) => s,
+                                        Err(e) => {
+                                            tracing::warn!("Failed to load diagnostics settings: {e:#}");
+                                            return;
+                                        }
+                                    };
+                                    settings.enabled = next;
+                                    if let Err(e) = repo.write_diagnostics_settings(&settings).await {
+                                        tracing::warn!("Failed to save diagnostics settings: {e:#}");
+                                        return;
+                                    }
+                                    sig.set(next);
+                                });
+                            },
+                            SwitchThumb {}
+                        }
+                        p { class: "text-1xs text-foreground/60",
+                            if enabled { "Enabled" } else { "Disabled" }
+                        }
+                    }
+                    p { class: "text-1xs text-foreground/40",
+                        "Changes take effect on next app restart."
                     }
                 }
             }

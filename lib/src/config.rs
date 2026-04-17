@@ -51,30 +51,7 @@ pub struct Config {
     pub dns_resolver: Option<SocketAddr>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct GatewayConfig {
-    #[serde(flatten)]
-    pub common: Config,
-}
-
 impl Config {
-    pub async fn from_file(path: PathBuf) -> Result<Self> {
-        let config = tokio::fs::read_to_string(path)
-            .await
-            .context("reading config file")?;
-        let config = serde_yml::from_str(&config).std_context("parsing config file")?;
-        Ok(config)
-    }
-
-    pub async fn write(&self, path: PathBuf) -> Result<()> {
-        let data = serde_yml::to_string(self).anyerr()?;
-        fs::write(path, data)?;
-        Ok(())
-    }
-}
-
-impl GatewayConfig {
     pub async fn from_file(path: PathBuf) -> Result<Self> {
         let config = tokio::fs::read_to_string(path)
             .await
