@@ -17,8 +17,8 @@ use iroh_proxy_utils::{
 };
 use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_relay::{RelayConfig, RelayMap};
-use iroh_services::{ApiSecret, CLIENT_HOST_ALPN};
-use n0_error::{Result, StackResultExt, StdResultExt};
+use iroh_services::CLIENT_HOST_ALPN;
+use n0_error::{Result, StdResultExt};
 use tokio::{
     net::TcpListener,
     sync::futures::Notified,
@@ -55,25 +55,15 @@ pub struct ListenNode {
     state: StateWrapper,
     repo: Repo,
     metrics: Arc<UpstreamMetrics>,
-    _n0des: Option<Arc<iroh_services::Client>>,
     _diagnostics: Option<DiagnosticsHandle>,
 }
 
 impl ListenNode {
-    pub async fn new(repo: Repo) -> Result<Self> {
-        let n0des_api_secret = n0des_api_secret_from_env()?;
-        Self::with_n0des_api_secret(repo, n0des_api_secret).await
-    }
-
     #[instrument("listen-node", skip_all)]
-    pub async fn with_n0des_api_secret(
-        repo: Repo,
-        n0des_api_secret: Option<ApiSecret>,
-    ) -> Result<Self> {
+    pub async fn new(repo: Repo) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.listen_key().await?;
         let endpoint = build_endpoint(secret_key, &config).await?;
-        let n0des = build_n0des_client_opt(&endpoint, n0des_api_secret).await;
         let state = repo.load_state().await?;
 
         let upstream_proxy = UpstreamProxy::new(state.clone())?;
@@ -87,15 +77,13 @@ impl ListenNode {
                     .accept(CLIENT_HOST_ALPN, host)
                     .spawn();
 
-                let this = Self {
+                return Ok(Self {
                     repo,
                     router,
                     state,
                     metrics,
-                    _n0des: n0des,
                     _diagnostics: Some(handle),
-                };
-                return Ok(this);
+                });
             }
             Ok(None) => None,
             Err(err) => {
@@ -108,15 +96,13 @@ impl ListenNode {
             .accept(IROH_HTTP_CONNECT_ALPN, upstream_proxy)
             .spawn();
 
-        let this = Self {
+        Ok(Self {
             repo,
             router,
             state,
             metrics,
-            _n0des: n0des,
             _diagnostics: diagnostics_handle,
-        };
-        Ok(this)
+        })
     }
 
     pub fn state_updated(&self) -> Notified<'_> {
@@ -247,28 +233,17 @@ impl AuthHandler for StateWrapper {
 pub struct ConnectNode {
     endpoint: Endpoint,
     proxy: DownstreamProxy,
-    _n0des: Option<Arc<iroh_services::Client>>,
 }
 
 impl ConnectNode {
-    pub async fn new(repo: Repo) -> Result<Self> {
-        let n0des_api_secret = n0des_api_secret_from_env()?;
-        Self::with_n0des_api_secret(repo, n0des_api_secret).await
-    }
-
     #[instrument("connect-node", skip_all)]
-    pub async fn with_n0des_api_secret(
-        repo: Repo,
-        n0des_api_secret: Option<ApiSecret>,
-    ) -> Result<Self> {
+    pub async fn new(repo: Repo) -> Result<Self> {
         let config = repo.config().await?;
         let secret_key = repo.connect_key().await?;
         let endpoint = build_endpoint(secret_key, &config).await?;
-        let n0des = build_n0des_client_opt(&endpoint, n0des_api_secret).await;
         let pool = DownstreamProxy::new(endpoint.clone(), Default::default());
         Ok(Self {
             endpoint,
-            _n0des: n0des,
             proxy: pool,
         })
     }
@@ -622,52 +597,6 @@ async fn setup_diagnostics(
     Ok(Some((host, handle)))
 }
 
-pub(crate) fn n0des_api_secret_from_env() -> Result<Option<ApiSecret>> {
-    let api_secret_str = match std::env::var("N0DES_API_SECRET") {
-        Ok(s) => s,
-        Err(_) => match option_env!("BUILD_N0DES_API_SECRET") {
-            None => return Ok(None),
-            Some(s) => s.to_string(),
-        },
-    };
-    let api_secret = ApiSecret::from_str(&api_secret_str)
-        .context("Failed to parse n0des API secret from env variable N0DES_API_SECRET")?;
-    Ok(Some(api_secret))
-}
-
-pub(crate) async fn build_n0des_client_opt(
-    endpoint: &Endpoint,
-    api_secret: Option<ApiSecret>,
-) -> Option<Arc<iroh_services::Client>> {
-    match api_secret {
-        None => {
-            info!("Disabling metrics collection: N0DES_API_SECRET is not set");
-            None
-        }
-        Some(n0des_api_secret) => match build_n0des_client(endpoint, n0des_api_secret).await {
-            Ok(client) => Some(client),
-            Err(err) => {
-                warn!("Disabling metrics collection: Failed to connect to n0des: {err:#}");
-                None
-            }
-        },
-    }
-}
-
-pub(crate) async fn build_n0des_client(
-    endpoint: &Endpoint,
-    api_secret: ApiSecret,
-) -> Result<Arc<iroh_services::Client>> {
-    let remote_id = api_secret.remote.id;
-    debug!(remote=%remote_id.fmt_short(), "connecting to n0des endpoint");
-    let client = iroh_services::Client::builder(endpoint)
-        .api_secret(api_secret)?
-        .build()
-        .await
-        .std_context("Failed to connect to n0des endpoint")?;
-    info!(remote=%remote_id.fmt_short(), "Connected to n0des endpoint for metrics collection");
-    Ok(Arc::new(client))
-}
 
 #[cfg(test)]
 mod tests {
