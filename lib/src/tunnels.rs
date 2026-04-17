@@ -249,6 +249,10 @@ impl TunnelService {
             });
         }
         if !self.publish_tickets {
+            let current_ids: std::collections::HashSet<&str> =
+                tunnels.iter().map(|t| t.id.as_str()).collect();
+
+            // Sync state for each tunnel returned by the server.
             for tunnel in &tunnels {
                 if let Ok(proxy_state) = proxy_state_from_summary(
                     &tunnel.id,
@@ -258,6 +262,37 @@ impl TunnelService {
                 ) && let Err(err) = self.listen.set_proxy_state(proxy_state).await
                 {
                     warn!(tunnel_id = %tunnel.id, "Failed to store proxy state: {err:#}");
+                }
+            }
+
+            // Remove stale local entries that share host:port with a current tunnel
+            // but have a different resource_id. These accumulate when a tunnel is
+            // deleted and recreated with the same endpoint (new ID). Without this,
+            // the stale enabled entry causes tcp_proxy_exists to return true even
+            // when the current tunnel is disabled, allowing traffic through.
+            //
+            // Scoped to same-endpoint matches so we don't touch entries belonging
+            // to other projects with different endpoints.
+            for tunnel in &tunnels {
+                let Ok(data) = TcpProxyData::from_host_port_str(&strip_scheme(&tunnel.endpoint))
+                else {
+                    continue;
+                };
+                let stale_ids: Vec<String> = self
+                    .listen
+                    .proxies()
+                    .into_iter()
+                    .filter(|p| {
+                        !current_ids.contains(p.id())
+                            && p.info.service().host == data.host
+                            && p.info.service().port == data.port
+                    })
+                    .map(|p| p.id().to_string())
+                    .collect();
+                for id in stale_ids {
+                    if let Err(err) = self.listen.remove_proxy_state(&id).await {
+                        warn!(tunnel_id = %id, "Failed to remove stale proxy state: {err:#}");
+                    }
                 }
             }
         }
