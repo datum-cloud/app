@@ -597,7 +597,6 @@ async fn setup_diagnostics(
     Ok(Some((host, handle)))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
