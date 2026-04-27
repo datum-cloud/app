@@ -520,7 +520,6 @@ jobs:
           DMG_FILE=$(find macos-dist -name "*.dmg" | head -1)
           DMG_SHA=$(sha256sum "$DMG_FILE" | cut -d' ' -f1)
           REPO="datum-cloud/app"
-          BRANCH="release/desktop-${TAG}"
 
           git clone https://x-access-token:${GH_TOKEN}@github.com/datum-cloud/homebrew-tap.git tap
           mkdir -p tap/Casks
@@ -545,14 +544,7 @@ jobs:
           cd tap
           git config user.name "Datum Release Bot"
           git config user.email "releases@datum.net"
-          git checkout -b "${BRANCH}"
           git add Casks/
           git diff --cached --quiet && exit 0
           git commit -m "Brew cask update for Datum Desktop version ${TAG}"
-          git push origin "${BRANCH}"
-          gh pr create \
-            --title "Brew cask update for Datum Desktop version ${TAG}" \
-            --body "Automated cask update from release workflow." \
-            --base main \
-            --head "${BRANCH}" \
-            --repo datum-cloud/homebrew-tap
+          git push
