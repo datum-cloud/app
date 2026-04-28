@@ -39,7 +39,11 @@ data-encoding.workspace = true
 uuid.workspace = true
 n0-error.workspace = true
 rustls.workspace = true
-dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
+# Pinned to a known-good rev: the upstream repo is a moving 0.0.1 git dep
+# with no published versioning, and bundle CI runs `cargo generate-lockfile`,
+# so without a rev pin every CI run picks up upstream HEAD and breaks
+# whenever the Select/Props API drifts. Bump deliberately, never via auto-resolve.
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components", rev = "ffbc750181ea2195e20736ae3ad0c24ad9684c41", version = "0.0.1", default-features = false }
 sentry.workspace = true
 
 [features]
