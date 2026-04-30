@@ -171,9 +171,18 @@ fn main() {
             .with_has_shadow(true)
             .with_fullsize_content_view(true);
 
+        // On Linux, close-button exits the app: GTK windows have no auto-generated
+        // menu bar (unlike macOS/Windows) and default GNOME does not render
+        // libappindicator tray icons w/o an extension, leaving users with no reachable quit
+        // w/ the window hidden. On macOS/Windows, close hides so
+        // the tray icon (and Cmd+Q / Window menu) can restore
+        #[cfg(target_os = "linux")]
+        let close_behaviour = WindowCloseBehaviour::WindowCloses;
+        #[cfg(not(target_os = "linux"))]
+        let close_behaviour = WindowCloseBehaviour::WindowHides;
+
         let mut config = Config::new()
-            // Make "close" behave like hide, so the tray icon can restore it.
-            .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+            .with_close_behaviour(close_behaviour)
             .with_window(window_builder);
 
         dioxus::LaunchBuilder::desktop()
@@ -510,6 +519,9 @@ fn App() -> Element {
                 "hide" => {
                     window.set_visible(false);
                 }
+                "quit" => {
+                    std::process::exit(0);
+                }
                 "new_tunnel" => {
                     if login_state_for_tray() == Some(lib::datum_cloud::LoginState::Missing)
                         || login_state_for_tray().is_none()
@@ -780,6 +792,7 @@ fn init_tray() -> TrayIcon {
     let about_item = MenuItem::with_id("about", "About Datum", true, None);
     let show_item = MenuItem::with_id("show", "Show Window", true, None);
     let hide_item = MenuItem::with_id("hide", "Hide", true, None);
+    let quit_item = MenuItem::with_id("quit", "Quit Datum", true, None);
 
     #[cfg(target_os = "macos")]
     let new_tunnel_item = IconMenuItem::with_id_and_native_icon(
@@ -807,6 +820,8 @@ fn init_tray() -> TrayIcon {
             &about_item,
             &show_item,
             &hide_item,
+            &sep,
+            &quit_item,
             &sep,
             &version_item,
         ])
