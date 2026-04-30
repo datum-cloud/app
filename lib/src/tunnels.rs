@@ -34,7 +34,7 @@ use gateway_api::apis::standard::httproutes::{
 };
 
 const DEFAULT_PCP_NAMESPACE: &str = "default";
-const DEFAULT_CONNECTOR_CLASS_NAME: &str = "datum-connect";
+const DEFAULT_CONNECTOR_CLASS_NAME: &str = "iroh-quic-tunnel";
 const CONNECTOR_SELECTOR_FIELD: &str = "status.connectionDetails.publicKey.id";
 const ADVERTISEMENT_CONNECTOR_FIELD: &str = "spec.connectorRef.name";
 const DISPLAY_NAME_ANNOTATION: &str = "app.kubernetes.io/name";
