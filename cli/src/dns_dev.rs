@@ -161,12 +161,18 @@ fn build_catalog(config_path: &PathBuf, fallback_origin: &str) -> n0_error::Resu
         let z32_id = z32::encode(endpoint_id.as_bytes());
         let name = Name::from_str(&format!("_iroh.{z32_id}.{origin}.")).anyerr()?;
 
+        // iroh's parser (iroh-relay/src/endpoint_info.rs) runs
+        // SocketAddr::from_str on each IrohAttr::Addr value as-is and
+        // silently drops failures, and its serializer emits one
+        // (Addr, addr.to_string()) attribute per IP. So the canonical
+        // wire form is one "addr=<single-sockaddr>" TXT entry per
+        // address, not one "addr=A B C" line.
         let mut txt_entries = Vec::new();
         if let Some(relay) = record.relay {
             txt_entries.push(format!("relay={relay}"));
         }
-        if !record.addrs.is_empty() {
-            txt_entries.push(format!("addr={}", record.addrs.join(" ")));
+        for addr in &record.addrs {
+            txt_entries.push(format!("addr={addr}"));
         }
         if txt_entries.is_empty() {
             continue;
