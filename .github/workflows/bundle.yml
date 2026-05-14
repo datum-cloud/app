@@ -28,8 +28,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: cargo-bins/cargo-binstall@main
-
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies (Linux)
@@ -51,9 +49,10 @@ jobs:
         # and the upstream fix is still open:
         # https://github.com/DioxusLabs/dioxus/issues/5233
         # Bump in lockstep with the lib once that issue is resolved.
-        run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        #
+        # Use `cargo install` instead of cargo-binstall: `cargo-bins/cargo-binstall@main`
+        # has broken `cargo` on GHA runners (invokes rustup-init for subcommands).
+        run: cargo install dioxus-cli --version 0.7.2 --locked
 
       - uses: actions/setup-node@v4
         if: runner.os == 'macOS'
