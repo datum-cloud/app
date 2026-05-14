@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -9,7 +10,7 @@ use n0_future::task::AbortOnDropHandle;
 use secrecy::SecretString;
 use tracing::warn;
 
-use crate::datum_cloud::{DatumCloudClient, LoginState};
+use crate::datum_cloud::{DatumCloudClient, LoginState, Unauthorized};
 use crate::http_user_agent::datum_http_user_agent;
 
 #[derive(derive_more::Debug, Clone)]
@@ -65,6 +66,96 @@ impl ProjectControlPlaneClient {
         let access_token = auth.tokens.access_token.secret();
         self.rebuild_if_changed(access_token)?;
         Ok(self.client())
+    }
+
+    /// Build a `kube::Client` after forcing a token refresh, even if the access token
+    /// is not near expiry. Used by [`Self::with_auth_retry`] when the server has just
+    /// rejected the current bearer.
+    async fn client_force_refreshed(&self) -> Result<Client> {
+        self.datum.auth().force_refresh().await?;
+        let auth_state = self.datum.auth().load();
+        let auth = auth_state.get()?;
+        let access_token = auth.tokens.access_token.secret();
+        self.rebuild_if_changed(access_token)?;
+        Ok(self.client())
+    }
+
+    /// Run a kube operation with auth handling (idempotent / read variant):
+    ///
+    /// 1. Preflight: refresh the access token if near expiry and rebuild the client.
+    /// 2. Run the operation. On 401/403, force a refresh and retry once.
+    /// 3. If the retry also returns 401/403, clear the local auth state and return
+    ///    [`Unauthorized`]. The watch on `login_state` will then drive a redirect
+    ///    to login in the UI.
+    ///
+    /// The closure is `Fn` so it can be invoked twice. Use this for idempotent
+    /// operations (lists, gets, deletes). For non-idempotent writes, use
+    /// [`Self::with_auth`] which preflights and logs out on auth failure without
+    /// retrying.
+    pub async fn with_auth_retry<T, F, Fut>(&self, op: F) -> Result<T>
+    where
+        F: Fn(Client) -> Fut,
+        Fut: Future<Output = kube::Result<T>>,
+    {
+        let client = self.client_refreshed().await?;
+        let first_err = match op(client).await {
+            Ok(val) => return Ok(val),
+            Err(err) => err,
+        };
+        if !is_kube_auth_failure(&first_err) {
+            return Err(first_err).std_context("kube operation failed");
+        }
+
+        warn!(
+            err = %first_err,
+            "kube returned auth failure; attempting forced token refresh"
+        );
+        let client = match self.client_force_refreshed().await {
+            Ok(client) => client,
+            Err(err) => {
+                warn!("Forced auth refresh failed: {err:#}");
+                return Err(Unauthorized.into());
+            }
+        };
+        match op(client).await {
+            Ok(val) => Ok(val),
+            Err(err) if is_kube_auth_failure(&err) => {
+                warn!(
+                    err = %err,
+                    "kube auth failure persisted after refresh; logging out"
+                );
+                if let Err(e) = self.datum.auth().logout().await {
+                    warn!("Failed to clear auth state after persistent 401/403: {e:#}");
+                }
+                Err(Unauthorized.into())
+            }
+            Err(err) => Err(err).std_context("kube operation failed after refresh"),
+        }
+    }
+
+    /// Run a kube operation with preflight refresh and auto-logout on auth failure,
+    /// but without retrying. Use for non-idempotent writes (create/patch/etc.) where
+    /// re-running the closure would produce secondary errors like "AlreadyExists".
+    ///
+    /// On 401/403 the local auth state is cleared and [`Unauthorized`] is returned;
+    /// the UI's login-state watcher then routes the user back to the login screen.
+    pub async fn with_auth<T, F, Fut>(&self, op: F) -> Result<T>
+    where
+        F: FnOnce(Client) -> Fut,
+        Fut: Future<Output = kube::Result<T>>,
+    {
+        let client = self.client_refreshed().await?;
+        match op(client).await {
+            Ok(val) => Ok(val),
+            Err(err) if is_kube_auth_failure(&err) => {
+                warn!(err = %err, "kube auth failure; logging out");
+                if let Err(e) = self.datum.auth().logout().await {
+                    warn!("Failed to clear auth state on 401/403: {e:#}");
+                }
+                Err(Unauthorized.into())
+            }
+            Err(err) => Err(err).std_context("kube operation failed"),
+        }
     }
 
     fn build_kube_client(server_url: &str, access_token: &str) -> Result<Client> {
@@ -133,5 +224,47 @@ impl ProjectControlPlaneClient {
             }
         });
         self._auth_task = Some(Arc::new(AbortOnDropHandle::new(task)));
+    }
+}
+
+/// True if the kube error indicates the bearer token was rejected.
+pub fn is_kube_auth_failure(err: &kube::Error) -> bool {
+    matches!(err, kube::Error::Api(resp) if resp.code == 401 || resp.code == 403)
+}
+
+#[cfg(test)]
+mod is_kube_auth_failure_tests {
+    use super::*;
+    use kube::core::ErrorResponse;
+
+    fn api_err(code: u16) -> kube::Error {
+        kube::Error::Api(ErrorResponse {
+            status: "Failure".to_string(),
+            message: "denied".to_string(),
+            reason: "Unauthorized".to_string(),
+            code,
+        })
+    }
+
+    #[test]
+    fn classifies_401_and_403_api_errors() {
+        assert!(is_kube_auth_failure(&api_err(401)));
+        assert!(is_kube_auth_failure(&api_err(403)));
+    }
+
+    #[test]
+    fn ignores_other_api_status_codes() {
+        for code in [200u16, 404, 409, 410, 500, 503] {
+            assert!(
+                !is_kube_auth_failure(&api_err(code)),
+                "code {code} should not be an auth failure"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_non_api_errors() {
+        let err = kube::Error::TlsRequired;
+        assert!(!is_kube_auth_failure(&err));
     }
 }
