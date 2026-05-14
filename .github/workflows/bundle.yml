@@ -25,7 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         # PRs run linux only as a smoke check; main/tag/manual runs cover all three OSes.
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["macos-latest","ubuntu-latest","windows-latest"]') }}
+        # windows-2022 (not windows-latest): windows-latest aliases to VS18 preview,
+        # whose MSVC 14.50 headers + cmake-rs can't resolve a Visual Studio generator
+        # for aws-lc-sys, breaking `dx bundle`. Revisit once the ecosystem catches up.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["macos-latest","ubuntu-latest","windows-2022"]') }}
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
