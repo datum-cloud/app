@@ -18,8 +18,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: cargo-bins/cargo-binstall@main
-
       - uses: Swatinem/rust-cache@v2
       
       - name: Install system dependencies (Linux)
