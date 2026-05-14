@@ -7,6 +7,15 @@ on:
       - "v*"
   pull_request:
     branches: [main]
+    # PRs only re-bundle when something that affects the output changed.
+    # Doc / workflow / other changes get a free pass.
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "cli/**"
+      - "lib/**"
+      - "ui/**"
+      - ".github/workflows/bundle.yml"
   workflow_dispatch:
 
 jobs:
@@ -15,7 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # PRs run linux only as a smoke check; main/tag/manual runs cover all three OSes.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["macos-latest","ubuntu-latest","windows-latest"]') }}
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
@@ -28,7 +38,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Use a stable shared-key per OS instead of the default Cargo.toml/Cargo.lock hash.
+      # `cargo generate-lockfile` and the in-place version bump otherwise rotate the
+      # default cache key on every run, throwing away dep compile artefacts.
+      # Only save the cache from main / tag / manual runs so PRs don't pollute it.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bundle-${{ matrix.os }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -43,16 +60,43 @@ jobs:
             libfuse2 \
             libxdo-dev
 
-      - name: Install Dioxus CLI
-        # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
-        # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
-        # and the upstream fix is still open:
-        # https://github.com/DioxusLabs/dioxus/issues/5233
-        # Bump in lockstep with the lib once that issue is resolved.
-        #
-        # Use `cargo install` instead of cargo-binstall: `cargo-bins/cargo-binstall@main`
-        # has broken `cargo` on GHA runners (invokes rustup-init for subcommands).
-        run: cargo install dioxus-cli --version 0.7.2 --locked
+      # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
+      # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
+      # and the upstream fix is still open:
+      # https://github.com/DioxusLabs/dioxus/issues/5233
+      # Bump in lockstep with the lib once that issue is resolved.
+      #
+      # Download the prebuilt `dx` binary from GitHub releases rather than
+      # `cargo install dioxus-cli`, which compiles the whole CLI from source
+      # (5–10 min per matrix leg, every run).
+      - name: Install Dioxus CLI (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DX_VER=0.7.2
+          TRIPLE=$(rustc -Vv | awk '/^host:/{print $2}')
+          URL="https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VER}/dx-${TRIPLE}.tar.gz"
+          echo "Downloading $URL"
+          mkdir -p "$HOME/.cargo/bin"
+          curl -fsSL "$URL" | tar -xz -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/dx"
+          "$HOME/.cargo/bin/dx" --version
+
+      - name: Install Dioxus CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $DX_VER = '0.7.2'
+          $TRIPLE = ((rustc -Vv | Select-String '^host: ').ToString() -replace '^host: ','').Trim()
+          $URL = "https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VER/dx-$TRIPLE.zip"
+          Write-Host "Downloading $URL"
+          $tmp = Join-Path $env:RUNNER_TEMP 'dx.zip'
+          Invoke-WebRequest -Uri $URL -OutFile $tmp -UseBasicParsing
+          $dst = Join-Path $env:USERPROFILE '.cargo\bin'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Expand-Archive -Path $tmp -DestinationPath $dst -Force
+          & (Join-Path $dst 'dx.exe') --version
 
       - uses: actions/setup-node@v4
         if: runner.os == 'macOS'
