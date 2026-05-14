@@ -12,7 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # windows-2022 (not windows-latest) — see bundle.yml: windows-latest's VS18
+        # preview breaks the aws-lc-sys cmake build via rustls.
+        os: [macos-latest, ubuntu-latest, windows-2022]
 
     steps:
       - uses: actions/checkout@v4
