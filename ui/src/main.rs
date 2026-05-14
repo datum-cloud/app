@@ -126,25 +126,33 @@ fn main() {
         .install_default()
         .expect("rustls default crypto provider");
 
-    init_tracing();
-    if let Ok(path) = dotenv::dotenv() {
-        info!("Loaded environment variables from {}", path.display());
-    }
+    // Load .env first so any process-env-driven config (DATUM_API_ENV, etc.) is
+    // visible to the rest of init. We keep the load result so we can log it
+    // *after* tracing is set up.
+    let dotenv_path = dotenv::dotenv().ok();
 
+    // Initialize Sentry before tracing so the tracing layer registered below
+    // dispatches to a real Hub from the first event onwards.
+    //
+    // SENTRY_DSN is read at compile time via `option_env!`. CI release builds
+    // bake it in (see .github/workflows/bundle.yml). Dev builds typically
+    // have no SENTRY_DSN at compile time, so Sentry naturally runs as a
+    // no-op in development.
     let _sentry_guard = sentry::init(sentry::ClientOptions {
-        dsn: std::env::var("SENTRY_DSN")
-            .ok()
+        dsn: option_env!("SENTRY_DSN")
+            .filter(|s| !s.is_empty())
             .and_then(|s| s.parse().ok()),
         release: sentry::release_name!(),
         send_default_pii: true,
-        before_send: Some(std::sync::Arc::new(|event| match event.level {
-            sentry::Level::Error | sentry::Level::Fatal => Some(event),
-            _ if rand::random::<f64>() < 0.1 => Some(event),
-            _ => None,
-        })),
         traces_sample_rate: 0.1,
         ..Default::default()
     });
+
+    init_tracing();
+
+    if let Some(path) = dotenv_path {
+        info!("Loaded environment variables from {}", path.display());
+    }
 
     #[cfg(all(feature = "desktop", target_os = "linux"))]
     gtk::init().unwrap();
@@ -172,8 +180,14 @@ fn main() {
             .with_fullsize_content_view(true);
 
         let mut config = Config::new()
-            // Make "close" behave like hide, so the tray icon can restore it.
+            // Close-as-hide: the user re-opens the window via the tray menu's
+            // "Show Window" item (see init_tray and the muda event handler).
             .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+            // Left-clicking the tray icon should only surface the context menu,
+            // not unhide the main window. Restoring is an explicit action
+            // through the tray menu rather than an accidental side-effect of
+            // clicking the icon.
+            .with_tray_icon_show_window_on_click(false)
             .with_window(window_builder);
 
         dioxus::LaunchBuilder::desktop()
@@ -197,12 +211,26 @@ fn init_tracing() {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
+    // Promote WARN to a Sentry event (in addition to the default ERROR -> Event
+    // and INFO -> Breadcrumb). The codebase uses `warn!` for most meaningful
+    // failure paths (auth, kube, refresh) and very few `error!` sites, so the
+    // default filter sends almost nothing to Sentry.
+    let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
+        use sentry::integrations::tracing::EventFilter;
+        match *md.level() {
+            tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb,
+            tracing::Level::WARN => EventFilter::Event | EventFilter::Breadcrumb,
+            tracing::Level::INFO => EventFilter::Breadcrumb,
+            _ => EventFilter::Ignore,
+        }
+    });
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer().with_writer(std::io::stderr))
         .with(fmt::layer().with_writer(non_blocking))
-        .with(sentry::integrations::tracing::layer())
+        .with(sentry_layer)
         .init();
 }
 

@@ -134,28 +134,44 @@ pub struct ConnectArgs {
 
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(sentry::integrations::tracing::layer())
-        .init();
-    if let Ok(path) = dotenv::dotenv() {
-        info!("Loaded environment variables from {}", path.display());
-    }
+    // Load .env first so any process-env-driven config is visible to the rest
+    // of init. We keep the load result so we can log it *after* tracing is up.
+    let dotenv_path = dotenv::dotenv().ok();
 
+    // Initialize Sentry before tracing so the tracing layer registered below
+    // dispatches to a real Hub from the first event onwards. SENTRY_DSN is
+    // baked at compile time via `option_env!`; dev builds typically have no
+    // DSN, so Sentry naturally runs as a no-op outside release builds.
     let _sentry_guard = sentry::init(sentry::ClientOptions {
-        dsn: std::env::var("SENTRY_DSN")
-            .ok()
+        dsn: option_env!("SENTRY_DSN")
+            .filter(|s| !s.is_empty())
             .and_then(|s| s.parse().ok()),
         release: sentry::release_name!(),
         send_default_pii: true,
-        before_send: Some(std::sync::Arc::new(|event| match event.level {
-            sentry::Level::Error | sentry::Level::Fatal => Some(event),
-            _ if rand::random::<f64>() < 0.1 => Some(event),
-            _ => None,
-        })),
         traces_sample_rate: 0.1,
         ..Default::default()
     });
+
+    // Promote WARN to a Sentry event in addition to the default ERROR -> Event
+    // and INFO -> Breadcrumb. See ui/src/main.rs for rationale.
+    let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
+        use sentry::integrations::tracing::EventFilter;
+        match *md.level() {
+            tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb,
+            tracing::Level::WARN => EventFilter::Event | EventFilter::Breadcrumb,
+            tracing::Level::INFO => EventFilter::Breadcrumb,
+            _ => EventFilter::Ignore,
+        }
+    });
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(sentry_layer)
+        .init();
+
+    if let Some(path) = dotenv_path {
+        info!("Loaded environment variables from {}", path.display());
+    }
 
     let args = Args::parse();
 
