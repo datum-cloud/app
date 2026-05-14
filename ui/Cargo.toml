@@ -13,8 +13,8 @@ name = "Datum"
 path = "src/main.rs"
 
 [dependencies]
-dioxus = { version = "=0.7.3", features = ["router"] }
-dioxus-desktop = { version = "=0.7.3", optional = true }
+dioxus = { version = "=0.7.9", features = ["router"] }
+dioxus-desktop = { version = "=0.7.9", optional = true }
 image = "0.25"
 
 chrono.workspace = true
