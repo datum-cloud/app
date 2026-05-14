@@ -19,7 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # windows-2022 (not windows-latest) — see bundle.yml: windows-latest's VS18
+        # preview breaks the aws-lc-sys cmake build via rustls.
+        os: [macos-latest, ubuntu-latest, windows-2022]
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
@@ -32,9 +34,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: cargo-bins/cargo-binstall@main
-
+      # Stable shared-key per OS — see bundle.yml for rationale.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bundle-${{ matrix.os }}
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -49,15 +52,41 @@ jobs:
             libfuse2 \
             libxdo-dev
 
-      - name: Install Dioxus CLI
-        # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
-        # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
-        # and the upstream fix is still open:
-        # https://github.com/DioxusLabs/dioxus/issues/5233
-        # Bump in lockstep with the lib once that issue is resolved.
-        run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
+      # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
+      # and the upstream fix is still open:
+      # https://github.com/DioxusLabs/dioxus/issues/5233
+      # Bump in lockstep with the lib once that issue is resolved.
+      #
+      # Download the prebuilt `dx` binary; see bundle.yml for rationale.
+      - name: Install Dioxus CLI (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DX_VER=0.7.2
+          TRIPLE=$(rustc -Vv | awk '/^host:/{print $2}')
+          URL="https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VER}/dx-${TRIPLE}.tar.gz"
+          echo "Downloading $URL"
+          mkdir -p "$HOME/.cargo/bin"
+          curl -fsSL "$URL" | tar -xz -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/dx"
+          "$HOME/.cargo/bin/dx" --version
+
+      - name: Install Dioxus CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $DX_VER = '0.7.2'
+          $TRIPLE = ((rustc -Vv | Select-String '^host: ').ToString() -replace '^host: ','').Trim()
+          $URL = "https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VER/dx-$TRIPLE.zip"
+          Write-Host "Downloading $URL"
+          $tmp = Join-Path $env:RUNNER_TEMP 'dx.zip'
+          Invoke-WebRequest -Uri $URL -OutFile $tmp -UseBasicParsing
+          $dst = Join-Path $env:USERPROFILE '.cargo\bin'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Expand-Archive -Path $tmp -DestinationPath $dst -Force
+          & (Join-Path $dst 'dx.exe') --version
 
       - uses: actions/setup-node@v4
         if: runner.os == 'macOS'
@@ -153,8 +182,15 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           mkdir -p ui/dist
-          if [ ! -d ui/dist/Datum.app ] && [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
-            cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+          if [ ! -d ui/dist/Datum.app ]; then
+            if [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
+              cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+            else
+              APP=$(find ui/target/dx -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+              if [ -n "$APP" ]; then
+                cp -R "$APP" ui/dist/Datum.app
+              fi
+            fi
           fi
           test -d ui/dist/Datum.app
           ./ui/packaging/dmg/mk-dmg-icns-from-linux-png.sh
