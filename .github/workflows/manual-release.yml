@@ -153,8 +153,15 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           mkdir -p ui/dist
-          if [ ! -d ui/dist/Datum.app ] && [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
-            cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+          if [ ! -d ui/dist/Datum.app ]; then
+            if [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
+              cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+            else
+              APP=$(find ui/target/dx -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+              if [ -n "$APP" ]; then
+                cp -R "$APP" ui/dist/Datum.app
+              fi
+            fi
           fi
           test -d ui/dist/Datum.app
           ./ui/packaging/dmg/mk-dmg-icns-from-linux-png.sh
