@@ -50,9 +50,11 @@ jobs:
             libxdo-dev
 
       - name: Install Dioxus CLI
-        # Should be pinned to same version as dioxus in Cargo.toml
-        # note: dx bundle on Windows fails with 0.7.3, see
+        # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
+        # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
+        # and the upstream fix is still open:
         # https://github.com/DioxusLabs/dioxus/issues/5233
+        # Bump in lockstep with the lib once that issue is resolved.
         run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,6 +141,10 @@ jobs:
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui
+        env:
+          # Baked into the binary via `option_env!("SENTRY_DSN")` in ui/src/main.rs.
+          # If the secret isn't set the binary just runs without Sentry reporting.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: dx bundle --locked --desktop --release --package-types macos
 
       - name: Build DMG (appdmg)
@@ -215,6 +221,8 @@ jobs:
         # For now we set NO_STRIP, which makes the bundles *huge*...
         env:
           NO_STRIP: true
+          # Baked into the binary via `option_env!("SENTRY_DSN")` in ui/src/main.rs.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: dx bundle --locked --desktop --release --package-types appimage
 
       - name: Repack AppImage using system libs (Linux)
@@ -314,6 +322,9 @@ jobs:
       - name: Bundle (Windows)
         working-directory: ./ui
         if: runner.os == 'Windows'
+        env:
+          # Baked into the binary via `option_env!("SENTRY_DSN")` in ui/src/main.rs.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: dx bundle --locked --desktop --release --package-types nsis
 
       - name: Upload artifacts
