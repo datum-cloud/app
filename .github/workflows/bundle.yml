@@ -7,6 +7,15 @@ on:
       - "v*"
   pull_request:
     branches: [main]
+    # PRs only re-bundle when something that affects the output changed.
+    # Doc / workflow / other changes get a free pass.
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "cli/**"
+      - "lib/**"
+      - "ui/**"
+      - ".github/workflows/bundle.yml"
   workflow_dispatch:
 
 jobs:
@@ -15,7 +24,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # PRs run linux only as a smoke check; main/tag/manual runs cover all three OSes.
+        # windows-2022 (not windows-latest): windows-latest aliases to VS18 preview,
+        # whose MSVC 14.50 headers + cmake-rs can't resolve a Visual Studio generator
+        # for aws-lc-sys, breaking `dx bundle`. Revisit once the ecosystem catches up.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["macos-latest","ubuntu-latest","windows-2022"]') }}
 
     env:
       BUILD_N0DES_API_SECRET: ${{ secrets.N0DES_API_SECRET }}
@@ -28,9 +41,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: cargo-bins/cargo-binstall@main
-
+      # Use a stable shared-key per OS instead of the default Cargo.toml/Cargo.lock hash.
+      # `cargo generate-lockfile` and the in-place version bump otherwise rotate the
+      # default cache key on every run, throwing away dep compile artefacts.
+      # Only save the cache from main / tag / manual runs so PRs don't pollute it.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bundle-${{ matrix.os }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -45,15 +63,43 @@ jobs:
             libfuse2 \
             libxdo-dev
 
-      - name: Install Dioxus CLI
-        # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
-        # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
-        # and the upstream fix is still open:
-        # https://github.com/DioxusLabs/dioxus/issues/5233
-        # Bump in lockstep with the lib once that issue is resolved.
-        run: cargo binstall dioxus-cli@0.7.2 --disable-telemetry --locked --force -y
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Library deps in ui/Cargo.toml are pinned to dioxus =0.7.9, but the CLI is
+      # held back at 0.7.2 because dx bundle path resolution regressed in 0.7.3+
+      # and the upstream fix is still open:
+      # https://github.com/DioxusLabs/dioxus/issues/5233
+      # Bump in lockstep with the lib once that issue is resolved.
+      #
+      # Download the prebuilt `dx` binary from GitHub releases rather than
+      # `cargo install dioxus-cli`, which compiles the whole CLI from source
+      # (5–10 min per matrix leg, every run).
+      - name: Install Dioxus CLI (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DX_VER=0.7.2
+          TRIPLE=$(rustc -Vv | awk '/^host:/{print $2}')
+          URL="https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VER}/dx-${TRIPLE}.tar.gz"
+          echo "Downloading $URL"
+          mkdir -p "$HOME/.cargo/bin"
+          curl -fsSL "$URL" | tar -xz -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/dx"
+          "$HOME/.cargo/bin/dx" --version
+
+      - name: Install Dioxus CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $DX_VER = '0.7.2'
+          $TRIPLE = ((rustc -Vv | Select-String '^host: ').ToString() -replace '^host: ','').Trim()
+          $URL = "https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VER/dx-$TRIPLE.zip"
+          Write-Host "Downloading $URL"
+          $tmp = Join-Path $env:RUNNER_TEMP 'dx.zip'
+          Invoke-WebRequest -Uri $URL -OutFile $tmp -UseBasicParsing
+          $dst = Join-Path $env:USERPROFILE '.cargo\bin'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Expand-Archive -Path $tmp -DestinationPath $dst -Force
+          & (Join-Path $dst 'dx.exe') --version
 
       - uses: actions/setup-node@v4
         if: runner.os == 'macOS'
@@ -167,8 +213,15 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           mkdir -p ui/dist
-          if [ ! -d ui/dist/Datum.app ] && [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
-            cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+          if [ ! -d ui/dist/Datum.app ]; then
+            if [ -d ui/target/dx/Datum/release/macos/Datum.app ]; then
+              cp -R ui/target/dx/Datum/release/macos/Datum.app ui/dist/
+            else
+              APP=$(find ui/target/dx -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+              if [ -n "$APP" ]; then
+                cp -R "$APP" ui/dist/Datum.app
+              fi
+            fi
           fi
           test -d ui/dist/Datum.app
           ./ui/packaging/dmg/mk-dmg-icns-from-linux-png.sh
@@ -197,11 +250,22 @@ jobs:
           # sentry-cli has nothing to symbolicate against on macOS, so we run
           # dsymutil manually and stage the result outside the .app bundle so
           # it doesn't get packaged into the DMG.
-          BIN="ui/target/dx/Datum/release/macos/Datum.app/Contents/MacOS/Datum"
+          APP="ui/dist/Datum.app"
+          if [ ! -d "$APP" ]; then
+            APP=$(find ui/target/dx -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+          fi
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "macOS .app not found (expected ui/dist/Datum.app after DMG step)" >&2
+            find ui/target/dx -type d -name '*.app' 2>/dev/null | head -20 >&2 || true
+            exit 1
+          fi
+          EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          BIN="$APP/Contents/MacOS/$EXEC"
           DSYM_DIR="$RUNNER_TEMP/dsyms"
           mkdir -p "$DSYM_DIR"
           if [ ! -f "$BIN" ]; then
-            echo "Bundled binary not found at $BIN" >&2
+            echo "Bundled binary not found at $BIN (app: $APP)" >&2
+            ls -la "$APP/Contents/MacOS" >&2 || true
             exit 1
           fi
           dsymutil "$BIN" -o "$DSYM_DIR/Datum.dSYM"
@@ -221,9 +285,18 @@ jobs:
             mkdir -p "$INSTALL_DIR"
             export PATH="$INSTALL_DIR:$PATH"
             curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION=3.2.3 sh
+            MACOS_BIN_DIR="ui/dist/Datum.app/Contents/MacOS"
+            if [ ! -d "$MACOS_BIN_DIR" ]; then
+              APP=$(find ui/target/dx -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+              MACOS_BIN_DIR="${APP}/Contents/MacOS"
+            fi
+            if [ ! -d "$MACOS_BIN_DIR" ]; then
+              echo "Sentry: macOS Contents/MacOS not found under ui/dist or ui/target/dx" >&2
+              exit 1
+            fi
             sentry-cli debug-files upload --include-sources \
               "$RUNNER_TEMP/dsyms" \
-              ui/target/dx/Datum/release/macos/Datum.app/Contents/MacOS/
+              "$MACOS_BIN_DIR"
           else
             echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload"
           fi

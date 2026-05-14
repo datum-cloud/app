@@ -57,9 +57,17 @@ if [[ "$DO_BUNDLE" == true ]]; then
 fi
 
 mkdir -p "$UI_ROOT/dist"
-if [[ ! -d "$UI_ROOT/dist/Datum.app" ]] && [[ -d "$UI_ROOT/target/dx/Datum/release/macos/Datum.app" ]]; then
-  echo "Copying Datum.app from target/dx → dist/"
-  cp -R "$UI_ROOT/target/dx/Datum/release/macos/Datum.app" "$UI_ROOT/dist/"
+if [[ ! -d "$UI_ROOT/dist/Datum.app" ]]; then
+  if [[ -d "$UI_ROOT/target/dx/Datum/release/macos/Datum.app" ]]; then
+    echo "Copying Datum.app from target/dx → dist/"
+    cp -R "$UI_ROOT/target/dx/Datum/release/macos/Datum.app" "$UI_ROOT/dist/"
+  else
+    APP=$(find "$UI_ROOT/target/dx" -path '*/release/macos/*.app' -type d 2>/dev/null | head -1)
+    if [[ -n "$APP" ]]; then
+      echo "Copying $APP → dist/Datum.app"
+      cp -R "$APP" "$UI_ROOT/dist/Datum.app"
+    fi
+  fi
 fi
 
 if [[ ! -d "$UI_ROOT/dist/Datum.app" ]]; then
