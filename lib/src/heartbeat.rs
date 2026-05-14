@@ -8,7 +8,7 @@ use chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use kube::api::{ListParams, Patch, PatchParams};
 use kube::{Api, ResourceExt};
-use n0_error::{Result, StdResultExt};
+use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
 use rand::Rng;
 use serde_json::json;
@@ -23,6 +23,7 @@ use crate::datum_apis::connector::{
 };
 use crate::datum_apis::lease::Lease;
 use crate::datum_cloud::{DatumCloudClient, LoginState};
+use crate::project_control_plane::is_kube_auth_failure;
 
 type ProjectRunner = Arc<
     dyn Fn(
@@ -261,7 +262,15 @@ async fn run_project(
                 continue;
             }
         };
-        let client = pcp.client();
+        // Preflight refresh: ensure the kube client is built from a non-near-expiry token.
+        let client = match pcp.client_refreshed().await {
+            Ok(client) => client,
+            Err(err) => {
+                warn!(%project_id, "heartbeat: failed to refresh pcp client: {err:#}");
+                sleep_with_cancel(backoff.next(), &cancel).await;
+                continue;
+            }
+        };
         let connectors: Api<Connector> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
         let leases: Api<Lease> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
 
@@ -295,6 +304,11 @@ async fn run_project(
                 }
                 Err(err) => {
                     warn!(%project_id, "heartbeat: connector lookup failed: {err:#}");
+                    if is_kube_auth_failure(&err) {
+                        warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                        let _ = datum.auth().logout().await;
+                        return;
+                    }
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
                 }
@@ -331,6 +345,11 @@ async fn run_project(
                         connector = %cached.name,
                         "heartbeat: failed to fetch connector: {err:#}"
                     );
+                    if is_kube_auth_failure(&err) {
+                        warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                        let _ = datum.auth().logout().await;
+                        return;
+                    }
                     cache = None;
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
@@ -364,17 +383,25 @@ async fn run_project(
 
         if cached.last_details.as_ref() != Some(&details_value) {
             let patch = json!({ "status": { "connectionDetails": details_value } });
-            if let Err(err) = connectors
+            match connectors
                 .patch_status(&cached.name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
             {
-                warn!(
-                    %project_id,
-                    connector = %cached.name,
-                    "heartbeat: failed to patch connection details: {err:#}"
-                );
-            } else {
-                cached.last_details = Some(patch["status"]["connectionDetails"].clone());
+                Ok(_) => {
+                    cached.last_details = Some(patch["status"]["connectionDetails"].clone());
+                }
+                Err(err) => {
+                    warn!(
+                        %project_id,
+                        connector = %cached.name,
+                        "heartbeat: failed to patch connection details: {err:#}"
+                    );
+                    if is_kube_auth_failure(&err) {
+                        warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                        let _ = datum.auth().logout().await;
+                        return;
+                    }
+                }
             }
         }
 
@@ -397,6 +424,11 @@ async fn run_project(
                         lease = %lease_name,
                         "heartbeat: failed to fetch lease: {err:#}"
                     );
+                    if is_kube_auth_failure(&err) {
+                        warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                        let _ = datum.auth().logout().await;
+                        return;
+                    }
                     cache = Some(cached);
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
@@ -417,6 +449,11 @@ async fn run_project(
             .await
         {
             warn!(%project_id, lease = %lease_name, "heartbeat: lease renew failed: {err:#}");
+            if is_kube_auth_failure(&err) {
+                warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                let _ = datum.auth().logout().await;
+                return;
+            }
             cache = Some(cached);
             sleep_with_cancel(backoff.next(), &cancel).await;
             continue;
@@ -438,21 +475,27 @@ async fn probe_connector(
     provider: Arc<dyn HeartbeatDetailsProvider>,
 ) -> Result<bool> {
     let pcp = datum.project_control_plane_client(project_id).await?;
-    let client = pcp.client();
-    let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
     let selector = provider.endpoint_id();
-    Ok(find_connector(&connectors, selector).await?.is_some())
+    let result = pcp
+        .with_auth_retry(|client| {
+            let selector = selector.clone();
+            async move {
+                let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+                Ok(find_connector(&connectors, selector).await?.is_some())
+            }
+        })
+        .await?;
+    Ok(result)
 }
 
 async fn find_connector(
     connectors: &Api<Connector>,
     endpoint_id: String,
-) -> Result<Option<Connector>> {
+) -> kube::Result<Option<Connector>> {
     let selector = format!("status.connectionDetails.publicKey.id={endpoint_id}");
     let list = connectors
         .list(&ListParams::default().fields(&selector))
-        .await
-        .std_context("failed to list connectors")?;
+        .await?;
     if list.items.is_empty() {
         return Ok(None);
     }

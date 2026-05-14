@@ -405,6 +405,10 @@ impl StatelessClient {
             .with_std_context(|_| format!("Failed to fetch user profile from {url}"))?;
 
         let status = res.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            warn!(%url, "User profile fetch returned {status}");
+            return Err(Unauthorized.into());
+        }
         if !status.is_success() {
             let text = match res.text().await {
                 Ok(text) => text,
@@ -426,6 +430,13 @@ impl StatelessClient {
 #[stack_error(derive)]
 #[error("Not logged in")]
 pub struct NotLoggedIn;
+
+/// The server rejected the access token even after attempting a forced refresh.
+/// The caller has already cleared the local auth state, so consumers can rely on
+/// `login_state_watch` to drive a redirect to the login screen.
+#[stack_error(derive)]
+#[error("Authentication failed; signed out")]
+pub struct Unauthorized;
 
 #[derive(Default, Debug)]
 pub struct MaybeAuth(Option<AuthState>);
@@ -714,8 +725,63 @@ impl AuthClient {
         Ok(())
     }
 
-    /// Refresh the user profile from the API without refreshing tokens
+    /// Force a token refresh even if the access token is not near expiry.
+    ///
+    /// Used by API callers when the server rejects an apparently-valid token
+    /// (e.g. token revoked server-side, key rotation, perm change). On failure
+    /// the local auth state is cleared so the UI redirects to login.
+    pub async fn force_refresh(&self) -> Result<()> {
+        let auth = self.state.load();
+        let auth = auth.get()?;
+        let client = self.ensure_fresh_client().await?;
+        let new_auth = match client.refresh(&auth.tokens).await {
+            Ok(auth) => auth,
+            Err(err) => {
+                warn!("Failed to force-refresh auth tokens, logging out: {err:#}");
+                self.state.set(None).await?;
+                Err(err).context("Failed to force-refresh auth tokens, needs login")?
+            }
+        };
+        self.state.set(Some(new_auth)).await?;
+        Ok(())
+    }
+
+    /// Refresh the user profile from the API without refreshing tokens.
+    ///
+    /// If the API rejects the access token (401/403), this attempts one forced refresh
+    /// and retries. If the retry also fails with an auth error, the local auth state
+    /// is cleared and [`Unauthorized`] is returned. The watch on `login_state` then
+    /// drives a redirect to the login screen.
     pub async fn refresh_profile(&self) -> Result<()> {
+        match self.try_fetch_profile_once().await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.downcast_ref::<Unauthorized>().is_some() => {
+                warn!("refresh_profile: server rejected token; forcing refresh");
+            }
+            Err(err) => return Err(err),
+        }
+
+        // One forced refresh and retry. If anything in this branch fails we treat it
+        // as a hard logout signal so the user doesn't sit on a half-functional session.
+        if let Err(err) = self.force_refresh().await {
+            warn!("refresh_profile: forced refresh failed: {err:#}");
+            // force_refresh already cleared local auth on failure.
+            return Err(Unauthorized.into());
+        }
+        match self.try_fetch_profile_once().await {
+            Ok(()) => Ok(()),
+            Err(err) if err.downcast_ref::<Unauthorized>().is_some() => {
+                warn!("refresh_profile: auth failure persisted after refresh; logging out");
+                if let Err(e) = self.logout().await {
+                    warn!("refresh_profile: failed to clear auth state: {e:#}");
+                }
+                Err(Unauthorized.into())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn try_fetch_profile_once(&self) -> Result<()> {
         let auth = self.state.load();
         let auth = auth.get()?;
         let user_id = auth.profile.user_id.clone();

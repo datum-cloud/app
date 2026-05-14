@@ -3,6 +3,7 @@ use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
     HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelService, TunnelSummary,
 };
+use std::collections::HashSet;
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -13,6 +14,13 @@ pub struct AppState {
     heartbeat: HeartbeatAgent,
     tunnel_refresh: std::sync::Arc<Notify>,
     tunnel_cache: dioxus::signals::Signal<Vec<TunnelSummary>>,
+    /// IDs of tunnels we've just deleted locally but whose backend resources
+    /// (HTTPProxy + ConnectorAdvertisement + …) may still appear in the next
+    /// few `list_active` polls while Kubernetes is reaping them. Tombstones
+    /// suppress the UI from showing a half-deleted tunnel with the toggle
+    /// flipped off; they are cleared automatically by `proxies_list` once the
+    /// API stops returning the ID.
+    pending_deletions: dioxus::signals::Signal<HashSet<String>>,
 }
 
 impl AppState {
@@ -32,6 +40,7 @@ impl AppState {
             heartbeat,
             tunnel_refresh: std::sync::Arc::new(Notify::new()),
             tunnel_cache: dioxus::signals::Signal::new(Vec::new()),
+            pending_deletions: dioxus::signals::Signal::new(HashSet::new()),
         };
         Ok(app_state)
     }
@@ -89,6 +98,36 @@ impl AppState {
         let mut list = cache();
         list.retain(|item| item.id != tunnel_id);
         cache.set(list);
+    }
+
+    pub fn pending_deletions(&self) -> dioxus::signals::Signal<HashSet<String>> {
+        self.pending_deletions
+    }
+
+    /// Mark a tunnel as deleted locally. Subsequent `list_active` polls will
+    /// suppress this ID from the merged tunnel list until the API stops
+    /// returning it (handled by `proxies_list`).
+    pub fn add_pending_deletion(&self, tunnel_id: String) {
+        let mut signal = self.pending_deletions;
+        let mut set = signal();
+        set.insert(tunnel_id);
+        signal.set(set);
+    }
+
+    /// Drop tombstones for IDs the backend no longer reports — typically
+    /// called from the poll loop with the latest API-returned IDs so a
+    /// re-created tunnel with the same name can reappear later.
+    pub fn reconcile_pending_deletions(&self, api_ids: &HashSet<String>) {
+        let mut signal = self.pending_deletions;
+        let set = signal();
+        let next: HashSet<String> = set
+            .iter()
+            .filter(|id| api_ids.contains(*id))
+            .cloned()
+            .collect();
+        if next.len() != set.len() {
+            signal.set(next);
+        }
     }
 
     pub fn selected_context(&self) -> Option<SelectedContext> {
