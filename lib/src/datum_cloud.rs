@@ -19,6 +19,7 @@ pub use self::{
 };
 
 mod auth;
+pub mod datumctl;
 mod env;
 
 const ORGS_PROJECTS_DEDUP_WINDOW: StdDuration = StdDuration::from_secs(2);
@@ -35,7 +36,7 @@ pub struct DatumCloudClient {
 
 impl DatumCloudClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
-        let auth = AuthClient::with_repo(env, repo.clone()).await?;
+        let auth = AuthClient::with_repo(env.clone(), repo.clone()).await?;
         let session = SessionStateWrapper::from_repo(Some(repo)).await?;
         let http = reqwest::Client::builder()
             .user_agent(datum_http_user_agent())
@@ -54,7 +55,7 @@ impl DatumCloudClient {
     }
 
     pub async fn new(env: ApiEnv) -> Result<Self> {
-        let auth = AuthClient::new(env).await?;
+        let auth = AuthClient::new(env.clone()).await?;
         let session = SessionStateWrapper::empty();
         let http = reqwest::Client::builder()
             .user_agent(datum_http_user_agent())
@@ -72,15 +73,48 @@ impl DatumCloudClient {
         Ok(client)
     }
 
+    /// Build a client that delegates auth + selected-project lookup to a sibling `datumctl`
+    /// install. Reads `~/.datumctl/config` for the active session and selected context, and
+    /// shells out to `datumctl auth get-token` per API call. Does not run its own OAuth
+    /// flow and does not write any state to disk.
+    ///
+    /// `project_override` pins a specific project (e.g. CLI `--project` flag) instead of
+    /// using whatever is set in datumctl's current-context.
+    pub async fn with_datumctl(project_override: Option<String>) -> Result<Self> {
+        let resolved = datumctl::resolve(project_override).await?;
+        let env = ApiEnv::from_api_url(&resolved.api_url);
+        let auth = AuthClient::with_datumctl(
+            env.clone(),
+            resolved.profile,
+            Some(resolved.session_name),
+        );
+        let session = SessionStateWrapper::empty();
+        session
+            .set_selected_context(Some(resolved.selected_context))
+            .await?;
+        let http = reqwest::Client::builder()
+            .user_agent(datum_http_user_agent())
+            .build()
+            .anyerr()?;
+        Ok(Self {
+            env,
+            auth,
+            http,
+            session,
+            orgs_projects_fetch_gate: Arc::new(Mutex::new(None)),
+            _session_task: None,
+        })
+    }
+
     pub fn login_state(&self) -> LoginState {
         self.auth.login_state()
     }
 
-    pub fn api_url(&self) -> &'static str {
+    pub fn api_url(&self) -> &str {
         self.env.api_url()
     }
 
-    pub fn web_url(&self) -> &'static str {
+    pub fn web_url(&self) -> &str {
         self.env.web_url()
     }
 

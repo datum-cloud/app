@@ -31,6 +31,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Refresh auth or relogin if access token is valid for less than 30min
 const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProvider {
     pub issuer_url: String,
     pub client_id: String,
@@ -136,7 +137,8 @@ pub struct StatelessClient {
 
 impl StatelessClient {
     pub async fn new(env: ApiEnv) -> Result<Self> {
-        Self::with_provider(env, env.auth_provider()).await
+        let provider = env.auth_provider();
+        Self::with_provider(env, provider).await
     }
 
     pub async fn with_provider(env: ApiEnv, provider: AuthProvider) -> Result<Self> {
@@ -532,19 +534,28 @@ pub struct AuthClient {
     env: ApiEnv,
     /// OIDC client with JWKs. Swapped before each login/refresh so we always have fresh keys
     /// (avoids "No matching key found" when Datum Cloud rotates signing keys; datum-cloud/app#121).
-    client: Arc<ArcSwap<StatelessClient>>,
+    /// `None` for datumctl-backed clients, which never run their own OAuth flow.
+    client: Option<Arc<ArcSwap<StatelessClient>>>,
     _refresh_task: Option<Arc<n0_future::task::AbortOnDropHandle<()>>>,
+    datumctl: Option<Arc<DatumctlAuth>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DatumctlAuth {
+    pub profile: UserProfile,
+    pub session_name: Option<String>,
 }
 
 impl AuthClient {
     pub async fn with_repo(env: ApiEnv, repo: Repo) -> Result<Self> {
         let auth = AuthStateWrapper::from_repo(repo, env.oauth_storage_key()).await?;
-        let auth_client = Arc::new(StatelessClient::new(env).await?);
+        let auth_client = Arc::new(StatelessClient::new(env.clone()).await?);
         let mut client = Self {
             state: auth,
             env,
-            client: Arc::new(ArcSwap::new(auth_client)),
+            client: Some(Arc::new(ArcSwap::new(auth_client))),
             _refresh_task: None,
+            datumctl: None,
         };
         client.start_refresh_loop();
         Ok(client)
@@ -552,23 +563,51 @@ impl AuthClient {
 
     pub async fn new(env: ApiEnv) -> Result<Self> {
         let auth = AuthStateWrapper::empty();
-        let auth_client = Arc::new(StatelessClient::new(env).await?);
+        let auth_client = Arc::new(StatelessClient::new(env.clone()).await?);
         let mut client = Self {
             state: auth,
             env,
-            client: Arc::new(ArcSwap::new(auth_client)),
+            client: Some(Arc::new(ArcSwap::new(auth_client))),
             _refresh_task: None,
+            datumctl: None,
         };
         client.start_refresh_loop();
         Ok(client)
     }
 
+    /// Build an AuthClient that sources tokens from a sibling `datumctl` install. Does not
+    /// run its own OAuth flow; `login`/`logout`/`refresh`/`refresh_profile` will error.
+    pub(super) fn with_datumctl(
+        env: ApiEnv,
+        profile: UserProfile,
+        session_name: Option<String>,
+    ) -> Self {
+        Self {
+            state: AuthStateWrapper::empty(),
+            env,
+            client: None,
+            _refresh_task: None,
+            datumctl: Some(Arc::new(DatumctlAuth {
+                profile,
+                session_name,
+            })),
+        }
+    }
+
+    fn is_datumctl(&self) -> bool {
+        self.datumctl.is_some()
+    }
+
     /// Fetch fresh OIDC provider metadata (including JWKs) and swap in a new client.
     /// Call before login/refresh to avoid "No matching key found" when keys rotate.
     async fn ensure_fresh_client(&self) -> Result<Arc<StatelessClient>> {
-        let fresh =
-            Arc::new(StatelessClient::with_provider(self.env, self.env.auth_provider()).await?);
-        self.client.store(fresh.clone());
+        let client = self.client.as_ref().std_context(
+            "OIDC flow is disabled on datumctl-backed AuthClient (manage credentials with datumctl)",
+        )?;
+        let fresh = Arc::new(
+            StatelessClient::with_provider(self.env.clone(), self.env.auth_provider()).await?,
+        );
+        client.store(fresh.clone());
         Ok(fresh)
     }
 
@@ -643,6 +682,23 @@ impl AuthClient {
     }
 
     pub async fn load_refreshed(&self) -> Result<Arc<MaybeAuth>> {
+        if let Some(datumctl) = self.datumctl.clone() {
+            let token =
+                super::datumctl::fetch_access_token(datumctl.session_name.as_deref()).await?;
+            let new_auth = AuthState {
+                tokens: AuthTokens {
+                    access_token: AccessToken::new(token),
+                    refresh_token: None,
+                    issued_at: chrono::Utc::now(),
+                    // datumctl handles refresh; we always fetch fresh, so the expiry is
+                    // only used to keep `login_state()` reporting `Valid`.
+                    expires_in: Duration::from_secs(3600),
+                },
+                profile: datumctl.profile.clone(),
+            };
+            self.state.set(Some(new_auth)).await?;
+            return Ok(self.state.load());
+        }
         let state = self.state.load();
         match state.get() {
             Err(_) => Ok(state),
@@ -655,11 +711,21 @@ impl AuthClient {
     }
 
     pub async fn logout(&self) -> Result<()> {
+        if self.is_datumctl() {
+            n0_error::bail_any!(
+                "logout is managed by datumctl. Run `datumctl auth logout`."
+            );
+        }
         self.state.set(None).await?;
         Ok(())
     }
 
     pub async fn login(&self) -> Result<()> {
+        if self.is_datumctl() {
+            n0_error::bail_any!(
+                "login is managed by datumctl. Run `datumctl auth login`."
+            );
+        }
         let auth = self.state.load();
         let auth = match auth.get() {
             Err(_) => {
@@ -700,6 +766,11 @@ impl AuthClient {
     }
 
     pub async fn refresh(&self) -> Result<()> {
+        if self.is_datumctl() {
+            n0_error::bail_any!(
+                "token refresh is managed by datumctl. Tokens are re-fetched on demand."
+            );
+        }
         let auth = self.state.load();
         let auth = auth.get()?;
         let client = self.ensure_fresh_client().await?;
@@ -717,11 +788,18 @@ impl AuthClient {
 
     /// Refresh the user profile from the API without refreshing tokens
     pub async fn refresh_profile(&self) -> Result<()> {
+        if self.is_datumctl() {
+            n0_error::bail_any!(
+                "user profile is managed by datumctl. Re-run `datumctl auth login` to update."
+            );
+        }
         let auth = self.state.load();
         let auth = auth.get()?;
         let user_id = auth.profile.user_id.clone();
         let new_profile = self
             .client
+            .as_ref()
+            .std_context("OIDC client unavailable")?
             .load()
             .fetch_user_profile(&auth.tokens, &user_id)
             .await?;
