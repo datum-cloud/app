@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use data_encoding::BASE64URL_NOPAD;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -135,7 +136,14 @@ pub async fn read_config() -> Result<DatumctlConfig> {
 /// the cache we trust the user and pass through with the project_id alone.
 pub async fn resolve(project_override: Option<String>) -> Result<ResolvedSession> {
     let config = read_config().await?;
-    resolve_from_config(&config, project_override)
+    let mut resolved = resolve_from_config(&config, project_override)?;
+    // datumctl's session.user-key holds the user's email, but the IAM API at
+    // /apis/iam.miloapis.com/v1alpha1/users/{user_id} requires the OIDC subject.
+    // Pull a fresh access token and read its `sub` claim.
+    let token = fetch_access_token(Some(&resolved.session_name)).await?;
+    resolved.profile.user_id = decode_jwt_sub(&token)
+        .std_context("Failed to extract user ID from datumctl access token")?;
+    Ok(resolved)
 }
 
 pub fn resolve_from_config(
@@ -269,4 +277,57 @@ pub async fn fetch_access_token(session_name: Option<&str>) -> Result<String> {
         n0_error::bail_any!("datumctl returned an empty access token");
     }
     Ok(token)
+}
+
+/// Extract the `sub` claim from a JWT access token without verifying its signature.
+/// We rely on datumctl to have already validated the token; we only need the subject
+/// to build IAM API paths like `/apis/iam.miloapis.com/v1alpha1/users/{sub}`.
+fn decode_jwt_sub(token: &str) -> Result<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        n0_error::bail_any!(
+            "access token is not a JWT (expected 3 dot-separated segments, got {})",
+            parts.len()
+        );
+    }
+    let payload_bytes = BASE64URL_NOPAD
+        .decode(parts[1].as_bytes())
+        .std_context("Failed to base64url-decode JWT payload")?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)
+        .std_context("Failed to parse JWT payload as JSON")?;
+    payload
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .std_context("JWT payload is missing `sub` claim")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_jwt(payload_json: &str) -> String {
+        let header = BASE64URL_NOPAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
+        let payload = BASE64URL_NOPAD.encode(payload_json.as_bytes());
+        let sig = BASE64URL_NOPAD.encode(b"sig");
+        format!("{header}.{payload}.{sig}")
+    }
+
+    #[test]
+    fn decode_jwt_sub_reads_subject_claim() {
+        let token = make_jwt(r#"{"sub":"user-abc123","email":"a@b.com"}"#);
+        assert_eq!(decode_jwt_sub(&token).unwrap(), "user-abc123");
+    }
+
+    #[test]
+    fn decode_jwt_sub_rejects_non_jwt() {
+        assert!(decode_jwt_sub("not-a-jwt").is_err());
+        assert!(decode_jwt_sub("a.b").is_err());
+    }
+
+    #[test]
+    fn decode_jwt_sub_rejects_missing_sub() {
+        let token = make_jwt(r#"{"email":"a@b.com"}"#);
+        assert!(decode_jwt_sub(&token).is_err());
+    }
 }
