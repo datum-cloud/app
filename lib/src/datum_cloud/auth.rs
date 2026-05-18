@@ -894,8 +894,6 @@ mod redirect_server {
     static LOGIN_SUCCESS_PNG: &[u8] = include_bytes!("../../../ui/assets/images/login-success.png");
     static ALLIANCE_NO1_REGULAR_TTF: &[u8] =
         include_bytes!("../../../ui/assets/fonts/AllianceNo1-Regular.ttf");
-    static FAVICON_LIGHT_32: &[u8] =
-        include_bytes!("../../../ui/assets/icons/favicon-light-32x32.png");
     static FAVICON_DARK_32: &[u8] =
         include_bytes!("../../../ui/assets/icons/favicon-dark-32x32.png");
 

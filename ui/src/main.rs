@@ -13,7 +13,7 @@ use crate::views::{
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
     trayicon::{
-        menu::{IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem},
+        menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem},
         Icon, TrayIcon, TrayIconBuilder,
     },
     use_muda_event_handler, use_window,
@@ -88,8 +88,10 @@ pub struct DiagnosticsContext {
     pub prompted: Signal<bool>,
 }
 
-// Assets for favicons
+// Assets for favicons (macOS title bar only)
+#[cfg(target_os = "macos")]
 const FAVICON_DARK_196: Asset = asset!("/assets/icons/favicon-dark-196x196.png");
+#[cfg(target_os = "macos")]
 const FAVICON_LIGHT_196: Asset = asset!("/assets/icons/favicon-light-196x196.png");
 
 #[cfg(all(feature = "desktop", target_os = "macos"))]
@@ -171,7 +173,7 @@ fn main() {
             .with_has_shadow(true)
             .with_fullsize_content_view(true);
 
-        let mut config = Config::new()
+        let config = Config::new()
             // Make "close" behave like hide, so the tray icon can restore it.
             .with_close_behaviour(WindowCloseBehaviour::WindowHides)
             .with_window(window_builder);
@@ -210,14 +212,13 @@ fn init_tracing() {
 #[component]
 fn TitleBar() -> Element {
     let IsLoginPageSignal(is_login_page) = consume_context::<IsLoginPageSignal>();
-    let title_bar_bg = if is_login_page() {
-        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-[var(--midnight-fjord)]"
-    } else {
-        "h-[32px] flex items-center pl-20 z-50 cursor-default bg-background"
-    };
-
     #[cfg(target_os = "macos")]
     {
+        let title_bar_bg = if is_login_page() {
+            "h-[32px] flex items-center pl-20 z-50 cursor-default bg-[var(--midnight-fjord)]"
+        } else {
+            "h-[32px] flex items-center pl-20 z-50 cursor-default bg-background"
+        };
         rsx! {
             div {
                 class: "{title_bar_bg}",
@@ -254,13 +255,13 @@ fn TitleBar() -> Element {
 #[component]
 fn App() -> Element {
     let mut app_state_ready = use_signal(|| false);
-    let mut installing_update =
+    let installing_update =
         use_signal(|| std::env::var("DATUM_UPDATE_FAKE_INSTALLING").as_deref() == Ok("1"));
-    let mut manual_update_check = use_signal(|| false);
-    let mut update_check_in_progress = use_signal(|| false);
-    let mut update_downloading = use_signal(|| false);
+    let manual_update_check = use_signal(|| false);
+    let update_check_in_progress = use_signal(|| false);
+    let update_downloading = use_signal(|| false);
     let mut update_ready = use_signal(|| None::<PendingUpdate>);
-    let mut has_pending_install = use_signal(|| false);
+    let has_pending_install = use_signal(|| false);
     let mut pending_update_info = use_signal(|| None::<lib::UpdateInfo>);
     let mut install_now_trigger = use_signal(|| false);
     let update_channel = use_signal(|| lib::UpdateChannel::infer_from_installed_version());
@@ -391,8 +392,8 @@ fn App() -> Element {
                 tracing::info!("DATUM_UPDATE_FAKE=1: injected fake update ready");
 
                 // Still run the loop to handle Later/Install now, but skip real updates
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<PendingUpdate>>();
-                let checker = lib::UpdateChecker::new(repo.clone());
+                let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<PendingUpdate>>();
+                let _checker = lib::UpdateChecker::new(repo.clone());
                 let mut last_periodic_check = std::time::Instant::now();
                 loop {
                     tokio::select! {

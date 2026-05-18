@@ -17,6 +17,7 @@ pub enum SelectAlign {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SelectSize {
     Default,
+    #[allow(dead_code)]
     Small,
 }
 

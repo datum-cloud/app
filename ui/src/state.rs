@@ -48,10 +48,6 @@ impl AppState {
         &self.heartbeat
     }
 
-    pub fn listen_node(&self) -> &ListenNode {
-        &self.node().listen
-    }
-
     pub fn tunnel_service(&self) -> TunnelService {
         TunnelService::new(self.datum.clone(), self.node.listen.clone())
     }
