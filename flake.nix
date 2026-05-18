@@ -47,7 +47,7 @@
           gtk3
           libsoup_3
           # X11 dependencies
-          xdo
+          xdotool
           xorg.libX11
           xorg.libXcursor
           xorg.libXrandr
@@ -229,8 +229,8 @@
           # Environment variables
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
-          # For OpenSSL on macOS
-          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+          RUSTFLAGS = pkgs.lib.optionalString pkgs.stdenv.isLinux
+            "-L${pkgs.xdotool}/lib";
 
           shellHook = ''
             echo "🚀 Dioxus development environment loaded"
