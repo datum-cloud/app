@@ -3,6 +3,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod dns_dev;
 mod tunnel_dev;
 
+// Ensure rustls crypto provider is installed
+use rustls::crypto::{ring as rustls_ring, CryptoProvider};
+
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
     ProxyState, Repo, SelectedContext, TcpProxyData, TunnelService,
@@ -268,6 +271,9 @@ pub enum TunnelCommands {
 
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
+    // Install the ring-based crypto provider for rustls
+    let _ = rustls_ring::default_provider().install_default();
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
