@@ -302,15 +302,18 @@ impl TunnelService {
         proxy = proxies
             .create(&PostParams::default(), &proxy)
             .await
-            .std_context("Failed to create HTTPProxy")
-            .inspect_err(|err| {
+            .map_err(|err| {
                 warn!(
                     %project_id,
                     connector = %connector_name,
                     endpoint = %endpoint,
                     "HTTPProxy create failed: {err:#}"
                 );
-            })?;
+                format_quota_error(&err, "HTTPProxy").unwrap_or_else(|| {
+                    format!("Failed to create HTTPProxy: {err}")
+                })
+            })
+            .map_err(|err| n0_error::anyerr!(err))?;
         let proxy_name = proxy.name_any();
         debug!(
             %project_id,
@@ -336,15 +339,18 @@ impl TunnelService {
         };
         ads.create(&PostParams::default(), &ad)
             .await
-            .std_context("Failed to create ConnectorAdvertisement")
-            .inspect_err(|err| {
+            .map_err(|err| {
                 warn!(
                     %project_id,
                     proxy = %proxy_name,
                     connector = %connector_name,
                     "ConnectorAdvertisement create failed: {err:#}"
                 );
-            })?;
+                format_quota_error(&err, "ConnectorAdvertisement").unwrap_or_else(|| {
+                    format!("Failed to create ConnectorAdvertisement: {err}")
+                })
+            })
+            .map_err(|err| n0_error::anyerr!(err))?;
         debug!(
             %project_id,
             proxy = %proxy_name,
@@ -390,14 +396,17 @@ impl TunnelService {
             };
             tpps.create(&PostParams::default(), &tpp)
                 .await
-                .std_context("Failed to create TrafficProtectionPolicy")
-                .inspect_err(|err| {
+                .map_err(|err| {
                     warn!(
                         %project_id,
                         proxy = %proxy_name,
                         "TrafficProtectionPolicy create failed: {err:#}"
                     );
-                })?;
+                    format_quota_error(&err, "TrafficProtectionPolicy").unwrap_or_else(|| {
+                        format!("Failed to create TrafficProtectionPolicy: {err}")
+                    })
+                })
+                .map_err(|err| n0_error::anyerr!(err))?;
             debug!(
                 %project_id,
                 proxy = %proxy_name,
@@ -1135,6 +1144,21 @@ async fn patch_device_annotations(api: &Api<Connector>, connector: &mut Connecto
             );
         }
     }
+}
+
+fn format_quota_error(err: &dyn std::error::Error, resource_type: &str) -> Option<String> {
+    let err_msg = err.to_string();
+    if err_msg.contains("quota") || err_msg.contains("Insufficient quota") {
+        return Some(format!(
+            "Quota limit exceeded for {resource_type} resources.\n\n\
+            You've reached the limit for creating {resource_type} resources in this project.\n\n\
+            To fix this, you can:\n  \
+            - Delete unused tunnels to free up capacity\n  \
+            - Contact support to request a higher quota limit\n\n\
+            Run 'tunnel list' to see existing tunnels."
+        ));
+    }
+    None
 }
 
 fn publish_tickets_enabled() -> bool {
