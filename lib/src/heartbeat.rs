@@ -252,10 +252,36 @@ fn is_unauthorized(err: &kube::Error) -> bool {
 /// when the token is near expiry, so a server-side rejection that arrives early
 /// (clock skew, revocation, etc.) would otherwise leave the heartbeat retrying
 /// with the same dead token until the timer eventually fires.
+///
+/// When auth is already in [`LoginState::Missing`] (e.g. after a previous
+/// permanent refresh failure), this returns immediately without contacting the
+/// IdP — the auth layer has already surfaced the loss to the operator and
+/// there is nothing to refresh until they log in again.
 async fn force_refresh_auth(project_id: &str, datum: &DatumCloudClient) {
+    if matches!(datum.auth().login_state(), LoginState::Missing) {
+        debug!(
+            %project_id,
+            "heartbeat: skipping forced refresh — auth state is missing, awaiting login"
+        );
+        return;
+    }
     match datum.auth().refresh().await {
         Ok(()) => debug!(%project_id, "heartbeat: forced token refresh after 401"),
-        Err(err) => warn!(%project_id, "heartbeat: forced token refresh failed: {err:#}"),
+        Err(err) => {
+            if matches!(datum.auth().login_state(), LoginState::Missing) {
+                // refresh classified the failure as permanent and cleared state;
+                // the auth layer has already error!/eprintln!'d the loss.
+                debug!(
+                    %project_id,
+                    "heartbeat: forced refresh permanently rejected, will resume after re-login"
+                );
+            } else {
+                warn!(
+                    %project_id,
+                    "heartbeat: forced token refresh failed (will retry): {err:#}"
+                );
+            }
+        }
     }
 }
 
