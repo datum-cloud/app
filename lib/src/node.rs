@@ -359,6 +359,21 @@ const BUILD_DATUM_CONNECT_RELAY_URLS: &str = "BUILD_DATUM_CONNECT_RELAY_URLS";
 const STARTUP_RELAY_SELECTION_MAX: usize = 5;
 const STARTUP_RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 
+/// Built-in Datum relay shortlist. Used when neither the runtime env
+/// `DATUM_CONNECT_RELAY_URLS` nor the compile-time env
+/// `BUILD_DATUM_CONNECT_RELAY_URLS` is set. Ensures stock `cargo build` /
+/// `nix run` / IDE builds reach a Datum-routable relay network instead of
+/// silently falling through to the n0 public relays (which the Datum
+/// gateway cannot route through).
+const DEFAULT_DATUM_RELAY_URLS: &str =
+    "iroh-relay.us-east-1.datumconnect.net,iroh-relay.us-west-1.datumconnect.net";
+
+/// Resolve the iroh relay set with explicit precedence:
+///   1. runtime env `DATUM_CONNECT_RELAY_URLS` (operator override)
+///   2. compile-time env `BUILD_DATUM_CONNECT_RELAY_URLS` (CI-injected list)
+///   3. built-in `DEFAULT_DATUM_RELAY_URLS` shortlist
+///   4. iroh's `default_relay_mode()` — n0 public/canary relays. Reaching this
+///      branch means the Datum gateway will not be able to dial this endpoint.
 async fn relay_mode_from_env_or_build() -> Result<iroh::endpoint::RelayMode> {
     if let Ok(raw_urls) = std::env::var(DATUM_CONNECT_RELAY_URLS) {
         match parse_relay_urls(&raw_urls) {
@@ -396,6 +411,27 @@ async fn relay_mode_from_env_or_build() -> Result<iroh::endpoint::RelayMode> {
         }
     }
 
+    match parse_relay_urls(DEFAULT_DATUM_RELAY_URLS) {
+        Ok(relays) => {
+            let relays = select_best_relays_for_startup(relays, STARTUP_RELAY_SELECTION_MAX).await;
+            info!(
+                source = "built-in",
+                count = relays.len(),
+                "using built-in Datum relay shortlist"
+            );
+            return Ok(iroh::endpoint::RelayMode::Custom(relays_to_map(relays)));
+        }
+        Err(err) => {
+            warn!("invalid built-in DEFAULT_DATUM_RELAY_URLS, this is a bug: {err:#}");
+        }
+    }
+
+    warn!(
+        "Falling back to iroh's default public relays (n0). The Datum gateway \
+         cannot route through this relay network — inbound connections to this \
+         endpoint will fail. Set DATUM_CONNECT_RELAY_URLS or fix \
+         DEFAULT_DATUM_RELAY_URLS."
+    );
     Ok(default_relay_mode())
 }
 
@@ -653,5 +689,18 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].host_str(), Some("relay-a.example.com."));
         assert_eq!(parsed[1].host_str(), Some("relay-b.example.com."));
+    }
+
+    #[test]
+    fn built_in_default_relay_list_parses() {
+        let parsed = parse_relay_urls(DEFAULT_DATUM_RELAY_URLS)
+            .expect("DEFAULT_DATUM_RELAY_URLS must parse — guards the runtime fallback path");
+        assert!(
+            !parsed.is_empty(),
+            "DEFAULT_DATUM_RELAY_URLS must yield at least one relay"
+        );
+        for relay in &parsed {
+            assert_eq!(relay.scheme(), "https");
+        }
     }
 }
