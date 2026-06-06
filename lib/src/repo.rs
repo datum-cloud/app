@@ -7,7 +7,7 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use crate::{
     StateWrapper,
     auth::Auth,
-    config::{self, Config, GatewayConfig},
+    config::{Config, GatewayConfig},
     datum_cloud::AuthState,
     state::State,
 };
