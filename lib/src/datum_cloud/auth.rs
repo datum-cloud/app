@@ -234,12 +234,18 @@ impl StatelessClient {
                 None => Err("Missing nonce in ID token".to_string()),
             }
         };
-        let state = self.parse_token_response(tokens, nonce_verifier).await?;
+        let state = self
+            .parse_token_response(tokens, nonce_verifier, None)
+            .await?;
         info!(email=%state.profile.email, expires_at=%state.tokens.expires_at(), "login succesfull");
         Ok(state)
     }
 
-    pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
+    pub async fn refresh(
+        &self,
+        tokens: &AuthTokens,
+        fallback_profile: Option<UserProfile>,
+    ) -> Result<AuthState> {
         let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
         debug!("Refreshing access token");
         let tokens = self
@@ -250,7 +256,7 @@ impl StatelessClient {
             .await
             .std_context("Failed to refresh tokens")?;
         let state = self
-            .parse_token_response(tokens, refresh_nonce_verifier)
+            .parse_token_response(tokens, refresh_nonce_verifier, fallback_profile)
             .await?;
         debug!("Access token refreshed");
         Ok(state)
@@ -260,6 +266,7 @@ impl StatelessClient {
         &self,
         tokens: OidcTokenResponse,
         nonce_verifier: impl NonceVerifier,
+        fallback_profile: Option<UserProfile>,
     ) -> Result<AuthState> {
         // Extract the ID token claims after verifying its authenticity and nonce.
         let id_token = tokens
@@ -312,8 +319,23 @@ impl StatelessClient {
             expires_in: tokens.expires_in().context("Missing expires_in claim")?,
         };
 
-        // Fetch user profile from Datum Cloud API
-        let profile = self.fetch_user_profile(&auth_tokens, &user_id).await?;
+        // Fetch user profile from Datum Cloud API. If the fetch fails but we already
+        // have a profile from a prior login, keep the prior one rather than dropping
+        // the freshly minted tokens. This guards against transient API blips (e.g. a
+        // 401 on /users/{id} while the new access token is still propagating) causing
+        // a full logout. See datum-cloud/app#TBD.
+        let profile = match self.fetch_user_profile(&auth_tokens, &user_id).await {
+            Ok(profile) => profile,
+            Err(err) => match fallback_profile {
+                Some(profile) => {
+                    warn!(
+                        "Profile fetch after token refresh failed, keeping prior profile: {err:#}"
+                    );
+                    profile
+                }
+                None => return Err(err),
+            },
+        };
 
         Ok(AuthState {
             tokens: auth_tokens,
@@ -675,7 +697,10 @@ impl AuthClient {
             }
             Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
                 let client = self.ensure_fresh_client().await?;
-                match client.refresh(&auth.tokens).await {
+                match client
+                    .refresh(&auth.tokens, Some(auth.profile.clone()))
+                    .await
+                {
                     Ok(auth) => auth,
                     Err(err) => {
                         warn!("Failed to refresh auth token: {err:#}");
@@ -703,7 +728,10 @@ impl AuthClient {
         let auth = self.state.load();
         let auth = auth.get()?;
         let client = self.ensure_fresh_client().await?;
-        let new_auth = match client.refresh(&auth.tokens).await {
+        let new_auth = match client
+            .refresh(&auth.tokens, Some(auth.profile.clone()))
+            .await
+        {
             Ok(auth) => auth,
             Err(err) => {
                 warn!("Failed to refresh auth tokens, logging out: {err:#}");
