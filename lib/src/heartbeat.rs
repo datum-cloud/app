@@ -239,6 +239,26 @@ struct ConnectorCache {
     last_home_relay: Option<String>,
 }
 
+/// Returns true if `err` is a kube API error with HTTP status 401.
+/// Used to decide whether a heartbeat retry should force an OAuth token refresh
+/// (the proactive refresh timer in `AuthClient` only fires when the access token
+/// is within `REFRESH_AUTH_WHEN` of expiry, so a token rejected before that
+/// would otherwise spin until the timer catches up).
+fn is_unauthorized(err: &kube::Error) -> bool {
+    matches!(err, kube::Error::Api(e) if e.code == 401)
+}
+
+/// Force an OAuth token refresh after a 401. The proactive timer only refreshes
+/// when the token is near expiry, so a server-side rejection that arrives early
+/// (clock skew, revocation, etc.) would otherwise leave the heartbeat retrying
+/// with the same dead token until the timer eventually fires.
+async fn force_refresh_auth(project_id: &str, datum: &DatumCloudClient) {
+    match datum.auth().refresh().await {
+        Ok(()) => debug!(%project_id, "heartbeat: forced token refresh after 401"),
+        Err(err) => warn!(%project_id, "heartbeat: forced token refresh failed: {err:#}"),
+    }
+}
+
 async fn run_project(
     project_id: String,
     datum: DatumCloudClient,
@@ -295,6 +315,9 @@ async fn run_project(
                 }
                 Err(err) => {
                     warn!(%project_id, "heartbeat: connector lookup failed: {err:#}");
+                    if is_unauthorized(&err) {
+                        force_refresh_auth(&project_id, &datum).await;
+                    }
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
                 }
@@ -331,6 +354,9 @@ async fn run_project(
                         connector = %cached.name,
                         "heartbeat: failed to fetch connector: {err:#}"
                     );
+                    if is_unauthorized(&err) {
+                        force_refresh_auth(&project_id, &datum).await;
+                    }
                     cache = None;
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
@@ -364,17 +390,26 @@ async fn run_project(
 
         if cached.last_details.as_ref() != Some(&details_value) {
             let patch = json!({ "status": { "connectionDetails": details_value } });
-            if let Err(err) = connectors
+            match connectors
                 .patch_status(&cached.name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
             {
-                warn!(
-                    %project_id,
-                    connector = %cached.name,
-                    "heartbeat: failed to patch connection details: {err:#}"
-                );
-            } else {
-                cached.last_details = Some(patch["status"]["connectionDetails"].clone());
+                Ok(_) => {
+                    cached.last_details = Some(patch["status"]["connectionDetails"].clone());
+                }
+                Err(err) => {
+                    warn!(
+                        %project_id,
+                        connector = %cached.name,
+                        "heartbeat: failed to patch connection details: {err:#}"
+                    );
+                    if is_unauthorized(&err) {
+                        force_refresh_auth(&project_id, &datum).await;
+                        cache = Some(cached);
+                        sleep_with_cancel(backoff.next(), &cancel).await;
+                        continue;
+                    }
+                }
             }
         }
 
@@ -397,6 +432,9 @@ async fn run_project(
                         lease = %lease_name,
                         "heartbeat: failed to fetch lease: {err:#}"
                     );
+                    if is_unauthorized(&err) {
+                        force_refresh_auth(&project_id, &datum).await;
+                    }
                     cache = Some(cached);
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
@@ -417,6 +455,9 @@ async fn run_project(
             .await
         {
             warn!(%project_id, lease = %lease_name, "heartbeat: lease renew failed: {err:#}");
+            if is_unauthorized(&err) {
+                force_refresh_auth(&project_id, &datum).await;
+            }
             cache = Some(cached);
             sleep_with_cancel(backoff.next(), &cancel).await;
             continue;
@@ -441,18 +482,20 @@ async fn probe_connector(
     let client = pcp.client();
     let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
     let selector = provider.endpoint_id();
-    Ok(find_connector(&connectors, selector).await?.is_some())
+    Ok(find_connector(&connectors, selector)
+        .await
+        .std_context("connector lookup failed")?
+        .is_some())
 }
 
 async fn find_connector(
     connectors: &Api<Connector>,
     endpoint_id: String,
-) -> Result<Option<Connector>> {
+) -> kube::Result<Option<Connector>> {
     let selector = format!("status.connectionDetails.publicKey.id={endpoint_id}");
     let list = connectors
         .list(&ListParams::default().fields(&selector))
-        .await
-        .std_context("failed to list connectors")?;
+        .await?;
     if list.items.is_empty() {
         return Ok(None);
     }
