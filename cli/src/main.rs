@@ -9,7 +9,7 @@ use rustls::crypto::{ring as rustls_ring, CryptoProvider};
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
     ProxyState, Repo, SelectedContext, TcpProxyData, TunnelService,
-    datum_cloud::{ApiEnv, DatumCloudClient},
+    datum_cloud::{ApiEnv, DatumCloudClient, LoginState},
 };
 use n0_error::StdResultExt;
 use std::{
@@ -668,7 +668,40 @@ async fn main() -> n0_error::Result<()> {
                     }
                     println!("Press Ctrl+C to stop...");
 
-                    tokio::signal::ctrl_c().await?;
+                    // Watch login state so a permanent auth loss mid-session
+                    // (refresh token expired or revoked at the IdP) surfaces to
+                    // the operator immediately, with reconnection guidance —
+                    // not just buried in tracing output.
+                    let mut login_rx = datum.auth().login_state_watch();
+                    let mut last_state = *login_rx.borrow();
+                    loop {
+                        tokio::select! {
+                            res = tokio::signal::ctrl_c() => {
+                                res?;
+                                break;
+                            }
+                            res = login_rx.changed() => {
+                                if res.is_err() { break; }
+                                let new_state = *login_rx.borrow();
+                                if new_state == LoginState::Missing
+                                    && last_state != LoginState::Missing
+                                {
+                                    eprintln!();
+                                    eprintln!("================================================================");
+                                    eprintln!("  Datum login has expired or been revoked.");
+                                    eprintln!("  The tunnel will stop accepting new connections until you");
+                                    eprintln!("  log in again. Stop this command (Ctrl+C) and run:");
+                                    eprintln!();
+                                    eprintln!("      datum-connect login");
+                                    eprintln!();
+                                    eprintln!("  Then restart the tunnel listener.");
+                                    eprintln!("================================================================");
+                                    eprintln!();
+                                }
+                                last_state = new_state;
+                            }
+                        }
+                    }
                     println!();
                     println!("Disabling tunnel...");
                     service.set_enabled_active(&tunnel_id, false).await?;

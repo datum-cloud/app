@@ -245,19 +245,38 @@ impl StatelessClient {
         &self,
         tokens: &AuthTokens,
         fallback_profile: Option<UserProfile>,
-    ) -> Result<AuthState> {
-        let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
+    ) -> std::result::Result<AuthState, RefreshError> {
+        let refresh_token = tokens.refresh_token.as_ref().ok_or_else(|| {
+            // No stored refresh token means we cannot exchange anything; only an
+            // interactive login can repopulate it.
+            RefreshError::Permanent(anyerr!("No refresh token available"))
+        })?;
         debug!("Refreshing access token");
-        let tokens = self
+        let refresh_req = self
             .oidc
             .exchange_refresh_token(refresh_token)
-            .std_context("Missing OIDC provider metadata")?
-            .request_async(&self.http)
-            .await
-            .std_context("Failed to refresh tokens")?;
+            .std_context("Missing OIDC provider metadata")
+            .map_err(RefreshError::Transient)?;
+        let tokens = match refresh_req.request_async(&self.http).await {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                let permanent = classify_oidc_refresh_error(&err);
+                let wrapped = anyerr!("OAuth refresh exchange failed: {err}");
+                return Err(if permanent {
+                    RefreshError::Permanent(wrapped)
+                } else {
+                    RefreshError::Transient(wrapped)
+                });
+            }
+        };
+        // ID token verification failures (e.g. stale JWKs after key rotation)
+        // are transient: ensure_fresh_client() on the next attempt refetches
+        // provider metadata. Profile-fetch failures are already handled by
+        // fallback_profile inside parse_token_response.
         let state = self
             .parse_token_response(tokens, refresh_nonce_verifier, fallback_profile)
-            .await?;
+            .await
+            .map_err(RefreshError::Transient)?;
         debug!("Access token refreshed");
         Ok(state)
     }
@@ -449,6 +468,68 @@ impl StatelessClient {
 #[stack_error(derive)]
 #[error("Not logged in")]
 pub struct NotLoggedIn;
+
+/// Outcome classification for a token refresh attempt.
+///
+/// The distinction matters for the heartbeat loop and the listener: a
+/// `Transient` failure should keep auth state intact and let the next retry
+/// recover, while a `Permanent` failure means the OAuth provider has
+/// definitively rejected our credentials and only a fresh interactive login
+/// can recover. Treating every refresh failure as permanent — which the
+/// previous implementation did — meant a 30-second IdP wobble would log a
+/// long-running tunnel out.
+#[derive(Debug)]
+pub enum RefreshError {
+    /// The IdP definitively rejected the refresh (typically `invalid_grant`,
+    /// `invalid_client`, etc.). Auth state has been cleared; the operator
+    /// must log in again.
+    Permanent(n0_error::AnyError),
+    /// Transient failure (network, IdP 5xx, parse error, ID-token claim
+    /// verification). Auth state is preserved; the caller should retry with
+    /// backoff.
+    Transient(n0_error::AnyError),
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Permanent(e) => write!(f, "refresh permanently rejected by IdP: {e:#}"),
+            Self::Transient(e) => write!(f, "transient refresh failure: {e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for RefreshError {}
+
+/// Decide whether a `RequestTokenError` from the OAuth refresh exchange is
+/// permanent (re-login required) or transient (retry).
+fn classify_oidc_refresh_error<RE>(
+    err: &openidconnect::RequestTokenError<
+        RE,
+        openidconnect::StandardErrorResponse<openidconnect::core::CoreErrorResponseType>,
+    >,
+) -> bool
+where
+    RE: std::error::Error,
+{
+    use openidconnect::RequestTokenError;
+    use openidconnect::core::CoreErrorResponseType;
+    match err {
+        // The IdP returned a structured OAuth error code. RFC 6749 §5.2 codes
+        // all describe client-side problems that retry cannot fix.
+        RequestTokenError::ServerResponse(resp) => !matches!(
+            resp.error(),
+            // Unknown extension code — conservatively treat as transient so a
+            // custom code like "rate_limit_exceeded" does not log the user out.
+            CoreErrorResponseType::Extension(_)
+        ),
+        // Network/transport, malformed response body, or some other oauth2
+        // crate-level error. All retryable.
+        RequestTokenError::Request(_)
+        | RequestTokenError::Parse(_, _)
+        | RequestTokenError::Other(_) => false,
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct MaybeAuth(Option<AuthState>);
@@ -703,7 +784,10 @@ impl AuthClient {
                 {
                     Ok(auth) => auth,
                     Err(err) => {
-                        warn!("Failed to refresh auth token: {err:#}");
+                        // Either Permanent or Transient — falling through to a
+                        // fresh interactive login is the right move in either
+                        // case because the operator just asked us to log in.
+                        warn!("Refresh during login failed, falling back to fresh login: {err:#}");
                         let client = self.ensure_fresh_client().await?;
                         client
                             .login(|url, _cancel_token| async move {
@@ -728,19 +812,42 @@ impl AuthClient {
         let auth = self.state.load();
         let auth = auth.get()?;
         let client = self.ensure_fresh_client().await?;
-        let new_auth = match client
+        match client
             .refresh(&auth.tokens, Some(auth.profile.clone()))
             .await
         {
-            Ok(auth) => auth,
-            Err(err) => {
-                warn!("Failed to refresh auth tokens, logging out: {err:#}");
-                self.state.set(None).await?;
-                Err(err).context("Failed to refresh auth tokens, needs login")?
+            Ok(new_auth) => {
+                self.state.set(Some(new_auth)).await?;
+                Ok(())
             }
-        };
-        self.state.set(Some(new_auth)).await?;
-        Ok(())
+            Err(RefreshError::Permanent(err)) => {
+                // The IdP definitively rejected our refresh — only a fresh
+                // interactive login can recover. Clear state and surface the
+                // event prominently so a long-running session does not silently
+                // wedge.
+                error!(
+                    "Datum login has expired or been revoked — the tunnel will \
+                     stop accepting new connections. Run the CLI's login \
+                     command (or restart the desktop app and sign in) to \
+                     reconnect. Cause: {err:#}"
+                );
+                eprintln!(
+                    "Datum login has expired or been revoked. \
+                     Please log in again to restore the tunnel."
+                );
+                self.state.set(None).await?;
+                Err(err).context("Refresh permanently rejected; re-login required")?
+            }
+            Err(RefreshError::Transient(err)) => {
+                // Network/IdP blip. Keep tokens; the next retry (proactive
+                // timer or 401-triggered) should recover.
+                warn!(
+                    "Transient token refresh failure — keeping existing \
+                     credentials, will retry: {err:#}"
+                );
+                Err(err).context("Transient token refresh failure")?
+            }
+        }
     }
 
     /// Refresh the user profile from the API without refreshing tokens
