@@ -4,7 +4,7 @@ mod dns_dev;
 mod tunnel_dev;
 
 // Ensure rustls crypto provider is installed
-use rustls::crypto::{ring as rustls_ring, CryptoProvider};
+use rustls::crypto::ring as rustls_ring;
 
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
