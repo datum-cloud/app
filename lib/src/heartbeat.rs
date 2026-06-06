@@ -14,7 +14,7 @@ use rand::Rng;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::ListenNode;
 use crate::datum_apis::connector::{
@@ -288,6 +288,7 @@ async fn run_project(
         if cache.is_none() {
             match find_connector(&connectors, provider.endpoint_id()).await {
                 Ok(Some(connector)) => {
+                    let connector_name = connector.name_any();
                     let lease_name = connector
                         .status
                         .as_ref()
@@ -299,8 +300,14 @@ async fn run_project(
                         .and_then(|status| status.connection_details.as_ref())
                         .and_then(|details| details.public_key.as_ref())
                         .map(|details| details.home_relay.clone());
+                    info!(
+                        %project_id,
+                        connector = %connector_name,
+                        lease = lease_name.as_deref().unwrap_or("<pending>"),
+                        "heartbeat: registered connector, starting lease renewals"
+                    );
                     cache = Some(ConnectorCache {
-                        name: connector.name_any(),
+                        name: connector_name,
                         lease_name,
                         lease_duration_seconds: None,
                         last_details: None,
