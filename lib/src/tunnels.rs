@@ -301,9 +301,37 @@ impl TunnelService {
         self.list_project(&selected.project_id).await
     }
 
+    /// Fetch a tunnel by its HTTPProxy resource name. Direct API lookup —
+    /// does NOT filter by which connector the proxy's backend references.
+    /// Callers that explicitly name a tunnel (`tunnel update --id`,
+    /// `tunnel listen --id`, etc.) want to find it regardless of whether
+    /// its backend currently points at this agent's connector; adoption
+    /// re-points the backend afterwards.
     pub async fn get_active(&self, tunnel_id: &str) -> Result<Option<TunnelSummary>> {
-        let tunnels = self.list_active().await?;
-        Ok(tunnels.into_iter().find(|tunnel| tunnel.id == tunnel_id))
+        let Some(selected) = self.datum.selected_context() else {
+            return Ok(None);
+        };
+        let pcp = self
+            .datum
+            .project_control_plane_client(&selected.project_id)
+            .await?;
+        let client = pcp.client();
+        let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        let ads: Api<ConnectorAdvertisement> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+
+        let Some(proxy) = proxies
+            .get_opt(tunnel_id)
+            .await
+            .std_context("Failed to fetch HTTPProxy")?
+        else {
+            return Ok(None);
+        };
+        let enabled = ads
+            .get_opt(tunnel_id)
+            .await
+            .std_context("Failed to fetch ConnectorAdvertisement")?
+            .is_some();
+        Ok(Some(summary_from_proxy(&proxy, enabled)))
     }
 
     pub async fn get_active_by_endpoint(&self, endpoint: &str) -> Result<Option<TunnelSummary>> {
@@ -1189,6 +1217,33 @@ fn proxy_hostnames(proxy: &HTTPProxy) -> Vec<String> {
         .and_then(|status| status.hostnames.clone())
         .or_else(|| proxy.spec.hostnames.clone())
         .unwrap_or_default()
+}
+
+/// Build a `TunnelSummary` from an `HTTPProxy` and a boolean indicating
+/// whether an advertisement exists (which is how `enabled` is derived
+/// throughout the rest of the file). Shared between `list_project` and
+/// `get_active` so they don't drift apart.
+fn summary_from_proxy(proxy: &HTTPProxy, enabled: bool) -> TunnelSummary {
+    let id = proxy.metadata.name.clone().unwrap_or_default();
+    let label = proxy
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get(DISPLAY_NAME_ANNOTATION))
+        .cloned()
+        .unwrap_or_else(|| id.clone());
+    let endpoint =
+        normalize_endpoint(&proxy_backend_endpoint(proxy).unwrap_or_default());
+    let conds = proxy.status.as_ref().and_then(|s| s.conditions.as_deref());
+    TunnelSummary {
+        id,
+        label,
+        endpoint,
+        hostnames: proxy_hostnames(proxy),
+        enabled,
+        accepted: condition_is_true(conds, HTTP_PROXY_CONDITION_ACCEPTED),
+        programmed: condition_is_true(conds, HTTP_PROXY_CONDITION_PROGRAMMED),
+    }
 }
 
 /// Extract the connector name from the first backend that references one.

@@ -243,6 +243,14 @@ pub enum TunnelCommands {
         /// Local address to expose (host:port, e.g. 127.0.0.1:8080).
         #[clap(long)]
         endpoint: String,
+        /// Adopt an existing tunnel by its resource ID and keep its hostname.
+        /// Use this when you have already shared the tunnel's URL and need
+        /// it to survive across restarts even if the connector identity has
+        /// changed in between (e.g. after rotating listen_key). Without
+        /// --id the CLI tries to match by endpoint string, which is
+        /// best-effort and depends on the connector record staying stable.
+        #[clap(long)]
+        id: Option<String>,
         /// Skip confirmation prompt if tunnel already exists.
         #[clap(long, default_value = "false")]
         yes: bool,
@@ -603,10 +611,27 @@ async fn main() -> n0_error::Result<()> {
                         }
                     }
                 }
-                TunnelCommands::Listen { label, endpoint, yes } => {
+                TunnelCommands::Listen { label, endpoint, id, yes } => {
                     let endpoint_id = node.endpoint_id();
 
-                    let existing = service.get_active_by_endpoint(&endpoint).await?;
+                    // --id takes precedence: look up the tunnel directly by
+                    // resource name, re-point its backend at this agent's
+                    // current connector via update_active, and re-enable the
+                    // advertisement. This survives connector renames and
+                    // listen_key rotations — the hostname lives on the
+                    // HTTPProxy resource and we keep it.
+                    let existing = if let Some(id) = id.as_deref() {
+                        let Some(t) = service.get_active(id).await? else {
+                            n0_error::bail_any!(
+                                "Tunnel with id '{}' not found in this project. \
+                                 Run 'datum-connect tunnel list' to see available ids.",
+                                id
+                            );
+                        };
+                        Some(t)
+                    } else {
+                        service.get_active_by_endpoint(&endpoint).await?
+                    };
                     let tunnel_id = if let Some(t) = existing {
                         println!("Found existing tunnel for {}:", endpoint);
                         println!("  id: {}", t.id);
@@ -614,12 +639,18 @@ async fn main() -> n0_error::Result<()> {
                         println!("  endpoint: {}", t.endpoint);
                         println!();
 
-                        // Only update if an explicit label was given and it differs.
-                        if let Some(label) = label.filter(|l| l != &t.label) {
-                            if yes {
-                                println!("Updating tunnel (--yes specified)");
-                            } else {
-                                print!("Update tunnel label to '{}'? [y/N] ", label);
+                        let label_changed = label.as_ref().is_some_and(|l| l != &t.label);
+                        let resolved_label = label.clone().unwrap_or_else(|| t.label.clone());
+                        // Two reasons to call update_active here:
+                        //   1. --id was given: always re-point the backend at
+                        //      this agent's current connector. That's the
+                        //      whole point of --id — survive connector
+                        //      identity changes.
+                        //   2. The label differs (endpoint-match path only).
+                        let must_update = id.is_some() || label_changed;
+                        if must_update {
+                            if label_changed && !yes {
+                                print!("Update tunnel label to '{}'? [y/N] ", resolved_label);
                                 std::io::Write::flush(&mut std::io::stdout())?;
                                 let mut input = String::new();
                                 std::io::stdin().read_line(&mut input)?;
@@ -627,10 +658,18 @@ async fn main() -> n0_error::Result<()> {
                                     println!("Aborted.");
                                     return Ok(());
                                 }
+                            } else if label_changed && yes {
+                                println!("Updating tunnel (--yes specified)");
                             }
-                            let updated = service.update_active(&t.id, &label, &endpoint).await?;
-                            println!("Updated tunnel:");
-                            println!("  id: {}", updated.id);
+                            let updated = service
+                                .update_active(&t.id, &resolved_label, &endpoint)
+                                .await?;
+                            if id.is_some() {
+                                println!("Adopted tunnel {} (hostname preserved)", updated.id);
+                            } else {
+                                println!("Updated tunnel:");
+                                println!("  id: {}", updated.id);
+                            }
                             updated.id
                         } else {
                             println!("Tunnel already configured correctly.");
