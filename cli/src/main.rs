@@ -1116,14 +1116,19 @@ async fn await_tunnel_progress(
         };
 
         for step in &progress.steps {
+            let resource = step
+                .resource
+                .as_deref()
+                .map(|r| format!(" [{r}]"))
+                .unwrap_or_default();
             let prev = last_status.get(&step.kind).copied();
             if prev != Some(step.status) {
                 match step.status {
                     StepStatus::Ready => {
                         println!(
-                            "  ✓ {} ({:.1}s)",
+                            "  ✓ {} ({:.1}s){resource}",
                             step.kind.label(),
-                            start.elapsed().as_secs_f32()
+                            start.elapsed().as_secs_f32(),
                         );
                         pending_since.remove(&step.kind);
                     }
@@ -1150,10 +1155,9 @@ async fn await_tunnel_progress(
                     .or(step.reason.as_deref())
                     .unwrap_or("no detail from controller");
                 eprintln!(
-                    "  … {} still pending after {}s: {}",
+                    "  … {} still pending after {}s{resource}: {detail}",
                     step.kind.label(),
                     since.elapsed().as_secs(),
-                    detail,
                 );
             }
         }

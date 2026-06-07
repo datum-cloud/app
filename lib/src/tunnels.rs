@@ -187,6 +187,26 @@ pub struct ProgressStep {
     pub status: StepStatus,
     pub reason: Option<String>,
     pub message: Option<String>,
+    /// Pre-formatted "Kind/name" of the underlying Kubernetes resource
+    /// (`HTTPProxy/<tunnel_id>` or `Connector/<connector_name>`). The CLI
+    /// renders this alongside each step so the user can pivot to
+    /// `datumctl describe ...` on the exact resource that's stuck or
+    /// reporting a stale Ready. `None` only when the resource doesn't
+    /// exist server-side (e.g. probing for a tunnel id that's not there).
+    pub resource: Option<String>,
+}
+
+impl ProgressStepKind {
+    /// The Kubernetes resource kind whose conditions back this step.
+    pub fn resource_kind(&self) -> &'static str {
+        match self {
+            Self::ConnectorReady | Self::IrohDnsPublished => "Connector",
+            Self::ProxyAccepted
+            | Self::CertificatesReady
+            | Self::ProxyProgrammed
+            | Self::ConnectorMetadataProgrammed => "HTTPProxy",
+        }
+    }
 }
 
 impl ProgressStep {
@@ -223,10 +243,18 @@ impl TunnelProgress {
     fn from_resources(proxy: &HTTPProxy, connector: Option<&Connector>) -> Self {
         let proxy_conds = proxy.status.as_ref().and_then(|s| s.conditions.as_deref());
         let proxy_gen = proxy.metadata.generation.unwrap_or(0);
+        let proxy_resource = proxy
+            .metadata
+            .name
+            .as_deref()
+            .map(|n| format!("HTTPProxy/{n}"));
         let conn_conds = connector
             .and_then(|c| c.status.as_ref())
             .and_then(|s| s.conditions.as_deref());
         let conn_gen = connector.and_then(|c| c.metadata.generation).unwrap_or(0);
+        let connector_resource = connector
+            .and_then(|c| c.metadata.name.as_deref())
+            .map(|n| format!("Connector/{n}"));
 
         // A condition is Ready only if its observedGeneration has caught up
         // with the resource's current generation. After we PATCH the spec
@@ -238,7 +266,8 @@ impl TunnelProgress {
         let make_step = |kind: ProgressStepKind,
                          conds: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>,
                          type_: &str,
-                         current_gen: i64|
+                         current_gen: i64,
+                         resource: Option<String>|
          -> ProgressStep {
             let cond = find_condition(conds, type_);
             let observed = cond.and_then(|c| c.observed_generation).unwrap_or(0);
@@ -253,6 +282,7 @@ impl TunnelProgress {
                 status,
                 reason: cond.map(|c| c.reason.clone()),
                 message: cond.map(|c| c.message.clone()),
+                resource,
             }
         };
 
@@ -262,36 +292,42 @@ impl TunnelProgress {
                 proxy_conds,
                 HTTP_PROXY_CONDITION_ACCEPTED,
                 proxy_gen,
+                proxy_resource.clone(),
             ),
             make_step(
                 ProgressStepKind::CertificatesReady,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_CERTIFICATES_READY,
                 proxy_gen,
+                proxy_resource.clone(),
             ),
             make_step(
                 ProgressStepKind::ConnectorReady,
                 conn_conds,
                 CONNECTOR_CONDITION_READY,
                 conn_gen,
+                connector_resource.clone(),
             ),
             make_step(
                 ProgressStepKind::IrohDnsPublished,
                 conn_conds,
                 CONNECTOR_CONDITION_IROH_DNS_PUBLISHED,
                 conn_gen,
+                connector_resource.clone(),
             ),
             make_step(
                 ProgressStepKind::ProxyProgrammed,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_PROGRAMMED,
                 proxy_gen,
+                proxy_resource.clone(),
             ),
             make_step(
                 ProgressStepKind::ConnectorMetadataProgrammed,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED,
                 proxy_gen,
+                proxy_resource,
             ),
         ];
 
@@ -1602,6 +1638,44 @@ mod tests {
             .expect("step exists");
         assert_eq!(cert_step.status, StepStatus::Pending);
         assert!(progress.terminal_failure().is_none());
+    }
+
+    #[test]
+    fn progress_step_carries_resource_label() {
+        // Every step should know which Kubernetes resource backs it so the
+        // CLI can render "[HTTPProxy/tunnel-test]" or
+        // "[Connector/datum-connect-test]" alongside the line — that's
+        // what the user copy-pastes into `datumctl describe`.
+        let p = proxy(vec![]);
+        let c = connector(vec![]);
+        let progress = TunnelProgress::from_resources(&p, Some(&c));
+
+        for step in &progress.steps {
+            let resource = step.resource.as_deref().expect("resource label set");
+            let expected_kind = step.kind.resource_kind();
+            assert!(
+                resource.starts_with(&format!("{expected_kind}/")),
+                "step {:?} should be backed by {expected_kind}, got {resource}",
+                step.kind,
+            );
+        }
+
+        // Connector-backed steps fall back to None when no connector exists.
+        let progress_no_conn = TunnelProgress::from_resources(&p, None);
+        let iroh = progress_no_conn
+            .step(ProgressStepKind::IrohDnsPublished)
+            .unwrap();
+        assert!(
+            iroh.resource.is_none(),
+            "connector-backed step has no resource when connector is missing"
+        );
+        let proxy_step = progress_no_conn
+            .step(ProgressStepKind::ProxyAccepted)
+            .unwrap();
+        assert_eq!(
+            proxy_step.resource.as_deref(),
+            Some("HTTPProxy/tunnel-test")
+        );
     }
 
     #[test]
