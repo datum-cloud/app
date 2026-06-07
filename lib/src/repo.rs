@@ -28,6 +28,7 @@ impl Repo {
     const OAUTH_FILE: &str = "oauth.yml";
     const AUTH_FILE: &str = "auth.yml";
     const STATE_FILE: &str = "state.yml";
+    const PROJECTS_DIR: &str = "projects";
 
     pub fn default_location() -> PathBuf {
         match std::env::var("DATUM_CONNECT_REPO") {
@@ -136,6 +137,34 @@ impl Repo {
         self.secret_key(key_file_path).await
     }
 
+    /// Project-scoped listen key. Each project gets its own iroh identity so
+    /// Connectors registered in different projects don't collide on the iroh
+    /// DNS record (the controller assigns ownership to one and leaves the
+    /// others with `IrohDNSPublished=False; DeferredToOwner`, which manifests
+    /// as a tunnel that reports ready but silently drops data).
+    ///
+    /// On first access for any project, if the legacy flat `listen_key` exists
+    /// it is moved into this project's directory so the user keeps continuity
+    /// with whatever Connector that key was registered as. Subsequent projects
+    /// (no legacy file left) get freshly generated keys.
+    pub async fn listen_key_for_project(&self, project_id: &str) -> Result<SecretKey> {
+        let project_dir = self.0.join(Self::PROJECTS_DIR).join(project_id);
+        let key_file_path = project_dir.join(Self::LISTEN_KEY_FILE);
+        if !key_file_path.exists() {
+            let legacy = self.0.join(Self::LISTEN_KEY_FILE);
+            if legacy.exists() {
+                tokio::fs::create_dir_all(&project_dir).await?;
+                info!(
+                    "migrating legacy listen_key {} -> {} for project {project_id}",
+                    legacy.display(),
+                    key_file_path.display(),
+                );
+                tokio::fs::rename(&legacy, &key_file_path).await?;
+            }
+        }
+        self.secret_key(key_file_path).await
+    }
+
     pub async fn gateway_key(&self) -> Result<SecretKey> {
         let key_file_path = self.0.join(Self::GATEWAY_KEY_FILE);
         self.secret_key(key_file_path).await
@@ -149,7 +178,9 @@ impl Repo {
     async fn secret_key(&self, key_file_path: PathBuf) -> Result<SecretKey> {
         if !key_file_path.exists() {
             warn!("secret key does not exist. creating new key");
-            tokio::fs::create_dir_all(&self.0).await?;
+            if let Some(parent) = key_file_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
             return self.create_key(&key_file_path).await;
         };
 
@@ -213,5 +244,77 @@ impl Repo {
     /// Get the base directory path of this repo
     pub fn path(&self) -> &PathBuf {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_repo_dir() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("datum-repo-test-{}", uuid::Uuid::new_v4()));
+        path
+    }
+
+    #[tokio::test]
+    async fn listen_key_for_project_migrates_legacy_into_first_project() {
+        // The legacy `listen_key` lived at the repo root and was reused for
+        // every project the CLI talked to. The migration must move (not copy)
+        // it into the first project that requests it, so the second project
+        // gets a fresh identity instead of joining the cross-project DNS race.
+        let repo = Repo::open_or_create(temp_repo_dir()).await.unwrap();
+        let legacy = repo.listen_key().await.unwrap();
+        let legacy_bytes = legacy.to_bytes();
+        let legacy_path = repo.0.join(Repo::LISTEN_KEY_FILE);
+        assert!(legacy_path.exists(), "precondition: legacy key exists");
+
+        let p1 = repo.listen_key_for_project("project-a").await.unwrap();
+        assert_eq!(
+            p1.to_bytes(),
+            legacy_bytes,
+            "first project must adopt the legacy key"
+        );
+        assert!(!legacy_path.exists(), "legacy file must be gone after migration");
+        let p1_path = repo
+            .0
+            .join(Repo::PROJECTS_DIR)
+            .join("project-a")
+            .join(Repo::LISTEN_KEY_FILE);
+        assert!(p1_path.exists(), "key must now live under the project dir");
+
+        let p2 = repo.listen_key_for_project("project-b").await.unwrap();
+        assert_ne!(
+            p2.to_bytes(),
+            legacy_bytes,
+            "second project must get a fresh key, not the legacy one"
+        );
+    }
+
+    #[tokio::test]
+    async fn listen_key_for_project_is_stable_across_calls() {
+        let repo = Repo::open_or_create(temp_repo_dir()).await.unwrap();
+        let first = repo.listen_key_for_project("project-x").await.unwrap();
+        let second = repo.listen_key_for_project("project-x").await.unwrap();
+        assert_eq!(
+            first.to_bytes(),
+            second.to_bytes(),
+            "repeat calls must return the same persisted key"
+        );
+    }
+
+    #[tokio::test]
+    async fn listen_key_for_project_generates_fresh_without_legacy() {
+        let repo = Repo::open_or_create(temp_repo_dir()).await.unwrap();
+        let key = repo.listen_key_for_project("only-project").await.unwrap();
+        let legacy_path = repo.0.join(Repo::LISTEN_KEY_FILE);
+        assert!(!legacy_path.exists(), "no legacy must be created");
+        let project_path = repo
+            .0
+            .join(Repo::PROJECTS_DIR)
+            .join("only-project")
+            .join(Repo::LISTEN_KEY_FILE);
+        assert!(project_path.exists());
+        assert_eq!(tokio::fs::read(&project_path).await.unwrap(), key.to_bytes());
     }
 }

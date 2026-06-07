@@ -566,7 +566,15 @@ async fn main() -> n0_error::Result<()> {
                 datum.set_selected_context(Some(ctx)).await?;
             }
 
-            let node = ListenNode::new(repo.clone()).await?;
+            let project_id = datum
+                .selected_context()
+                .map(|ctx| ctx.project_id)
+                .ok_or_else(|| {
+                    n0_error::anyerr!(
+                        "no project selected — pass --project <id> or run 'datumctl ctx use --project <id>'"
+                    )
+                })?;
+            let node = ListenNode::new_for_project(repo.clone(), &project_id).await?;
             let service = TunnelService::new(datum.clone(), node.clone());
             let heartbeat = HeartbeatAgent::new(datum.clone(), node.clone());
 
