@@ -222,17 +222,29 @@ impl TunnelProgress {
 
     fn from_resources(proxy: &HTTPProxy, connector: Option<&Connector>) -> Self {
         let proxy_conds = proxy.status.as_ref().and_then(|s| s.conditions.as_deref());
+        let proxy_gen = proxy.metadata.generation.unwrap_or(0);
         let conn_conds = connector
             .and_then(|c| c.status.as_ref())
             .and_then(|s| s.conditions.as_deref());
+        let conn_gen = connector.and_then(|c| c.metadata.generation).unwrap_or(0);
 
+        // A condition is Ready only if its observedGeneration has caught up
+        // with the resource's current generation. After we PATCH the spec
+        // (e.g. `tunnel listen --id` re-points the backend, bumping
+        // generation 1→2), the controller's prior True conditions still
+        // show observedGeneration=1 until it re-reconciles. Treating those
+        // as Ready makes the CLI claim "Tunnel ready" while the data plane
+        // is still serving 503s from stale Envoy config.
         let make_step = |kind: ProgressStepKind,
                          conds: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>,
-                         type_: &str|
+                         type_: &str,
+                         current_gen: i64|
          -> ProgressStep {
             let cond = find_condition(conds, type_);
+            let observed = cond.and_then(|c| c.observed_generation).unwrap_or(0);
+            let fresh = observed >= current_gen;
             let status = match cond {
-                Some(c) if c.status == "True" => StepStatus::Ready,
+                Some(c) if c.status == "True" && fresh => StepStatus::Ready,
                 Some(_) => StepStatus::Pending,
                 None => StepStatus::Unknown,
             };
@@ -249,31 +261,37 @@ impl TunnelProgress {
                 ProgressStepKind::ProxyAccepted,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_ACCEPTED,
+                proxy_gen,
             ),
             make_step(
                 ProgressStepKind::CertificatesReady,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_CERTIFICATES_READY,
+                proxy_gen,
             ),
             make_step(
                 ProgressStepKind::ConnectorReady,
                 conn_conds,
                 CONNECTOR_CONDITION_READY,
+                conn_gen,
             ),
             make_step(
                 ProgressStepKind::IrohDnsPublished,
                 conn_conds,
                 CONNECTOR_CONDITION_IROH_DNS_PUBLISHED,
+                conn_gen,
             ),
             make_step(
                 ProgressStepKind::ProxyProgrammed,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_PROGRAMMED,
+                proxy_gen,
             ),
             make_step(
                 ProgressStepKind::ConnectorMetadataProgrammed,
                 proxy_conds,
                 HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED,
+                proxy_gen,
             ),
         ];
 
@@ -1584,5 +1602,49 @@ mod tests {
             .expect("step exists");
         assert_eq!(cert_step.status, StepStatus::Pending);
         assert!(progress.terminal_failure().is_none());
+    }
+
+    #[test]
+    fn progress_pending_when_status_is_stale_for_current_generation() {
+        // `tunnel listen --id` PATCHes the HTTPProxy spec to re-point the
+        // backend at the current connector, bumping generation 1 → 2. The
+        // controller's prior True conditions still carry observedGeneration=1
+        // until it re-reconciles. Treating those as Ready was the bug
+        // behind "Tunnel ready after 0 sec" while the edge served 503s
+        // for minutes — Envoy was still on the previous-generation config.
+        let mut stale = cond(
+            HTTP_PROXY_CONDITION_PROGRAMMED,
+            "True",
+            "Programmed",
+            "Stale from previous generation",
+        );
+        stale.observed_generation = Some(1);
+        let mut p_stale = proxy(vec![stale]);
+        p_stale.metadata.generation = Some(2);
+        let progress_stale = TunnelProgress::from_resources(&p_stale, None);
+        let step = progress_stale
+            .step(ProgressStepKind::ProxyProgrammed)
+            .expect("step exists");
+        assert_eq!(
+            step.status,
+            StepStatus::Pending,
+            "True condition with observedGeneration < generation must be Pending"
+        );
+        assert!(!progress_stale.all_ready());
+
+        // Once the controller observes the new generation, status flips Ready.
+        let mut fresh = cond(HTTP_PROXY_CONDITION_PROGRAMMED, "True", "Programmed", "");
+        fresh.observed_generation = Some(2);
+        let mut p_fresh = proxy(vec![fresh]);
+        p_fresh.metadata.generation = Some(2);
+        let progress_fresh = TunnelProgress::from_resources(&p_fresh, None);
+        assert_eq!(
+            progress_fresh
+                .step(ProgressStepKind::ProxyProgrammed)
+                .unwrap()
+                .status,
+            StepStatus::Ready,
+            "matched observedGeneration must be Ready"
+        );
     }
 }
