@@ -24,3 +24,4 @@ rand.workspace = true
 hex.workspace = true
 sentry.workspace = true
 rustls = { workspace = true, features = ["ring"] }
+inquire = "0.9.4"
