@@ -248,6 +248,32 @@ fn is_unauthorized(err: &kube::Error) -> bool {
     matches!(err, kube::Error::Api(e) if e.code == 401)
 }
 
+fn is_not_found(err: &kube::Error) -> bool {
+    matches!(err, kube::Error::Api(e) if e.code == 404)
+}
+
+/// What the heartbeat loop should do with its cache after a lease op fails.
+#[derive(Debug, PartialEq, Eq)]
+enum LeaseErrorAction {
+    /// Keep the cached connector/lease names; retry after backoff.
+    Retain,
+    /// Drop the cache so the next iteration re-resolves connector and lease
+    /// from scratch. Used when the lease no longer exists server-side.
+    Reset,
+    /// Force a token refresh, then retain the cache and retry.
+    RefreshAuth,
+}
+
+fn classify_lease_error(err: &kube::Error) -> LeaseErrorAction {
+    if is_not_found(err) {
+        LeaseErrorAction::Reset
+    } else if is_unauthorized(err) {
+        LeaseErrorAction::RefreshAuth
+    } else {
+        LeaseErrorAction::Retain
+    }
+}
+
 /// Force an OAuth token refresh after a 401. The proactive timer only refreshes
 /// when the token is near expiry, so a server-side rejection that arrives early
 /// (clock skew, revocation, etc.) would otherwise leave the heartbeat retrying
@@ -465,10 +491,14 @@ async fn run_project(
                         lease = %lease_name,
                         "heartbeat: failed to fetch lease: {err:#}"
                     );
-                    if is_unauthorized(&err) {
-                        force_refresh_auth(&project_id, &datum).await;
+                    match classify_lease_error(&err) {
+                        LeaseErrorAction::Reset => cache = None,
+                        LeaseErrorAction::RefreshAuth => {
+                            force_refresh_auth(&project_id, &datum).await;
+                            cache = Some(cached);
+                        }
+                        LeaseErrorAction::Retain => cache = Some(cached),
                     }
-                    cache = Some(cached);
                     sleep_with_cancel(backoff.next(), &cancel).await;
                     continue;
                 }
@@ -488,10 +518,14 @@ async fn run_project(
             .await
         {
             warn!(%project_id, lease = %lease_name, "heartbeat: lease renew failed: {err:#}");
-            if is_unauthorized(&err) {
-                force_refresh_auth(&project_id, &datum).await;
+            match classify_lease_error(&err) {
+                LeaseErrorAction::Reset => cache = None,
+                LeaseErrorAction::RefreshAuth => {
+                    force_refresh_auth(&project_id, &datum).await;
+                    cache = Some(cached);
+                }
+                LeaseErrorAction::Retain => cache = Some(cached),
             }
-            cache = Some(cached);
             sleep_with_cancel(backoff.next(), &cancel).await;
             continue;
         }
@@ -706,6 +740,45 @@ mod tests {
                     "interval {interval:?} outside [{base:?}, {max:?}]"
                 );
             }
+        }
+    }
+
+    fn api_error(code: u16, reason: &str) -> kube::Error {
+        kube::Error::Api(kube::core::ErrorResponse {
+            status: "Failure".to_string(),
+            message: "test".to_string(),
+            reason: reason.to_string(),
+            code,
+        })
+    }
+
+    #[test]
+    fn classify_lease_error_resets_on_not_found() {
+        // Mirrors the production wedge: the Lease was deleted server-side and
+        // the renew loop kept patching the dead name. A 404 must clear the
+        // cache so the next iteration re-resolves the connector + lease.
+        assert_eq!(
+            classify_lease_error(&api_error(404, "NotFound")),
+            LeaseErrorAction::Reset
+        );
+    }
+
+    #[test]
+    fn classify_lease_error_refreshes_on_unauthorized() {
+        assert_eq!(
+            classify_lease_error(&api_error(401, "Unauthorized")),
+            LeaseErrorAction::RefreshAuth
+        );
+    }
+
+    #[test]
+    fn classify_lease_error_retains_on_transient() {
+        for code in [403, 409, 429, 500, 502, 503] {
+            assert_eq!(
+                classify_lease_error(&api_error(code, "Transient")),
+                LeaseErrorAction::Retain,
+                "code {code} should retain cache"
+            );
         }
     }
 
