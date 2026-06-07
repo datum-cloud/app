@@ -647,15 +647,27 @@ async fn main() -> n0_error::Result<()> {
                         }
                         let stored_endpoint = t.endpoint.clone();
                         (Some(t), stored_endpoint)
-                    } else {
-                        let Some(endpoint) = endpoint else {
-                            n0_error::bail_any!(
-                                "Provide --endpoint <addr> (or --id <tunnel-id> to resume \
-                                 an existing tunnel). See 'datum-connect tunnel listen --help'."
-                            );
-                        };
+                    } else if let Some(endpoint) = endpoint {
                         let existing = service.get_active_by_endpoint(&endpoint).await?;
                         (existing, endpoint)
+                    } else {
+                        // Neither flag was given. If we're on a TTY and the
+                        // project has tunnels with hostnames, pop a picker.
+                        // Otherwise fall back to the usual error so the
+                        // failure mode in scripts/CI stays explicit.
+                        match pick_tunnel_interactive(&service).await? {
+                            Some(t) => {
+                                let endpoint = t.endpoint.clone();
+                                (Some(t), endpoint)
+                            }
+                            None => {
+                                n0_error::bail_any!(
+                                    "Provide --endpoint <addr> (or --id <tunnel-id> to resume \
+                                     an existing tunnel). See \
+                                     'datum-connect tunnel listen --help'."
+                                );
+                            }
+                        }
                     };
                     let tunnel_id = if let Some(t) = existing {
                         println!("Found existing tunnel for {}:", endpoint);
@@ -907,6 +919,70 @@ async fn select_project_interactive(datum: &DatumCloudClient) -> n0_error::Resul
     println!("Selected project: {} / {}", ctx.org_name, ctx.project_name);
     datum.set_selected_context(Some(ctx)).await?;
     Ok(())
+}
+
+/// Interactive picker for resuming an existing tunnel. Returns the
+/// chosen tunnel, or `None` if the user cancelled, there are no
+/// candidates, or stdin is not a TTY (in which case the caller should
+/// fall back to its usual flag-missing error path).
+async fn pick_tunnel_interactive(
+    service: &TunnelService,
+) -> n0_error::Result<Option<lib::TunnelSummary>> {
+    use std::io::IsTerminal;
+
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+
+    let mut candidates: Vec<lib::TunnelSummary> = service
+        .list_active()
+        .await?
+        .into_iter()
+        .filter(|t| !t.hostnames.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    // Most-likely-relevant first: tunnels you previously enabled (have an
+    // advertisement) bubble up before disabled ones.
+    candidates.sort_by(|a, b| {
+        b.enabled
+            .cmp(&a.enabled)
+            .then_with(|| a.hostnames[0].cmp(&b.hostnames[0]))
+    });
+
+    let max_host = candidates
+        .iter()
+        .map(|t| t.hostnames[0].len())
+        .max()
+        .unwrap_or(0);
+    let max_endpoint = candidates
+        .iter()
+        .map(|t| t.endpoint.len())
+        .max()
+        .unwrap_or(0);
+    let labels: Vec<String> = candidates
+        .iter()
+        .map(|t| {
+            let host = &t.hostnames[0];
+            let status = if t.enabled { "  " } else { "○ " };
+            format!(
+                "{status}{host:<host_w$}  →  {endpoint:<ep_w$}  [{label}]",
+                host_w = max_host,
+                ep_w = max_endpoint,
+                endpoint = t.endpoint,
+                label = t.label,
+            )
+        })
+        .collect();
+
+    let answer = inquire::Select::new("Resume which tunnel?", labels)
+        .with_help_message("↑↓ navigate · Enter select · Esc cancel · ○ = disabled")
+        .with_page_size(10)
+        .raw_prompt_skippable()
+        .map_err(|err| n0_error::anyerr!("interactive selection failed: {err}"))?;
+
+    Ok(answer.map(|opt| candidates[opt.index].clone()))
 }
 
 /// Find a project by ID across all orgs and build a `SelectedContext` for it.
