@@ -102,3 +102,11 @@ pub struct ConnectorStatus {
     pub connection_details: Option<ConnectorConnectionDetails>,
     pub lease_ref: Option<v1::LocalObjectReference>,
 }
+
+pub const CONNECTOR_CONDITION_READY: &str = "Ready";
+pub const CONNECTOR_CONDITION_IROH_DNS_PUBLISHED: &str = "IrohDNSPublished";
+/// The iroh DNS record is already owned by another Connector with the same
+/// public key — typically a Connector in a different project. The losing
+/// Connector cannot publish DNS and its tunnel data plane is silently
+/// unreachable. See network-services-operator iroh_dns_controller.go.
+pub const CONNECTOR_REASON_DEFERRED_TO_OWNER: &str = "DeferredToOwner";

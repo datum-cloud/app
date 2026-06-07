@@ -63,6 +63,8 @@ pub const HTTP_PROXY_CONDITION_ACCEPTED: &str = "Accepted";
 pub const HTTP_PROXY_CONDITION_PROGRAMMED: &str = "Programmed";
 pub const HTTP_PROXY_CONDITION_HOSTNAMES_VERIFIED: &str = "HostnamesVerified";
 pub const HTTP_PROXY_CONDITION_HOSTNAMES_IN_USE: &str = "HostnamesInUse";
+pub const HTTP_PROXY_CONDITION_CERTIFICATES_READY: &str = "CertificatesReady";
+pub const HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED: &str = "ConnectorMetadataProgrammed";
 
 pub const HTTP_PROXY_REASON_ACCEPTED: &str = "Accepted";
 pub const HTTP_PROXY_REASON_PROGRAMMED: &str = "Programmed";

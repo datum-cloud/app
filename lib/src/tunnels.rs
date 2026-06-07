@@ -9,15 +9,18 @@ use serde_json::json;
 use tracing::{debug, warn};
 
 use crate::datum_apis::connector::{
-    Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
-    ConnectorConnectionType, ConnectorSpec, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
+    CONNECTOR_CONDITION_IROH_DNS_PUBLISHED, CONNECTOR_CONDITION_READY,
+    CONNECTOR_REASON_DEFERRED_TO_OWNER, Connector, ConnectorConnectionDetails,
+    ConnectorConnectionDetailsPublicKey, ConnectorConnectionType, ConnectorSpec,
+    PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
 };
 use crate::datum_apis::connector_advertisement::{
     ConnectorAdvertisement, ConnectorAdvertisementLayer4, ConnectorAdvertisementLayer4Service,
     ConnectorAdvertisementSpec, Layer4ServiceAddress, Layer4ServicePort, Protocol,
 };
 use crate::datum_apis::http_proxy::{
-    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
+    ConnectorReference, HTTP_PROXY_CONDITION_ACCEPTED, HTTP_PROXY_CONDITION_CERTIFICATES_READY,
+    HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED, HTTP_PROXY_CONDITION_PROGRAMMED, HTTPProxy,
     HTTPProxyRule, HTTPProxyRuleBackend, HTTPProxySpec,
 };
 use crate::datum_apis::traffic_protection_policy::{
@@ -116,6 +119,171 @@ fn condition_is_true(
         .unwrap_or(false)
 }
 
+fn find_condition<'a>(
+    conditions: Option<&'a [k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>,
+    kind: &str,
+) -> Option<&'a k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition> {
+    conditions.unwrap_or_default().iter().find(|c| c.type_ == kind)
+}
+
+/// One checkpoint in the tunnel setup pipeline. Maps 1:1 to a controller
+/// condition; the order roughly tracks how a healthy setup progresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProgressStepKind {
+    /// HTTPProxy `Accepted` — control plane accepted the resource.
+    ProxyAccepted,
+    /// HTTPProxy `CertificatesReady` — TLS certs issued for the hostname.
+    CertificatesReady,
+    /// Connector `Ready` — agent is online and renewing its lease.
+    ConnectorReady,
+    /// Connector `IrohDNSPublished` — iroh DNS record published. The
+    /// failure-with-`DeferredToOwner` case is the silent-tunnel failure
+    /// that signals cross-project iroh-key collision.
+    IrohDnsPublished,
+    /// HTTPProxy `Programmed` — edge actually programmed the route.
+    ProxyProgrammed,
+    /// HTTPProxy `ConnectorMetadataProgrammed` — Envoy has the iroh metadata
+    /// it needs to dial the connector.
+    ConnectorMetadataProgrammed,
+}
+
+impl ProgressStepKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ProxyAccepted => "tunnel accepted",
+            Self::CertificatesReady => "TLS certificate issued",
+            Self::ConnectorReady => "connector ready",
+            Self::IrohDnsPublished => "iroh DNS published",
+            Self::ProxyProgrammed => "route programmed",
+            Self::ConnectorMetadataProgrammed => "envoy metadata propagated",
+        }
+    }
+
+    pub fn all() -> &'static [ProgressStepKind] {
+        &[
+            Self::ProxyAccepted,
+            Self::CertificatesReady,
+            Self::ConnectorReady,
+            Self::IrohDnsPublished,
+            Self::ProxyProgrammed,
+            Self::ConnectorMetadataProgrammed,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    /// Controller hasn't reported on this condition yet.
+    Unknown,
+    /// Condition exists with status False — still waiting (or failing).
+    Pending,
+    /// Condition is True.
+    Ready,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressStep {
+    pub kind: ProgressStepKind,
+    pub status: StepStatus,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+}
+
+impl ProgressStep {
+    /// True if this step is in a terminal failure mode that won't self-heal
+    /// without user action. The canonical case is the iroh DNS owner
+    /// collision: another Connector with the same iroh key owns the record,
+    /// and waiting longer won't change that.
+    pub fn is_terminal_failure(&self) -> bool {
+        matches!(self.kind, ProgressStepKind::IrohDnsPublished)
+            && self.status == StepStatus::Pending
+            && self.reason.as_deref() == Some(CONNECTOR_REASON_DEFERRED_TO_OWNER)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TunnelProgress {
+    pub hostnames: Vec<String>,
+    pub steps: Vec<ProgressStep>,
+}
+
+impl TunnelProgress {
+    pub fn all_ready(&self) -> bool {
+        self.steps.iter().all(|s| s.status == StepStatus::Ready)
+    }
+
+    pub fn step(&self, kind: ProgressStepKind) -> Option<&ProgressStep> {
+        self.steps.iter().find(|s| s.kind == kind)
+    }
+
+    pub fn terminal_failure(&self) -> Option<&ProgressStep> {
+        self.steps.iter().find(|s| s.is_terminal_failure())
+    }
+
+    fn from_resources(proxy: &HTTPProxy, connector: Option<&Connector>) -> Self {
+        let proxy_conds = proxy.status.as_ref().and_then(|s| s.conditions.as_deref());
+        let conn_conds = connector
+            .and_then(|c| c.status.as_ref())
+            .and_then(|s| s.conditions.as_deref());
+
+        let make_step = |kind: ProgressStepKind,
+                         conds: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition]>,
+                         type_: &str|
+         -> ProgressStep {
+            let cond = find_condition(conds, type_);
+            let status = match cond {
+                Some(c) if c.status == "True" => StepStatus::Ready,
+                Some(_) => StepStatus::Pending,
+                None => StepStatus::Unknown,
+            };
+            ProgressStep {
+                kind,
+                status,
+                reason: cond.map(|c| c.reason.clone()),
+                message: cond.map(|c| c.message.clone()),
+            }
+        };
+
+        let steps = vec![
+            make_step(
+                ProgressStepKind::ProxyAccepted,
+                proxy_conds,
+                HTTP_PROXY_CONDITION_ACCEPTED,
+            ),
+            make_step(
+                ProgressStepKind::CertificatesReady,
+                proxy_conds,
+                HTTP_PROXY_CONDITION_CERTIFICATES_READY,
+            ),
+            make_step(
+                ProgressStepKind::ConnectorReady,
+                conn_conds,
+                CONNECTOR_CONDITION_READY,
+            ),
+            make_step(
+                ProgressStepKind::IrohDnsPublished,
+                conn_conds,
+                CONNECTOR_CONDITION_IROH_DNS_PUBLISHED,
+            ),
+            make_step(
+                ProgressStepKind::ProxyProgrammed,
+                proxy_conds,
+                HTTP_PROXY_CONDITION_PROGRAMMED,
+            ),
+            make_step(
+                ProgressStepKind::ConnectorMetadataProgrammed,
+                proxy_conds,
+                HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED,
+            ),
+        ];
+
+        Self {
+            hostnames: proxy_hostnames(proxy),
+            steps,
+        }
+    }
+}
+
 impl TunnelService {
     pub fn new(datum: DatumCloudClient, listen: ListenNode) -> Self {
         Self {
@@ -142,6 +310,43 @@ impl TunnelService {
         let tunnels = self.list_active().await?;
         let normalized = normalize_endpoint(endpoint);
         Ok(tunnels.into_iter().find(|tunnel| tunnel.endpoint == normalized))
+    }
+
+    /// Fetch the rich progress view for a tunnel: every checkpoint condition
+    /// from both the HTTPProxy and its referenced Connector. Returns `None`
+    /// if the proxy doesn't exist (matches `get_active`).
+    pub async fn get_active_progress(
+        &self,
+        tunnel_id: &str,
+    ) -> Result<Option<TunnelProgress>> {
+        let Some(selected) = self.datum.selected_context() else {
+            return Ok(None);
+        };
+        let pcp = self
+            .datum
+            .project_control_plane_client(&selected.project_id)
+            .await?;
+        let client = pcp.client();
+        let proxies: Api<HTTPProxy> = Api::namespaced(client.clone(), DEFAULT_PCP_NAMESPACE);
+        let Some(proxy) = proxies
+            .get_opt(tunnel_id)
+            .await
+            .std_context("Failed to fetch HTTPProxy")?
+        else {
+            return Ok(None);
+        };
+
+        let connector = if let Some(name) = proxy_connector_name(&proxy) {
+            let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
+            connectors
+                .get_opt(&name)
+                .await
+                .std_context("Failed to fetch Connector")?
+        } else {
+            None
+        };
+
+        Ok(Some(TunnelProgress::from_resources(&proxy, connector.as_ref())))
     }
 
     pub async fn create_active(&self, label: &str, endpoint: &str) -> Result<TunnelSummary> {
@@ -986,6 +1191,16 @@ fn proxy_hostnames(proxy: &HTTPProxy) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Extract the connector name from the first backend that references one.
+fn proxy_connector_name(proxy: &HTTPProxy) -> Option<String> {
+    proxy
+        .spec
+        .rules
+        .iter()
+        .flat_map(|rule| rule.backends.iter().flatten())
+        .find_map(|backend| backend.connector.as_ref().map(|c| c.name.clone()))
+}
+
 /// Rule that matches requests with x-forwarded-proto: http and redirects to HTTPS (301).
 /// Evaluated first so HTTP traffic is upgraded before hitting the backend rule.
 fn https_redirect_rule() -> HTTPProxyRule {
@@ -1176,4 +1391,138 @@ fn create_traffic_protection_policies_enabled() -> bool {
         })
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datum_apis::connector::{ConnectorSpec, ConnectorStatus};
+    use crate::datum_apis::http_proxy::{HTTPProxySpec, HTTPProxyStatus};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
+    use kube::api::ObjectMeta;
+
+    fn cond(type_: &str, status: &str, reason: &str, message: &str) -> Condition {
+        Condition {
+            type_: type_.to_string(),
+            status: status.to_string(),
+            reason: reason.to_string(),
+            message: message.to_string(),
+            last_transition_time: Time(chrono::DateTime::UNIX_EPOCH),
+            observed_generation: None,
+        }
+    }
+
+    fn proxy(conds: Vec<Condition>) -> HTTPProxy {
+        let mut p = HTTPProxy::new(
+            "tunnel-test",
+            HTTPProxySpec {
+                hostnames: None,
+                rules: vec![],
+            },
+        );
+        p.metadata = ObjectMeta {
+            name: Some("tunnel-test".into()),
+            ..Default::default()
+        };
+        p.status = Some(HTTPProxyStatus {
+            addresses: None,
+            hostnames: Some(vec!["ground-pearl.datumproxy.net".into()]),
+            conditions: Some(conds),
+        });
+        p
+    }
+
+    fn connector(conds: Vec<Condition>) -> Connector {
+        let mut c = Connector::new(
+            "datum-connect-test",
+            ConnectorSpec {
+                connector_class_name: "datum-connect".into(),
+                capabilities: None,
+            },
+        );
+        c.status = Some(ConnectorStatus {
+            capabilities: None,
+            conditions: Some(conds),
+            connection_details: None,
+            lease_ref: None,
+        });
+        c
+    }
+
+    #[test]
+    fn progress_unknown_when_controllers_silent() {
+        let p = proxy(vec![]);
+        let progress = TunnelProgress::from_resources(&p, None);
+        assert_eq!(progress.steps.len(), 6);
+        assert!(
+            progress.steps.iter().all(|s| s.status == StepStatus::Unknown),
+            "no conditions yet → every step Unknown"
+        );
+        assert!(!progress.all_ready());
+        assert!(progress.terminal_failure().is_none());
+    }
+
+    #[test]
+    fn progress_all_ready_when_every_condition_true() {
+        let p = proxy(vec![
+            cond(HTTP_PROXY_CONDITION_ACCEPTED, "True", "Accepted", ""),
+            cond(HTTP_PROXY_CONDITION_CERTIFICATES_READY, "True", "AllCertificatesReady", ""),
+            cond(HTTP_PROXY_CONDITION_PROGRAMMED, "True", "Programmed", ""),
+            cond(
+                HTTP_PROXY_CONDITION_CONNECTOR_METADATA_PROGRAMMED,
+                "True",
+                "ConnectorMetadataApplied",
+                "",
+            ),
+        ]);
+        let c = connector(vec![
+            cond(CONNECTOR_CONDITION_READY, "True", "ConnectorReady", ""),
+            cond(CONNECTOR_CONDITION_IROH_DNS_PUBLISHED, "True", "Owner", ""),
+        ]);
+        let progress = TunnelProgress::from_resources(&p, Some(&c));
+        assert!(progress.all_ready());
+        assert!(progress.terminal_failure().is_none());
+    }
+
+    #[test]
+    fn progress_flags_deferred_to_owner_as_terminal() {
+        // This is the silent-tunnel failure: the iroh DNS record is owned by
+        // a different project's Connector. Waiting longer won't help — the
+        // CLI must bail and surface the owner so the user can act.
+        let p = proxy(vec![cond(HTTP_PROXY_CONDITION_ACCEPTED, "True", "Accepted", "")]);
+        let owner_msg =
+            "iroh DNS record is owned by Connector /other-project/default/datum-connect-xyz";
+        let c = connector(vec![
+            cond(CONNECTOR_CONDITION_READY, "True", "ConnectorReady", ""),
+            cond(
+                CONNECTOR_CONDITION_IROH_DNS_PUBLISHED,
+                "False",
+                CONNECTOR_REASON_DEFERRED_TO_OWNER,
+                owner_msg,
+            ),
+        ]);
+        let progress = TunnelProgress::from_resources(&p, Some(&c));
+        let fail = progress.terminal_failure().expect("terminal failure detected");
+        assert_eq!(fail.kind, ProgressStepKind::IrohDnsPublished);
+        assert_eq!(fail.message.as_deref(), Some(owner_msg));
+        assert!(!progress.all_ready());
+    }
+
+    #[test]
+    fn progress_pending_for_false_but_non_terminal_reason() {
+        // CertificatesReady=False with reason "Issuing" should stay Pending
+        // (still progressing) — not Ready, not terminal.
+        let p = proxy(vec![cond(
+            HTTP_PROXY_CONDITION_CERTIFICATES_READY,
+            "False",
+            "Issuing",
+            "Certificate request submitted",
+        )]);
+        let progress = TunnelProgress::from_resources(&p, None);
+        let cert_step = progress
+            .step(ProgressStepKind::CertificatesReady)
+            .expect("step exists");
+        assert_eq!(cert_step.status, StepStatus::Pending);
+        assert!(progress.terminal_failure().is_none());
+    }
 }
