@@ -8,7 +8,7 @@ use rustls::crypto::ring as rustls_ring;
 
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
-    ProxyState, Repo, SelectedContext, TcpProxyData, TunnelService,
+    ProgressStepKind, ProxyState, Repo, SelectedContext, StepStatus, TcpProxyData, TunnelService,
     datum_cloud::{ApiEnv, DatumCloudClient, LoginState},
 };
 use n0_error::StdResultExt;
@@ -657,21 +657,10 @@ async fn main() -> n0_error::Result<()> {
                     println!();
                     println!("Your endpoint ID: {}", endpoint_id);
                     println!("Setting up tunnel...");
-                    let setup_start = std::time::Instant::now();
+                    let progress = await_tunnel_progress(&service, &tunnel_id).await?;
 
-                    let tunnel = loop {
-                        let t = service.get_active(&tunnel_id).await?;
-                        let Some(t) = t else {
-                            n0_error::bail_any!("Tunnel {} not found", tunnel_id);
-                        };
-                        if t.accepted && t.programmed && !t.hostnames.is_empty() {
-                            break t;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    };
-
-                    let elapsed = setup_start.elapsed().as_secs();
-                    for hostname in &tunnel.hostnames {
+                    let elapsed = progress.elapsed.as_secs();
+                    for hostname in &progress.hostnames {
                         println!("Tunnel ready after {} sec: https://{}", elapsed, hostname);
                     }
                     println!("Press Ctrl+C to stop...");
@@ -833,4 +822,107 @@ fn resolve_project_context(
         }
     }
     None
+}
+
+/// Result of streaming the tunnel-setup progress to stdout. All conditions
+/// reached `Ready` (or we bailed before that for a terminal failure).
+struct SetupResult {
+    elapsed: std::time::Duration,
+    hostnames: Vec<String>,
+}
+
+/// Stuck threshold: a step that stays pending this long without progressing
+/// gets called out with a hint. Picked to cover normal slow paths (TLS cert
+/// issuance, edge programming) while still flagging genuine wedges.
+const PROGRESS_STUCK_WARN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Poll cadence. Fast enough that step transitions feel responsive;
+/// the actual server-side reconcile latency dominates wall-clock anyway.
+const PROGRESS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Drive a tunnel through its setup conditions, printing a checklist as
+/// each one transitions to Ready. Bails fast on terminal failure
+/// (e.g. iroh DNS deferred to another project's Connector — waiting won't
+/// help, and the operator's message already names the conflict).
+async fn await_tunnel_progress(
+    service: &TunnelService,
+    tunnel_id: &str,
+) -> n0_error::Result<SetupResult> {
+    use std::collections::HashMap;
+
+    let start = std::time::Instant::now();
+    let mut last_status: HashMap<ProgressStepKind, StepStatus> = HashMap::new();
+    let mut pending_since: HashMap<ProgressStepKind, std::time::Instant> = HashMap::new();
+    let mut warned_stuck: std::collections::HashSet<ProgressStepKind> = Default::default();
+
+    loop {
+        let Some(progress) = service.get_active_progress(tunnel_id).await? else {
+            n0_error::bail_any!("Tunnel {} not found", tunnel_id);
+        };
+
+        for step in &progress.steps {
+            let prev = last_status.get(&step.kind).copied();
+            if prev != Some(step.status) {
+                match step.status {
+                    StepStatus::Ready => {
+                        println!(
+                            "  ✓ {} ({:.1}s)",
+                            step.kind.label(),
+                            start.elapsed().as_secs_f32()
+                        );
+                        pending_since.remove(&step.kind);
+                    }
+                    StepStatus::Pending => {
+                        pending_since.entry(step.kind).or_insert_with(std::time::Instant::now);
+                    }
+                    StepStatus::Unknown => {}
+                }
+                last_status.insert(step.kind, step.status);
+            }
+
+            // Generic stuck warning: if a step has been Pending past the
+            // threshold and we haven't already warned, surface the
+            // controller's reason/message so the user knows what's stalled.
+            if step.status == StepStatus::Pending
+                && !warned_stuck.contains(&step.kind)
+                && let Some(since) = pending_since.get(&step.kind)
+                && since.elapsed() >= PROGRESS_STUCK_WARN
+            {
+                warned_stuck.insert(step.kind);
+                let detail = step
+                    .message
+                    .as_deref()
+                    .or(step.reason.as_deref())
+                    .unwrap_or("no detail from controller");
+                eprintln!(
+                    "  … {} still pending after {}s: {}",
+                    step.kind.label(),
+                    since.elapsed().as_secs(),
+                    detail,
+                );
+            }
+        }
+
+        if let Some(fail) = progress.terminal_failure() {
+            let owner = fail.message.as_deref().unwrap_or("unknown owner");
+            n0_error::bail_any!(
+                "✗ {}: iroh DNS record is owned by another Connector ({}). \
+                 Another project on this machine registered the same iroh identity. \
+                 With per-project keys, delete the per-project listen_key under this project's \
+                 directory in your Datum repo (or the offending Connector in the other project) \
+                 and rerun.",
+                fail.kind.label(),
+                owner,
+            );
+        }
+
+        if progress.all_ready() && !progress.hostnames.is_empty() {
+            return Ok(SetupResult {
+                elapsed: start.elapsed(),
+                hostnames: progress.hostnames,
+            });
+        }
+
+        tokio::time::sleep(PROGRESS_POLL_INTERVAL).await;
+    }
 }

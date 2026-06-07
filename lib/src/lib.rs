@@ -19,7 +19,10 @@ pub use node::*;
 pub use project_control_plane::ProjectControlPlaneClient;
 pub use repo::Repo;
 pub use state::*;
-pub use tunnels::{TunnelDeleteOutcome, TunnelService, TunnelSummary};
+pub use tunnels::{
+    ProgressStep, ProgressStepKind, StepStatus, TunnelDeleteOutcome, TunnelProgress, TunnelService,
+    TunnelSummary,
+};
 pub use update::{UpdateChannel, UpdateChecker, UpdateInfo, UpdateSettings};
 
 /// The root domain for datum connect urls to subdomain from. A proxy URL will
