@@ -58,7 +58,16 @@ pub struct ListenNode {
 impl ListenNode {
     pub async fn new(repo: Repo) -> Result<Self> {
         let n0des_api_secret = n0des_api_secret_from_env()?;
-        Self::with_n0des_api_secret(repo, n0des_api_secret).await
+        Self::build(repo, n0des_api_secret, None).await
+    }
+
+    /// Construct a listen node using a project-scoped iroh identity. The CLI
+    /// Tunnel command takes this path so each project's Connector has a
+    /// distinct iroh public key — see [`Repo::listen_key_for_project`] for
+    /// why that matters.
+    pub async fn new_for_project(repo: Repo, project_id: &str) -> Result<Self> {
+        let n0des_api_secret = n0des_api_secret_from_env()?;
+        Self::build(repo, n0des_api_secret, Some(project_id)).await
     }
 
     #[instrument("listen-node", skip_all)]
@@ -66,8 +75,20 @@ impl ListenNode {
         repo: Repo,
         n0des_api_secret: Option<ApiSecret>,
     ) -> Result<Self> {
+        Self::build(repo, n0des_api_secret, None).await
+    }
+
+    #[instrument("listen-node", skip(repo, n0des_api_secret))]
+    async fn build(
+        repo: Repo,
+        n0des_api_secret: Option<ApiSecret>,
+        project_id: Option<&str>,
+    ) -> Result<Self> {
         let config = repo.config().await?;
-        let secret_key = repo.listen_key().await?;
+        let secret_key = match project_id {
+            Some(pid) => repo.listen_key_for_project(pid).await?,
+            None => repo.listen_key().await?,
+        };
         let endpoint = build_endpoint(secret_key, &config).await?;
         let n0des = build_n0des_client_opt(&endpoint, n0des_api_secret).await;
         let state = repo.load_state().await?;
