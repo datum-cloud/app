@@ -987,6 +987,22 @@ async fn pick_tunnel_interactive(
     if candidates.is_empty() {
         return Ok(None);
     }
+
+    // Single candidate: no point prompting. The selection marker would sit
+    // on the only row and arrow keys would be no-ops, which looks like a
+    // wedge from the user's perspective (terminal cursor still on the
+    // prompt line). Just adopt it and tell the user what happened.
+    if candidates.len() == 1 {
+        let only = candidates.remove(0);
+        let host = only
+            .hostnames
+            .first()
+            .map(String::as_str)
+            .unwrap_or(only.id.as_str());
+        println!("Resuming the only tunnel in this project: {host} (id: {})", only.id);
+        return Ok(Some(only));
+    }
+
     // Most-likely-relevant first: tunnels you previously enabled (have an
     // advertisement) bubble up before disabled ones.
     candidates.sort_by(|a, b| {
