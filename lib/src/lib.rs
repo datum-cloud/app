@@ -21,7 +21,7 @@ pub use repo::Repo;
 pub use state::*;
 pub use tunnels::{
     ProgressStep, ProgressStepKind, StepStatus, TunnelDeleteOutcome, TunnelProgress, TunnelService,
-    TunnelSummary,
+    TunnelSummary, normalize_endpoint,
 };
 pub use update::{UpdateChannel, UpdateChecker, UpdateInfo, UpdateSettings};
 

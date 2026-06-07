@@ -241,14 +241,18 @@ pub enum TunnelCommands {
         #[clap(long)]
         label: Option<String>,
         /// Local address to expose (host:port, e.g. 127.0.0.1:8080).
+        /// Required unless --id is given (in which case the existing
+        /// tunnel's stored endpoint is reused). If both --id and --endpoint
+        /// are given they must match the stored endpoint exactly — a
+        /// mismatch fails hard instead of silently re-pointing the tunnel.
         #[clap(long)]
-        endpoint: String,
+        endpoint: Option<String>,
         /// Adopt an existing tunnel by its resource ID and keep its hostname.
         /// Use this when you have already shared the tunnel's URL and need
         /// it to survive across restarts even if the connector identity has
-        /// changed in between (e.g. after rotating listen_key). Without
-        /// --id the CLI tries to match by endpoint string, which is
-        /// best-effort and depends on the connector record staying stable.
+        /// changed in between (e.g. after rotating listen_key). With --id
+        /// alone (no --endpoint) the existing tunnel's stored endpoint is
+        /// reused — useful for resuming a tunnel verbatim.
         #[clap(long)]
         id: Option<String>,
         /// Skip confirmation prompt if tunnel already exists.
@@ -614,23 +618,44 @@ async fn main() -> n0_error::Result<()> {
                 TunnelCommands::Listen { label, endpoint, id, yes } => {
                     let endpoint_id = node.endpoint_id();
 
-                    // --id takes precedence: look up the tunnel directly by
-                    // resource name, re-point its backend at this agent's
-                    // current connector via update_active, and re-enable the
-                    // advertisement. This survives connector renames and
-                    // listen_key rotations — the hostname lives on the
-                    // HTTPProxy resource and we keep it.
-                    let existing = if let Some(id) = id.as_deref() {
-                        let Some(t) = service.get_active(id).await? else {
+                    // Resolve (existing_tunnel, effective_endpoint):
+                    //   --id alone        → reuse stored endpoint, re-point backend
+                    //   --id + --endpoint → both must agree exactly; mismatch fails
+                    //   --endpoint alone  → endpoint-match adoption (best-effort)
+                    //   neither           → error
+                    let (existing, endpoint) = if let Some(id_str) = id.as_deref() {
+                        let Some(t) = service.get_active(id_str).await? else {
                             n0_error::bail_any!(
                                 "Tunnel with id '{}' not found in this project. \
                                  Run 'datum-connect tunnel list' to see available ids.",
-                                id
+                                id_str
                             );
                         };
-                        Some(t)
+                        if let Some(user_endpoint) = endpoint.as_deref() {
+                            let user_normalized = lib::normalize_endpoint(user_endpoint);
+                            if user_normalized != t.endpoint {
+                                n0_error::bail_any!(
+                                    "--id '{}' references a tunnel with endpoint '{}', \
+                                     but --endpoint was given as '{}' (normalized: '{}'). \
+                                     Omit --endpoint to reuse the stored endpoint, or run \
+                                     'datum-connect tunnel update --id {} --endpoint {}' \
+                                     first to change it.",
+                                    id_str, t.endpoint, user_endpoint, user_normalized,
+                                    id_str, user_endpoint,
+                                );
+                            }
+                        }
+                        let stored_endpoint = t.endpoint.clone();
+                        (Some(t), stored_endpoint)
                     } else {
-                        service.get_active_by_endpoint(&endpoint).await?
+                        let Some(endpoint) = endpoint else {
+                            n0_error::bail_any!(
+                                "Provide --endpoint <addr> (or --id <tunnel-id> to resume \
+                                 an existing tunnel). See 'datum-connect tunnel listen --help'."
+                            );
+                        };
+                        let existing = service.get_active_by_endpoint(&endpoint).await?;
+                        (existing, endpoint)
                     };
                     let tunnel_id = if let Some(t) = existing {
                         println!("Found existing tunnel for {}:", endpoint);
