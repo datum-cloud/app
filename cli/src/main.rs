@@ -648,10 +648,12 @@ async fn main() -> n0_error::Result<()> {
                         tunnel.id
                     };
                     
-                    heartbeat.start().await;
-                    if let Some(ctx) = datum.selected_context() {
-                        heartbeat.register_project(ctx.project_id).await;
-                    }
+                    // Manual mode: only heartbeat the project the tunnel
+                    // lives in. Auto-enroll would silently keep presence in
+                    // every other project the user can see, which is both
+                    // wasteful and confusing in logs.
+                    heartbeat.start_manual().await;
+                    heartbeat.register_project(project_id.clone()).await;
 
                     service.set_enabled_active(&tunnel_id, true).await?;
                     println!();

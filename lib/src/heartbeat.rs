@@ -86,6 +86,13 @@ impl HeartbeatAgent {
         }
     }
 
+    /// Start in auto-enroll mode: watch login + projects state and keep
+    /// heartbeats running for every project the user has access to.
+    /// Intended for multi-project consumers like the UI.
+    ///
+    /// For the CLI tunnel use case where there is exactly one project of
+    /// interest, prefer [`Self::start_manual`] — auto-enroll silently
+    /// maintains presence in projects the user didn't ask about.
     pub async fn start(&self) {
         let mut guard = self.inner.login_task.lock().await;
         if guard.is_some() {
@@ -131,6 +138,24 @@ impl HeartbeatAgent {
                 }
             }
         });
+        *guard = Some(AbortOnDropHandle::new(task));
+    }
+
+    /// Start in manual mode: do not watch login state and do not auto-enroll
+    /// projects. Callers are responsible for [`Self::register_project`] /
+    /// [`Self::deregister_project`] for the projects they want heartbeats
+    /// for. Per-project loops still handle 401s via their own
+    /// force-refresh logic, so transient auth blips are tolerated; a
+    /// permanent logout is surfaced separately by the CLI's own login
+    /// watcher.
+    pub async fn start_manual(&self) {
+        let mut guard = self.inner.login_task.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        // Park a completed task so future start() / start_manual() calls
+        // remain no-ops, matching start()'s "single-start" contract.
+        let task = tokio::spawn(async {});
         *guard = Some(AbortOnDropHandle::new(task));
     }
 
@@ -724,6 +749,53 @@ mod tests {
         agent.deregister_project("project-1").await;
         let count = agent.inner.projects.lock().await.len();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn start_manual_does_not_auto_enroll() {
+        // Manual mode is the CLI tunnel-listen path: only the project the
+        // caller explicitly registers should get a heartbeat task. Auto-
+        // enroll would have probed `orgs_and_projects()` on bootstrap and
+        // registered every accessible project — we verify it didn't by
+        // checking the projects map stays empty until we register one.
+        let repo = crate::Repo::open_or_create(test_repo_path()).await.unwrap();
+        let datum = crate::datum_cloud::DatumCloudClient::with_repo(
+            crate::datum_cloud::ApiEnv::Staging,
+            repo,
+        )
+        .await
+        .unwrap();
+        let provider = Arc::new(TestProvider {
+            endpoint_id: "test-endpoint".to_string(),
+        });
+        let runner: ProjectRunner = Arc::new(|_project_id, _datum, _provider, cancel| {
+            tokio::spawn(async move {
+                cancel.cancelled().await;
+            })
+        });
+        let agent = HeartbeatAgent::new_with_runner(datum, provider, runner);
+
+        agent.start_manual().await;
+        // Give any background bootstrap a chance to run; manual mode
+        // shouldn't have spawned one, but if it did this would expose it.
+        tokio::task::yield_now().await;
+        assert_eq!(
+            agent.inner.projects.lock().await.len(),
+            0,
+            "manual mode must not auto-enroll any project"
+        );
+
+        agent.register_project("explicit-project").await;
+        assert_eq!(
+            agent.inner.projects.lock().await.len(),
+            1,
+            "register_project still works in manual mode"
+        );
+
+        // start_manual is idempotent (matches start()'s contract): a
+        // second call is a no-op rather than tearing down and replacing.
+        agent.start_manual().await;
+        assert_eq!(agent.inner.projects.lock().await.len(), 1);
     }
 
     #[test]
