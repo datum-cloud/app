@@ -671,6 +671,18 @@ async fn main() -> n0_error::Result<()> {
                     // not just buried in tracing output.
                     let mut login_rx = datum.auth().login_state_watch();
                     let mut last_state = *login_rx.borrow();
+                    // Also poll the server-side progress every 10s. Setup-time
+                    // checks aren't enough: conditions can flip back to a
+                    // terminal failure later (e.g. the iroh DNS controller
+                    // re-reconciling and re-emerging a stale owner), and the
+                    // data plane silently drops in the meantime. When that
+                    // happens, surface it and break out so the operator sees
+                    // the same actionable message they'd have seen at setup.
+                    let mut runtime_poll = tokio::time::interval(RUNTIME_POLL_INTERVAL);
+                    runtime_poll.set_missed_tick_behavior(
+                        tokio::time::MissedTickBehavior::Delay,
+                    );
+                    runtime_poll.tick().await; // consume the immediate first tick
                     loop {
                         tokio::select! {
                             res = tokio::signal::ctrl_c() => {
@@ -696,6 +708,32 @@ async fn main() -> n0_error::Result<()> {
                                     eprintln!();
                                 }
                                 last_state = new_state;
+                            }
+                            _ = runtime_poll.tick() => {
+                                match service.get_active_progress(&tunnel_id).await {
+                                    Ok(Some(progress)) => {
+                                        if let Some(fail) = progress.terminal_failure() {
+                                            eprintln!();
+                                            eprintln!("================================================================");
+                                            eprintln!("  Tunnel is no longer reachable from the edge.");
+                                            eprintln!();
+                                            eprintln!("  {}", format_terminal_failure(fail));
+                                            eprintln!("================================================================");
+                                            eprintln!();
+                                            break;
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        eprintln!();
+                                        eprintln!("Tunnel {} no longer exists on the server. Stopping.", tunnel_id);
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        // Transient query failure (network blip, token mid-refresh,
+                                        // etc.) — log and keep going; the next tick will retry.
+                                        tracing::warn!("watch: progress poll failed: {err:#}");
+                                    }
+                                }
                             }
                         }
                     }
@@ -836,9 +874,37 @@ struct SetupResult {
 /// issuance, edge programming) while still flagging genuine wedges.
 const PROGRESS_STUCK_WARN: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Poll cadence. Fast enough that step transitions feel responsive;
-/// the actual server-side reconcile latency dominates wall-clock anyway.
+/// Poll cadence during setup. Fast enough that step transitions feel
+/// responsive; the actual server-side reconcile latency dominates
+/// wall-clock anyway.
 const PROGRESS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Poll cadence during the steady-state watch after setup is done. A live
+/// terminal failure (e.g. a stale iroh DNS owner re-emerging on a
+/// controller re-reconcile) needs to be surfaced within a minute or so,
+/// but we don't need sub-second resolution — the tunnel either works or
+/// it doesn't.
+const RUNTIME_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Format the user-facing message for a terminal progress failure. Shared
+/// between setup-time (bail!) and runtime watch (eprintln!) so the user
+/// sees the same diagnosis regardless of when the condition trips.
+fn format_terminal_failure(fail: &lib::ProgressStep) -> String {
+    let owner = fail
+        .message
+        .as_deref()
+        .unwrap_or("(controller did not provide a message)");
+    format!(
+        "✗ {}: iroh DNS record is owned by another Connector ({}). \
+         Another project on this machine — or a stale Connector that was never \
+         cleaned up — claimed the same iroh identity. Remove the listen_key for \
+         this project (under <repo>/projects/<project_id>/listen_key with the \
+         per-project layout, or the flat <repo>/listen_key otherwise) and rerun, \
+         or delete the offending Connector.",
+        fail.kind.label(),
+        owner,
+    )
+}
 
 /// Drive a tunnel through its setup conditions, printing a checklist as
 /// each one transitions to Ready. Bails fast on terminal failure
@@ -904,16 +970,7 @@ async fn await_tunnel_progress(
         }
 
         if let Some(fail) = progress.terminal_failure() {
-            let owner = fail.message.as_deref().unwrap_or("unknown owner");
-            n0_error::bail_any!(
-                "✗ {}: iroh DNS record is owned by another Connector ({}). \
-                 Another project on this machine registered the same iroh identity. \
-                 With per-project keys, delete the per-project listen_key under this project's \
-                 directory in your Datum repo (or the offending Connector in the other project) \
-                 and rerun.",
-                fail.kind.label(),
-                owner,
-            );
+            n0_error::bail_any!("{}", format_terminal_failure(fail));
         }
 
         if progress.all_ready() && !progress.hostnames.is_empty() {
