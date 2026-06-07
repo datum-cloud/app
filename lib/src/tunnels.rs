@@ -586,21 +586,22 @@ impl TunnelService {
             },
             status: None,
         };
-        proxy = proxies
-            .create(&PostParams::default(), &proxy)
-            .await
-            .map_err(|err| {
-                warn!(
-                    %project_id,
-                    connector = %connector_name,
-                    endpoint = %endpoint,
-                    "HTTPProxy create failed: {err:#}"
-                );
-                format_quota_error(&err, "HTTPProxy").unwrap_or_else(|| {
-                    format!("Failed to create HTTPProxy: {err}")
-                })
-            })
-            .map_err(|err| n0_error::anyerr!(err))?;
+        let post_params = PostParams::default();
+        proxy = with_quota_check_retry("HTTPProxy create", || {
+            proxies.create(&post_params, &proxy)
+        })
+        .await
+        .map_err(|err| {
+            warn!(
+                %project_id,
+                connector = %connector_name,
+                endpoint = %endpoint,
+                "HTTPProxy create failed: {err:#}"
+            );
+            format_quota_error(&err, "HTTPProxy")
+                .unwrap_or_else(|| format!("Failed to create HTTPProxy: {err}"))
+        })
+        .map_err(|err| n0_error::anyerr!(err))?;
         let proxy_name = proxy.name_any();
         debug!(
             %project_id,
@@ -624,20 +625,22 @@ impl TunnelService {
             spec: ad_spec,
             status: None,
         };
-        ads.create(&PostParams::default(), &ad)
-            .await
-            .map_err(|err| {
-                warn!(
-                    %project_id,
-                    proxy = %proxy_name,
-                    connector = %connector_name,
-                    "ConnectorAdvertisement create failed: {err:#}"
-                );
-                format_quota_error(&err, "ConnectorAdvertisement").unwrap_or_else(|| {
-                    format!("Failed to create ConnectorAdvertisement: {err}")
-                })
-            })
-            .map_err(|err| n0_error::anyerr!(err))?;
+        let ad_post = PostParams::default();
+        with_quota_check_retry("ConnectorAdvertisement create", || {
+            ads.create(&ad_post, &ad)
+        })
+        .await
+        .map_err(|err| {
+            warn!(
+                %project_id,
+                proxy = %proxy_name,
+                connector = %connector_name,
+                "ConnectorAdvertisement create failed: {err:#}"
+            );
+            format_quota_error(&err, "ConnectorAdvertisement")
+                .unwrap_or_else(|| format!("Failed to create ConnectorAdvertisement: {err}"))
+        })
+        .map_err(|err| n0_error::anyerr!(err))?;
         debug!(
             %project_id,
             proxy = %proxy_name,
@@ -681,7 +684,10 @@ impl TunnelService {
                 },
                 status: None,
             };
-            tpps.create(&PostParams::default(), &tpp)
+            let tpp_post = PostParams::default();
+            with_quota_check_retry("TrafficProtectionPolicy create", || {
+                tpps.create(&tpp_post, &tpp)
+            })
                 .await
                 .map_err(|err| {
                     warn!(
@@ -883,9 +889,12 @@ impl TunnelService {
                         spec: ad_spec,
                         status: None,
                     };
-                    ads.create(&PostParams::default(), &ad)
-                        .await
-                        .std_context("Failed to create ConnectorAdvertisement")?;
+                    let ad_post = PostParams::default();
+                    with_quota_check_retry("ConnectorAdvertisement create", || {
+                        ads.create(&ad_post, &ad)
+                    })
+                    .await
+                    .std_context("Failed to create ConnectorAdvertisement")?;
                 }
             }
         } else if ads
@@ -1157,10 +1166,12 @@ impl TunnelService {
             },
             status: None,
         };
-        connector = connectors
-            .create(&PostParams::default(), &connector)
-            .await
-            .std_context("Failed to create Connector")?;
+        let conn_post = PostParams::default();
+        connector = with_quota_check_retry("Connector create", || {
+            connectors.create(&conn_post, &connector)
+        })
+        .await
+        .std_context("Failed to create Connector")?;
 
         if let Some(details) = build_connection_details(&self.listen) {
             let details_value = serde_json::to_value(details)
@@ -1477,6 +1488,13 @@ async fn patch_device_annotations(api: &Api<Connector>, connector: &mut Connecto
 
 fn format_quota_error(err: &dyn std::error::Error, resource_type: &str) -> Option<String> {
     let err_msg = err.to_string();
+    // Transient quota-check timeout — the error literally says "Please try
+    // again in a moment". Don't relabel it as "exceeded"; with the retry
+    // wrapper applied at creation sites we'll usually never get here, and
+    // when we do the original message is the most accurate signal.
+    if err_msg.contains("took too long to be checked against your quota") {
+        return None;
+    }
     if err_msg.contains("quota") || err_msg.contains("Insufficient quota") {
         return Some(format!(
             "Quota limit exceeded for {resource_type} resources.\n\n\
@@ -1488,6 +1506,57 @@ fn format_quota_error(err: &dyn std::error::Error, resource_type: &str) -> Optio
         ));
     }
     None
+}
+
+/// True if `err` is the operator's transient quota-check timeout (a 403
+/// whose message says "Please try again in a moment"). Distinct from
+/// real quota exhaustion, which produces a different message and
+/// shouldn't be retried.
+fn is_quota_check_timeout(err: &kube::Error) -> bool {
+    matches!(
+        err,
+        kube::Error::Api(e)
+            if e.code == 403
+                && e.message.contains("took too long to be checked against your quota")
+    )
+}
+
+/// Retry a kube API call up to ~15 seconds while it keeps tripping the
+/// operator's quota-check timeout. Other errors return immediately so
+/// real failures still surface fast. Prints a one-line stderr notice on
+/// the first retry so the user knows we're waiting on the server.
+async fn with_quota_check_retry<T, F, Fut>(op_name: &str, mut f: F) -> kube::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = kube::Result<T>>,
+{
+    let delays = [
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(4),
+        std::time::Duration::from_secs(8),
+    ];
+    for (i, delay) in delays.iter().enumerate() {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(err) if is_quota_check_timeout(&err) => {
+                if i == 0 {
+                    eprintln!(
+                        "  … quota check timed out for {op_name}; retrying for up to 15s"
+                    );
+                }
+                warn!(
+                    op = op_name,
+                    attempt = i + 1,
+                    next_delay_s = delay.as_secs(),
+                    "quota check timed out; retrying"
+                );
+                tokio::time::sleep(*delay).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    f().await
 }
 
 fn publish_tickets_enabled() -> bool {
@@ -1676,6 +1745,46 @@ mod tests {
             proxy_step.resource.as_deref(),
             Some("HTTPProxy/tunnel-test")
         );
+    }
+
+    fn api_error(code: u16, message: &str) -> kube::Error {
+        kube::Error::Api(kube::core::ErrorResponse {
+            status: "Failure".into(),
+            message: message.into(),
+            reason: if code == 403 { "Forbidden".into() } else { "Unknown".into() },
+            code,
+        })
+    }
+
+    #[test]
+    fn quota_check_timeout_classifier_matches_transient_403() {
+        // The exact phrase the operator emits when the quota check itself
+        // times out — distinct from real quota exhaustion. The error message
+        // literally says "Please try again in a moment".
+        let err = api_error(
+            403,
+            "connectoradvertisements.networking.datumapis.com \"tunnel-x\" is forbidden: \
+             Your request took too long to be checked against your quota. Please try again \
+             in a moment — if this keeps happening, contact support.",
+        );
+        assert!(is_quota_check_timeout(&err));
+
+        // Real exhaustion shouldn't trigger retry.
+        let exhausted = api_error(403, "Insufficient quota for ConnectorAdvertisement");
+        assert!(!is_quota_check_timeout(&exhausted));
+
+        // 401 with similar text shouldn't match — different failure class.
+        let unauthorized = api_error(401, "took too long to be checked against your quota");
+        assert!(!is_quota_check_timeout(&unauthorized));
+
+        // format_quota_error should NOT mangle the timeout message into a
+        // misleading "Quota limit exceeded" string.
+        assert!(
+            format_quota_error(&err, "ConnectorAdvertisement").is_none(),
+            "transient timeout must propagate verbatim, not become 'exceeded'"
+        );
+        // It SHOULD format real exhaustion.
+        assert!(format_quota_error(&exhausted, "ConnectorAdvertisement").is_some());
     }
 
     #[test]
