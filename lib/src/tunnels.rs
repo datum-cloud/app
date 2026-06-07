@@ -768,39 +768,61 @@ impl TunnelService {
             .await
             .std_context("Failed to fetch HTTPProxy")?;
         let hostnames = existing.spec.hostnames.clone().unwrap_or_default();
+        let desired_rules = vec![https_redirect_rule(), proxy_rule(&endpoint, &connector_name)];
 
-        let patch = json!({
-            "metadata": {
-                "annotations": {
-                    DISPLAY_NAME_ANNOTATION: label,
+        // Skip the PATCH when the existing spec already matches what we'd
+        // write. A no-op patch still bumps metadata.generation on some API
+        // servers, which triggers a downstream Envoy re-reconcile and a
+        // window where the data plane returns 5xx — exactly the resume-
+        // induced churn the UI doesn't suffer because its enable path
+        // never touches HTTPProxy.spec. Making this verb idempotent at the
+        // lib boundary means every caller (CLI, UI Edit dialog, future
+        // datumctl plugin) gets the no-churn behavior for free.
+        if http_proxy_spec_matches(&existing, label, &desired_rules) {
+            debug!(
+                %project_id,
+                proxy = %tunnel_id,
+                "HTTPProxy spec already matches desired state; skipping patch"
+            );
+        } else {
+            let patch = json!({
+                "metadata": {
+                    "annotations": {
+                        DISPLAY_NAME_ANNOTATION: label,
+                    }
+                },
+                "spec": {
+                    "hostnames": hostnames,
+                    "rules": desired_rules,
                 }
-            },
-            "spec": {
-                "hostnames": hostnames,
-                "rules": [https_redirect_rule(), proxy_rule(&endpoint, &connector_name)],
-            }
-        });
-        proxies
-            .patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&patch))
-            .await
-            .std_context("Failed to update HTTPProxy")?;
-
-        if let Ok(existing_ad) = ads.get_opt(tunnel_id).await
-            && existing_ad.is_some()
-        {
-            let ad_patch = json!({
-                "spec": advertisement_spec(&connector_name, target)
             });
-            ads.patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&ad_patch))
+            proxies
+                .patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
-                .std_context("Failed to update ConnectorAdvertisement")?;
+                .std_context("Failed to update HTTPProxy")?;
         }
 
-        let enabled = ads
+        let existing_ad = ads
             .get_opt(tunnel_id)
             .await
-            .std_context("Failed to load ConnectorAdvertisement")?
-            .is_some();
+            .std_context("Failed to fetch ConnectorAdvertisement")?;
+        if let Some(existing_ad) = existing_ad.as_ref() {
+            let desired_ad_spec = advertisement_spec(&connector_name, target);
+            if advertisement_spec_matches(existing_ad, &desired_ad_spec) {
+                debug!(
+                    %project_id,
+                    advertisement = %tunnel_id,
+                    "ConnectorAdvertisement spec already matches; skipping patch"
+                );
+            } else {
+                let ad_patch = json!({ "spec": desired_ad_spec });
+                ads.patch(tunnel_id, &PatchParams::default(), &Patch::Merge(&ad_patch))
+                    .await
+                    .std_context("Failed to update ConnectorAdvertisement")?;
+            }
+        }
+
+        let enabled = existing_ad.is_some();
 
         let summary = TunnelSummary {
             id: tunnel_id.to_string(),
@@ -1316,6 +1338,52 @@ fn summary_from_proxy(proxy: &HTTPProxy, enabled: bool) -> TunnelSummary {
     }
 }
 
+/// True when the HTTPProxy's display label annotation and rules already
+/// match what `update_project` would write. Used to short-circuit the
+/// PATCH so a no-op update doesn't bump `metadata.generation` and trigger
+/// a downstream Envoy re-reconcile (see the resume-induced 5xx window).
+fn http_proxy_spec_matches(
+    existing: &HTTPProxy,
+    desired_label: &str,
+    desired_rules: &[HTTPProxyRule],
+) -> bool {
+    let existing_label = existing
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(DISPLAY_NAME_ANNOTATION))
+        .map(String::as_str);
+    if existing_label != Some(desired_label) {
+        return false;
+    }
+    // Compare via serde Value rather than structural equality on the Rust
+    // types so we get a stable representation that doesn't drift when
+    // Option<...> fields with serde defaults serialize differently.
+    let Ok(existing_rules_value) = serde_json::to_value(&existing.spec.rules) else {
+        return false;
+    };
+    let Ok(desired_rules_value) = serde_json::to_value(desired_rules) else {
+        return false;
+    };
+    existing_rules_value == desired_rules_value
+}
+
+/// True when the ConnectorAdvertisement's spec already matches what
+/// `update_project` would write. Same idempotency motivation as
+/// `http_proxy_spec_matches`.
+fn advertisement_spec_matches(
+    existing: &ConnectorAdvertisement,
+    desired: &ConnectorAdvertisementSpec,
+) -> bool {
+    let Ok(existing_value) = serde_json::to_value(&existing.spec) else {
+        return false;
+    };
+    let Ok(desired_value) = serde_json::to_value(desired) else {
+        return false;
+    };
+    existing_value == desired_value
+}
+
 /// Extract the connector name from the first backend that references one.
 fn proxy_connector_name(proxy: &HTTPProxy) -> Option<String> {
     proxy
@@ -1829,5 +1897,124 @@ mod tests {
             StepStatus::Ready,
             "matched observedGeneration must be Ready"
         );
+    }
+
+    fn proxy_with_backend(label: &str, endpoint: &str, connector_name: &str) -> HTTPProxy {
+        let mut p = HTTPProxy::new(
+            "tunnel-test",
+            HTTPProxySpec {
+                hostnames: Some(vec!["test.datumproxy.net".into()]),
+                rules: vec![https_redirect_rule(), proxy_rule(endpoint, connector_name)],
+            },
+        );
+        let mut ann = std::collections::BTreeMap::new();
+        ann.insert(DISPLAY_NAME_ANNOTATION.to_string(), label.to_string());
+        p.metadata = ObjectMeta {
+            name: Some("tunnel-test".into()),
+            annotations: Some(ann),
+            ..Default::default()
+        };
+        p
+    }
+
+    #[test]
+    fn http_proxy_spec_matches_skips_no_op_resume() {
+        // The CLI resume path now goes through update_active which calls
+        // update_project. When the existing tunnel already points at the
+        // current connector with the same endpoint and label, the lib must
+        // recognize that and skip the PATCH — sending one would bump
+        // metadata.generation and trigger a downstream Envoy re-reconcile.
+        let existing =
+            proxy_with_backend("my-label", "http://127.0.0.1:11434", "datum-connect-mhxj5");
+        let desired_rules = vec![
+            https_redirect_rule(),
+            proxy_rule("http://127.0.0.1:11434", "datum-connect-mhxj5"),
+        ];
+        assert!(http_proxy_spec_matches(
+            &existing,
+            "my-label",
+            &desired_rules
+        ));
+    }
+
+    #[test]
+    fn http_proxy_spec_matches_detects_each_drift_axis() {
+        let existing =
+            proxy_with_backend("my-label", "http://127.0.0.1:11434", "datum-connect-mhxj5");
+
+        // Different connector — adoption across identity change must patch.
+        let rules_new_connector = vec![
+            https_redirect_rule(),
+            proxy_rule("http://127.0.0.1:11434", "datum-connect-NEW"),
+        ];
+        assert!(!http_proxy_spec_matches(
+            &existing,
+            "my-label",
+            &rules_new_connector
+        ));
+
+        // Different endpoint — backend retarget must patch.
+        let rules_new_endpoint = vec![
+            https_redirect_rule(),
+            proxy_rule("http://127.0.0.1:9999", "datum-connect-mhxj5"),
+        ];
+        assert!(!http_proxy_spec_matches(
+            &existing,
+            "my-label",
+            &rules_new_endpoint
+        ));
+
+        // Different label — rename must patch.
+        let rules_same = vec![
+            https_redirect_rule(),
+            proxy_rule("http://127.0.0.1:11434", "datum-connect-mhxj5"),
+        ];
+        assert!(!http_proxy_spec_matches(
+            &existing,
+            "different-label",
+            &rules_same
+        ));
+
+        // No annotation at all — must patch.
+        let mut bare = existing.clone();
+        bare.metadata.annotations = None;
+        assert!(!http_proxy_spec_matches(&bare, "my-label", &rules_same));
+    }
+
+    fn target(host: &str, port: u16) -> ParsedTarget {
+        ParsedTarget {
+            address: host.to_string(),
+            port,
+        }
+    }
+
+    fn advertisement_with_target(connector_name: &str, host: &str, port: u16) -> ConnectorAdvertisement {
+        ConnectorAdvertisement {
+            metadata: ObjectMeta {
+                name: Some("tunnel-test".into()),
+                ..Default::default()
+            },
+            spec: advertisement_spec(connector_name, target(host, port)),
+            status: None,
+        }
+    }
+
+    #[test]
+    fn advertisement_spec_matches_skips_no_op() {
+        let existing = advertisement_with_target("datum-connect-mhxj5", "127.0.0.1", 11434);
+        let desired = advertisement_spec("datum-connect-mhxj5", target("127.0.0.1", 11434));
+        assert!(advertisement_spec_matches(&existing, &desired));
+    }
+
+    #[test]
+    fn advertisement_spec_matches_detects_drift() {
+        let existing = advertisement_with_target("datum-connect-mhxj5", "127.0.0.1", 11434);
+        let desired_new_port =
+            advertisement_spec("datum-connect-mhxj5", target("127.0.0.1", 9999));
+        assert!(!advertisement_spec_matches(&existing, &desired_new_port));
+
+        let desired_new_conn =
+            advertisement_spec("datum-connect-NEW", target("127.0.0.1", 11434));
+        assert!(!advertisement_spec_matches(&existing, &desired_new_conn));
     }
 }
