@@ -16,8 +16,19 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
+use std::sync::OnceLock;
 use tracing::info;
 use tracing_subscriber::prelude::*;
+
+/// Global handle to the EnvFilter so the picker can temporarily silence
+/// tracing output (the iroh relay actor logs continuously and corrupts
+/// the inquire redraw if left on).
+static FILTER_RELOAD: OnceLock<
+    tracing_subscriber::reload::Handle<
+        tracing_subscriber::EnvFilter,
+        tracing_subscriber::Registry,
+    >,
+> = OnceLock::new();
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
@@ -286,11 +297,12 @@ async fn main() -> n0_error::Result<()> {
     // Install the ring-based crypto provider for rustls
     let _ = rustls_ring::default_provider().install_default();
 
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let (filter_layer, filter_reload) = tracing_subscriber::reload::Layer::new(env_filter);
+    let _ = FILTER_RELOAD.set(filter_reload);
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
+        .with(filter_layer)
         .with(tracing_subscriber::fmt::layer())
         .with(sentry::integrations::tracing::layer())
         .init();
@@ -921,6 +933,38 @@ async fn select_project_interactive(datum: &DatumCloudClient) -> n0_error::Resul
     Ok(())
 }
 
+/// Guard that silences tracing output for its lifetime, restoring the
+/// previous filter on drop. Used to keep the iroh relay actor (and
+/// anything else chatty) from corrupting inquire's terminal redraw.
+struct QuietTracing {
+    previous: Option<String>,
+}
+
+impl QuietTracing {
+    fn engage() -> Self {
+        // Capture the previous filter representation so we can rebuild it
+        // on restore. EnvFilter doesn't implement Clone; serialize+parse
+        // is the supported round-trip.
+        let previous = FILTER_RELOAD
+            .get()
+            .and_then(|h| h.with_current(|f| f.to_string()).ok());
+        if let Some(handle) = FILTER_RELOAD.get() {
+            let _ = handle.reload(tracing_subscriber::EnvFilter::new("error"));
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for QuietTracing {
+    fn drop(&mut self) {
+        if let (Some(handle), Some(prev)) = (FILTER_RELOAD.get(), self.previous.take())
+            && let Ok(filter) = tracing_subscriber::EnvFilter::try_new(&prev)
+        {
+            let _ = handle.reload(filter);
+        }
+    }
+}
+
 /// Interactive picker for resuming an existing tunnel. Returns the
 /// chosen tunnel, or `None` if the user cancelled, there are no
 /// candidates, or stdin is not a TTY (in which case the caller should
@@ -976,11 +1020,14 @@ async fn pick_tunnel_interactive(
         })
         .collect();
 
-    let answer = inquire::Select::new("Resume which tunnel?", labels)
-        .with_help_message("↑↓ navigate · Enter select · Esc cancel · ○ = disabled")
-        .with_page_size(10)
-        .raw_prompt_skippable()
-        .map_err(|err| n0_error::anyerr!("interactive selection failed: {err}"))?;
+    let answer = {
+        let _quiet = QuietTracing::engage();
+        inquire::Select::new("Resume which tunnel?", labels)
+            .with_help_message("↑↓ navigate · Enter select · Esc cancel · ○ = disabled")
+            .with_page_size(10)
+            .raw_prompt_skippable()
+            .map_err(|err| n0_error::anyerr!("interactive selection failed: {err}"))?
+    };
 
     Ok(answer.map(|opt| candidates[opt.index].clone()))
 }
