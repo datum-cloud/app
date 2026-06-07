@@ -266,6 +266,15 @@ pub enum TunnelCommands {
         /// reused — useful for resuming a tunnel verbatim.
         #[clap(long)]
         id: Option<String>,
+        /// Maximum wall-clock budget for the whole setup including the
+        /// end-to-end connectivity verification (origin probe + proxy URL
+        /// probe). When the controller conditions all flip Ready, the CLI
+        /// keeps polling both URLs every 10s until they respond non-5xx.
+        /// If this elapses with probes still failing, the command exits
+        /// non-zero with a summary so you don't think it's healthy when
+        /// it isn't. Accepts humantime values like "5m" or "30s".
+        #[clap(long, default_value = "10m")]
+        timeout: humantime::Duration,
         /// Skip confirmation prompt if tunnel already exists.
         #[clap(long, default_value = "false")]
         yes: bool,
@@ -627,7 +636,7 @@ async fn main() -> n0_error::Result<()> {
                         }
                     }
                 }
-                TunnelCommands::Listen { label, endpoint, id, yes } => {
+                TunnelCommands::Listen { label, endpoint, id, timeout, yes } => {
                     let endpoint_id = node.endpoint_id();
 
                     // Resolve (existing_tunnel, effective_endpoint):
@@ -749,10 +758,21 @@ async fn main() -> n0_error::Result<()> {
                     println!("Setting up tunnel...");
                     let progress = await_tunnel_progress(&service, &tunnel_id).await?;
 
-                    let elapsed = progress.elapsed.as_secs();
-                    for hostname in &progress.hostnames {
-                        println!("Tunnel ready after {} sec: https://{}", elapsed, hostname);
-                    }
+                    let hostname = progress
+                        .hostnames
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| n0_error::anyerr!("tunnel has no hostname after setup"))?;
+                    println!("Verifying connectivity...");
+                    let verify_start = std::time::Instant::now();
+                    let budget = (*timeout).saturating_sub(progress.elapsed);
+                    verify_endpoints(&endpoint, &hostname, budget).await?;
+                    let total = progress.elapsed + verify_start.elapsed();
+                    println!(
+                        "Tunnel ready after {} sec: https://{}",
+                        total.as_secs(),
+                        hostname,
+                    );
                     println!("Press Ctrl+C to stop...");
 
                     // Watch login state so a permanent auth loss mid-session
@@ -1191,4 +1211,151 @@ async fn await_tunnel_progress(
 
         tokio::time::sleep(PROGRESS_POLL_INTERVAL).await;
     }
+}
+
+/// How often to retry the connectivity probes during the verify phase.
+const VERIFY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Outcome of one probe attempt. We split "reachable but error" from
+/// "couldn't even connect" so the user gets a useful failure summary
+/// (different remedies for "your server is down" vs "the edge is 503ing").
+#[derive(Debug, Clone)]
+enum ProbeOutcome {
+    Ok { status: u16 },
+    HttpStatus { status: u16 },
+    NotReachable { reason: String },
+}
+
+impl ProbeOutcome {
+    fn ok(&self) -> bool {
+        matches!(self, ProbeOutcome::Ok { .. })
+    }
+
+    fn detail(&self) -> String {
+        match self {
+            ProbeOutcome::Ok { status } => format!("HTTP {status}"),
+            ProbeOutcome::HttpStatus { status } => format!("HTTP {status}"),
+            ProbeOutcome::NotReachable { reason } => reason.clone(),
+        }
+    }
+}
+
+/// Probe one URL. Any response under 500 (including 4xx like 401/404) is
+/// considered "reachable" — the data path is forwarding even if the
+/// origin chose to reject the request. Only 5xx + transport errors are
+/// counted as failures so we don't false-fail on authenticated origins.
+async fn probe(client: &reqwest::Client, url: &str) -> ProbeOutcome {
+    match client.get(url).send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            if status < 500 {
+                ProbeOutcome::Ok { status }
+            } else {
+                ProbeOutcome::HttpStatus { status }
+            }
+        }
+        Err(err) => ProbeOutcome::NotReachable { reason: err.to_string() },
+    }
+}
+
+/// After the controller conditions all flip Ready, the data plane still
+/// needs a moment to actually carry traffic — Envoy programming a route
+/// is not the same as Envoy serving it. Probe both the user's local
+/// origin and the public proxy URL every 10 seconds until both respond
+/// non-5xx, or the timeout budget runs out.
+async fn verify_endpoints(
+    origin_url: &str,
+    proxy_hostname: &str,
+    budget: std::time::Duration,
+) -> n0_error::Result<()> {
+    let proxy_url = format!("https://{proxy_hostname}/");
+    let client = reqwest::Client::builder()
+        // Per-request timeout shorter than the poll interval so a stuck
+        // request can't eat the whole 10s gap.
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|err| n0_error::anyerr!("failed to build HTTP client: {err}"))?;
+
+    let start = std::time::Instant::now();
+    let mut origin_ok = false;
+    let mut proxy_ok = false;
+    let mut last_origin: Option<ProbeOutcome> = None;
+    let mut last_proxy: Option<ProbeOutcome> = None;
+
+    loop {
+        // Probe in parallel — skip the side that's already ready.
+        let origin_fut = async {
+            if origin_ok { None } else { Some(probe(&client, origin_url).await) }
+        };
+        let proxy_fut = async {
+            if proxy_ok { None } else { Some(probe(&client, &proxy_url).await) }
+        };
+        let (now_origin, now_proxy) = tokio::join!(origin_fut, proxy_fut);
+        let elapsed = start.elapsed().as_secs_f32();
+
+        if let Some(o) = now_origin {
+            if o.ok() {
+                origin_ok = true;
+                println!(
+                    "  ✓ origin reachable ({elapsed:.1}s) [{origin_url}]: {}",
+                    o.detail(),
+                );
+            } else {
+                eprintln!(
+                    "  … origin not reachable ({elapsed:.0}s) [{origin_url}]: {}",
+                    o.detail(),
+                );
+            }
+            last_origin = Some(o);
+        }
+        if let Some(p) = now_proxy {
+            if p.ok() {
+                proxy_ok = true;
+                println!(
+                    "  ✓ proxy responding ({elapsed:.1}s) [https://{proxy_hostname}]: {}",
+                    p.detail(),
+                );
+            } else {
+                eprintln!(
+                    "  … proxy not responding ({elapsed:.0}s) [https://{proxy_hostname}]: {}",
+                    p.detail(),
+                );
+            }
+            last_proxy = Some(p);
+        }
+
+        if origin_ok && proxy_ok {
+            return Ok(());
+        }
+        if start.elapsed() >= budget {
+            break;
+        }
+        // Don't sleep past the budget — clamp the wait so an early
+        // success on one side doesn't make us waste 10s before bailing.
+        let remaining = budget.saturating_sub(start.elapsed());
+        tokio::time::sleep(VERIFY_POLL_INTERVAL.min(remaining)).await;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if !origin_ok {
+        let detail = last_origin
+            .as_ref()
+            .map(|o| o.detail())
+            .unwrap_or_else(|| "never probed".into());
+        parts.push(format!("origin {origin_url} never responded ({detail})"));
+    }
+    if !proxy_ok {
+        let detail = last_proxy
+            .as_ref()
+            .map(|p| p.detail())
+            .unwrap_or_else(|| "never probed".into());
+        parts.push(format!(
+            "proxy https://{proxy_hostname} never returned non-5xx ({detail})"
+        ));
+    }
+    n0_error::bail_any!(
+        "connectivity verification timed out after {}s: {}",
+        start.elapsed().as_secs(),
+        parts.join("; "),
+    )
 }
