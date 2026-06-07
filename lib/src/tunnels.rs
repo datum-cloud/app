@@ -1189,7 +1189,12 @@ fn build_connection_details(listen: &ListenNode) -> Option<ConnectorConnectionDe
     })
 }
 
-fn normalize_endpoint(endpoint: &str) -> String {
+/// Canonicalize an endpoint string the way `TunnelSummary.endpoint` is
+/// stored: trim whitespace, leave URLs that already have a scheme alone,
+/// otherwise prepend `http://`. Exposed so the CLI can compare a
+/// user-supplied endpoint against an existing tunnel's stored endpoint
+/// before deciding whether to adopt or fail.
+pub fn normalize_endpoint(endpoint: &str) -> String {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
         return endpoint.to_string();
