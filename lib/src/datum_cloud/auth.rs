@@ -305,7 +305,24 @@ impl StatelessClient {
         // typestate prevents mutating the cached `self.oidc` in place,
         // and the discovery the constructor performs is cheap enough to
         // accept the duplication.
+        //
+        // HACK: borrow datumctl's OIDC client_id for the device-flow
+        // path. Our own client (the `datum-desktop-app` Zitadel app —
+        // see datum-cloud/infra apps/datum-iam-system/.../zitadel-setup
+        // /pulumi/index.ts) is allow-listed only for AUTHORIZATION_CODE
+        // and REFRESH_TOKEN grants, and Zitadel responds with
+        // `unauthorized_client: grant_type "...device_code" not allowed`
+        // for it. `datumctl-cli` already has DEVICE_CODE in its
+        // grantTypes, so we reuse its client_id strictly for the device
+        // flow until the planned datumctl-connect plugin lands (which
+        // will own its own properly-scoped OIDC client). Token issued
+        // is still scoped to the same Zitadel project; downstream API
+        // calls don't care which client minted it.
         let provider = self.env.auth_provider();
+        let device_client_id = match self.env {
+            ApiEnv::Staging => "325848904128073754",
+            ApiEnv::Production => "328728232771788043",
+        };
         let issuer = IssuerUrl::new(provider.issuer_url.clone())
             .std_context("Invalid OIDC provider issuer URL")?;
         let metadata = CoreProviderMetadata::discover_async(issuer, &self.http)
@@ -313,7 +330,7 @@ impl StatelessClient {
             .std_context("Failed to discover OIDC provider metadata")?;
         let oidc = CoreClient::from_provider_metadata(
             metadata,
-            ClientId::new(provider.client_id),
+            ClientId::new(device_client_id.to_string()),
             provider.client_secret.clone().map(ClientSecret::new),
         )
         .set_device_authorization_url(
