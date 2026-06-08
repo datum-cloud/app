@@ -14,7 +14,7 @@ use crate::http_user_agent::datum_http_user_agent;
 use crate::{ProjectControlPlaneClient, Repo, SelectedContext};
 
 pub use self::{
-    auth::{AuthClient, AuthState, LoginState, MaybeAuth, UserProfile},
+    auth::{AuthClient, AuthState, DeviceCodeInfo, LoginState, MaybeAuth, UserProfile},
     env::ApiEnv,
 };
 
@@ -103,6 +103,18 @@ impl DatumCloudClient {
 
     pub async fn login(&self) -> Result<()> {
         self.auth.login().await
+    }
+
+    /// `--no-browser` login via the OAuth2 device authorization grant.
+    /// The CLI's `auth login --no-browser` flag routes here; the `display`
+    /// callback shows the verification URL + user code to the operator
+    /// who completes authorization on another device.
+    pub async fn login_device_code<F, Fut>(&self, display: F) -> Result<()>
+    where
+        F: FnOnce(DeviceCodeInfo) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        self.auth.login_device_code(display).await
     }
 
     pub async fn logout(&self) -> Result<()> {

@@ -9,7 +9,7 @@ use rustls::crypto::ring as rustls_ring;
 use lib::{
     Advertisment, AdvertismentTicket, ConnectNode, DiscoveryMode, HeartbeatAgent, ListenNode,
     ProgressStepKind, ProxyState, Repo, SelectedContext, StepStatus, TcpProxyData, TunnelService,
-    datum_cloud::{ApiEnv, DatumCloudClient, LoginState},
+    datum_cloud::{ApiEnv, DatumCloudClient, DeviceCodeInfo, LoginState},
 };
 use n0_error::StdResultExt;
 use std::{
@@ -221,7 +221,16 @@ pub enum AuthCommands {
     Status,
 
     /// Log in to Datum Cloud (opens browser for OAuth).
-    Login,
+    Login {
+        /// Skip the localhost-redirect flow and use the OAuth2 device
+        /// authorization grant instead. Required when running on a
+        /// remote machine over SSH, in CI, or in a container — anywhere
+        /// the localhost-redirect can't reach a browser. The CLI prints
+        /// a verification URL + user code; complete authorization on
+        /// another device.
+        #[clap(long)]
+        no_browser: bool,
+    },
 
     /// Log out and clear stored credentials.
     Logout,
@@ -230,7 +239,12 @@ pub enum AuthCommands {
     List,
 
     /// Switch to a different authenticated user (clears current and prompts for new login).
-    Switch,
+    Switch {
+        /// Same as `auth login --no-browser`: use the OAuth2 device
+        /// authorization grant for the fresh login after logout.
+        #[clap(long)]
+        no_browser: bool,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -394,8 +408,12 @@ async fn main() -> n0_error::Result<()> {
                         println!("Not authenticated");
                     }
                 }
-                AuthCommands::Login => {
-                    datum.login().await?;
+                AuthCommands::Login { no_browser } => {
+                    if no_browser {
+                        datum.login_device_code(display_device_code).await?;
+                    } else {
+                        datum.login().await?;
+                    }
                     if let Ok(state) = datum.auth_state().get() {
                         println!(
                             "Logged in as {} ({})",
@@ -425,10 +443,14 @@ async fn main() -> n0_error::Result<()> {
                     println!();
                     println!("Note: Multi-user storage not yet implemented. Use 'auth switch' to log in as a different user.");
                 }
-                AuthCommands::Switch => {
+                AuthCommands::Switch { no_browser } => {
                     datum.logout().await?;
                     println!("Switching users...");
-                    datum.login().await?;
+                    if no_browser {
+                        datum.login_device_code(display_device_code).await?;
+                    } else {
+                        datum.login().await?;
+                    }
                     if let Ok(state) = datum.auth_state().get() {
                         println!(
                             "Switched to {} ({})",
@@ -1086,6 +1108,35 @@ fn resolve_project_context(
         }
     }
     None
+}
+
+/// Renders an OAuth2 device authorization grant prompt for `auth login
+/// --no-browser` / `auth switch --no-browser`. Prints the verification
+/// URL + user code prominently to stderr (so it doesn't get tangled
+/// with the structured-output JSON future plugin modes may emit to
+/// stdout), then returns so the polling loop in lib can proceed.
+async fn display_device_code(info: DeviceCodeInfo) {
+    eprintln!();
+    eprintln!("================================================================");
+    eprintln!("  Open this URL on another device to authorize:");
+    eprintln!();
+    eprintln!("      {}", info.verification_uri);
+    eprintln!();
+    eprintln!("  Enter this code when prompted:");
+    eprintln!();
+    eprintln!("      {}", info.user_code);
+    if let Some(complete) = &info.verification_uri_complete {
+        eprintln!();
+        eprintln!("  (Or open this pre-filled URL to skip the code step:");
+        eprintln!("   {})", complete);
+    }
+    eprintln!();
+    eprintln!(
+        "  Code expires in {} seconds. Waiting for authorization…",
+        info.expires_in.as_secs(),
+    );
+    eprintln!("================================================================");
+    eprintln!();
 }
 
 /// Result of streaming the tunnel-setup progress to stdout. All conditions

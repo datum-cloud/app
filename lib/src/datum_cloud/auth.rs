@@ -11,10 +11,12 @@ use arc_swap::ArcSwap;
 use chrono::Utc;
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr, stack_error};
 use openidconnect::{
-    AccessToken, AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl,
-    Nonce, NonceVerifier, OAuth2TokenResponse, PkceCodeChallenge, RefreshToken, Scope,
-    TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
+    AccessToken, AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    DeviceAuthorizationUrl, IssuerUrl, Nonce, NonceVerifier, OAuth2TokenResponse,
+    PkceCodeChallenge, RefreshToken, Scope, TokenResponse,
+    core::{
+        CoreAuthenticationFlow, CoreClient, CoreDeviceAuthorizationResponse, CoreProviderMetadata,
+    },
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -30,6 +32,25 @@ use super::ApiEnv;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Refresh auth or relogin if access token is valid for less than 30min
 const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
+
+/// Surface of an in-flight OAuth2 device authorization grant. The
+/// `display` callback passed to [`StatelessClient::login_device_code`]
+/// receives one of these and is responsible for showing the verification
+/// URL + user code to the operator.
+#[derive(Debug, Clone)]
+pub struct DeviceCodeInfo {
+    /// URL the user opens on their other device to authorize.
+    pub verification_uri: String,
+    /// Short code the user enters at `verification_uri`.
+    pub user_code: String,
+    /// Optional URL that pre-fills the user code, so the user only has
+    /// to follow one link.
+    pub verification_uri_complete: Option<String>,
+    /// How long the user has before the device code expires.
+    pub expires_in: Duration,
+    /// Operator-side polling interval recommended by the auth server.
+    pub interval: Duration,
+}
 
 pub struct AuthProvider {
     pub issuer_url: String,
@@ -238,6 +259,107 @@ impl StatelessClient {
             .parse_token_response(tokens, nonce_verifier, None)
             .await?;
         info!(email=%state.profile.email, expires_at=%state.tokens.expires_at(), "login succesfull");
+        Ok(state)
+    }
+
+    /// OAuth2 Device Authorization grant (RFC 8628). Used by `datum-connect
+    /// auth login --no-browser` and any other headless context where the
+    /// localhost-redirect flow can't reach back to a browser (SSH, CI,
+    /// containers). The caller receives a `DeviceCodeInfo` via the
+    /// `display` callback and is responsible for showing the verification
+    /// URL + user code to the operator; this method then polls the token
+    /// endpoint until the user completes authorization.
+    pub async fn login_device_code<F, Fut>(&self, display: F) -> Result<AuthState>
+    where
+        F: FnOnce(DeviceCodeInfo) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        // `openidconnect::CoreProviderMetadata` doesn't surface the
+        // `device_authorization_endpoint` from discovery, so refetch the
+        // raw JSON to find it.
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            self.env.auth_provider().issuer_url.trim_end_matches('/'),
+        );
+        #[derive(Deserialize)]
+        struct DiscoveryDoc {
+            device_authorization_endpoint: Option<String>,
+        }
+        let discovery: DiscoveryDoc = self
+            .http
+            .get(&discovery_url)
+            .send()
+            .await
+            .std_context("Failed to fetch OIDC discovery document")?
+            .error_for_status()
+            .std_context("OIDC discovery returned a non-success status")?
+            .json()
+            .await
+            .std_context("Failed to parse OIDC discovery document")?;
+        let device_endpoint = discovery.device_authorization_endpoint.context(
+            "Auth server does not advertise a device_authorization_endpoint; \
+             --no-browser is unsupported against this provider",
+        )?;
+
+        // Rebuild a CoreClient with the device URL set. The crate's
+        // typestate prevents mutating the cached `self.oidc` in place,
+        // and the discovery the constructor performs is cheap enough to
+        // accept the duplication.
+        let provider = self.env.auth_provider();
+        let issuer = IssuerUrl::new(provider.issuer_url.clone())
+            .std_context("Invalid OIDC provider issuer URL")?;
+        let metadata = CoreProviderMetadata::discover_async(issuer, &self.http)
+            .await
+            .std_context("Failed to discover OIDC provider metadata")?;
+        let oidc = CoreClient::from_provider_metadata(
+            metadata,
+            ClientId::new(provider.client_id),
+            provider.client_secret.clone().map(ClientSecret::new),
+        )
+        .set_device_authorization_url(
+            DeviceAuthorizationUrl::new(device_endpoint).std_context(
+                "Invalid device_authorization_endpoint in OIDC discovery",
+            )?,
+        );
+
+        let details: CoreDeviceAuthorizationResponse = oidc
+            .exchange_device_code()
+            .add_scope(Scope::new("openid".to_string()))
+            .add_scope(Scope::new("profile".to_string()))
+            .add_scope(Scope::new("email".to_string()))
+            .add_scope(Scope::new("offline_access".to_string()))
+            .request_async(&self.http)
+            .await
+            .std_context("Failed to start device authorization")?;
+
+        let info = DeviceCodeInfo {
+            verification_uri: details.verification_uri().to_string(),
+            user_code: details.user_code().secret().to_string(),
+            verification_uri_complete: details
+                .verification_uri_complete()
+                .map(|u| u.secret().to_string()),
+            expires_in: Duration::from_secs(details.expires_in().as_secs()),
+            interval: Duration::from_secs(details.interval().as_secs()),
+        };
+        display(info).await;
+
+        let tokens = oidc
+            .exchange_device_access_token(&details)
+            .std_context("Device-flow client misconfigured")?
+            .request_async(&self.http, tokio::time::sleep, None)
+            .await
+            .std_context("Failed to exchange device access token")?;
+
+        // Device flow doesn't bind a nonce (no user-agent round-trip carrying
+        // one), so accept an absent nonce in the ID token.
+        let nonce_verifier =
+            |_received: Option<&Nonce>| -> std::result::Result<(), String> { Ok(()) };
+        let state = self.parse_token_response(tokens, nonce_verifier, None).await?;
+        info!(
+            email=%state.profile.email,
+            expires_at=%state.tokens.expires_at(),
+            "device-code login successful"
+        );
         Ok(state)
     }
 
@@ -804,6 +926,24 @@ impl AuthClient {
             }
             Ok(_) => return Ok(()),
         };
+        self.state.set(Some(auth)).await?;
+        Ok(())
+    }
+
+    /// `--no-browser` analog of [`AuthClient::login`]. Skips the auth-code
+    /// localhost-redirect flow (which doesn't work over SSH because the
+    /// remote machine's bound port can't be reached by a browser running
+    /// on the operator's laptop) and uses the OAuth2 device authorization
+    /// grant instead. Always performs a fresh login — if a refresh-eligible
+    /// token exists the caller can use [`AuthClient::login`] without
+    /// `--no-browser` to use it.
+    pub async fn login_device_code<F, Fut>(&self, display: F) -> Result<()>
+    where
+        F: FnOnce(DeviceCodeInfo) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let client = self.ensure_fresh_client().await?;
+        let auth = client.login_device_code(display).await?;
         self.state.set(Some(auth)).await?;
         Ok(())
     }
