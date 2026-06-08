@@ -26,3 +26,10 @@ sentry.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 inquire = "0.9.4"
 reqwest.workspace = true
+# Bring in openssl with the `vendored` feature so cross-compiles (e.g.
+# cargo-zigbuild for aarch64-linux/apple) build openssl from source
+# instead of needing target-arch system headers. The dep is transitively
+# pulled by iroh's pkarr -> reqwest 0.13 (default features include
+# native-tls); we can't disable that without patching iroh, so we
+# vendor instead.
+openssl = { version = "0.10", features = ["vendored"] }
