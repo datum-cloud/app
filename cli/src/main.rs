@@ -1111,6 +1111,15 @@ const PROGRESS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_mi
 /// it doesn't.
 const RUNTIME_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Setup-loop tolerance for transient apiserver errors. A single 503 from
+/// the Datum API server front-end (kube apiserver behind Envoy briefly
+/// dropping connections, etc.) should not kill an in-flight setup that
+/// the next poll tick would have ridden over. After this many consecutive
+/// errors we still bail so a genuinely unreachable control plane surfaces
+/// fast. At 750ms cadence, 10 tries ≈ 7.5s of patience — enough for a
+/// short-lived blip, short enough to not feel hung.
+const MAX_CONSECUTIVE_POLL_ERRORS: u32 = 10;
+
 /// Format the user-facing message for a terminal progress failure. Shared
 /// between setup-time (bail!) and runtime watch (eprintln!) so the user
 /// sees the same diagnosis regardless of when the condition trips.
@@ -1145,10 +1154,33 @@ async fn await_tunnel_progress(
     let mut last_status: HashMap<ProgressStepKind, StepStatus> = HashMap::new();
     let mut pending_since: HashMap<ProgressStepKind, std::time::Instant> = HashMap::new();
     let mut warned_stuck: std::collections::HashSet<ProgressStepKind> = Default::default();
+    let mut consecutive_errors: u32 = 0;
 
     loop {
-        let Some(progress) = service.get_active_progress(tunnel_id).await? else {
-            n0_error::bail_any!("Tunnel {} not found", tunnel_id);
+        // Tolerate transient apiserver errors mid-setup. A single 503 from
+        // the Datum API server's Envoy front (e.g. kube apiserver briefly
+        // dropping connections) shouldn't kill a setup the next tick would
+        // have recovered. We bail only after MAX_CONSECUTIVE_POLL_ERRORS
+        // so a genuinely unreachable control plane still surfaces fast.
+        let progress = match service.get_active_progress(tunnel_id).await {
+            Ok(Some(p)) => {
+                consecutive_errors = 0;
+                p
+            }
+            Ok(None) => n0_error::bail_any!("Tunnel {} not found", tunnel_id),
+            Err(err) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS {
+                    return Err(err);
+                }
+                tracing::debug!(
+                    consecutive_errors,
+                    max = MAX_CONSECUTIVE_POLL_ERRORS,
+                    "setup poll errored, retrying: {err:#}"
+                );
+                tokio::time::sleep(PROGRESS_POLL_INTERVAL).await;
+                continue;
+            }
         };
 
         for step in &progress.steps {
