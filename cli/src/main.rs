@@ -1300,6 +1300,12 @@ async fn verify_endpoints(
     proxy_hostname: &str,
     budget: std::time::Duration,
 ) -> n0_error::Result<()> {
+    // The CLI accepts `--endpoint host:port` (no scheme) and uses the same
+    // normalize_endpoint that `TunnelSummary.endpoint` is canonicalized
+    // through. Without this, reqwest's request-builder rejects a bare
+    // host:port with "builder error" and the probe loops forever even
+    // though the actual origin is reachable.
+    let origin_url = lib::normalize_endpoint(origin_url);
     let proxy_url = format!("https://{proxy_hostname}/");
     let client = reqwest::Client::builder()
         // Per-request timeout shorter than the poll interval so a stuck
@@ -1317,7 +1323,7 @@ async fn verify_endpoints(
     loop {
         // Probe in parallel — skip the side that's already ready.
         let origin_fut = async {
-            if origin_ok { None } else { Some(probe(&client, origin_url).await) }
+            if origin_ok { None } else { Some(probe(&client, &origin_url).await) }
         };
         let proxy_fut = async {
             if proxy_ok { None } else { Some(probe(&client, &proxy_url).await) }
