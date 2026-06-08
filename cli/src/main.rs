@@ -32,6 +32,7 @@ static FILTER_RELOAD: OnceLock<
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
+#[command(version)]
 struct Args {
     #[clap(short, long, env = "DATUM_CONNECT_REPO")]
     repo: Option<PathBuf>,
