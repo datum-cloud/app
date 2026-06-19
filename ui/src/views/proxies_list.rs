@@ -41,6 +41,7 @@ use crate::{
         SwitchThumb,
     },
     state::AppState,
+    util::tunnel_edge_portal_url,
     Route,
 };
 
@@ -404,6 +405,17 @@ pub fn TunnelCard(
         .find(|t| t.id == tunnel_id)
         .unwrap_or(tunnel);
 
+    let state_for_portal = state.clone();
+    let tunnel_id_for_portal = tunnel_id.clone();
+    let portal_url = use_memo(move || {
+        let ctx = state_for_portal.selected_context()?;
+        Some(tunnel_edge_portal_url(
+            state_for_portal.datum().web_url(),
+            &ctx.project_id,
+            &tunnel_id_for_portal,
+        ))
+    });
+
     let tunnel_id_for_toggle = tunnel_id.clone();
     let mut toggle_action = use_action(move |next_enabled: bool| {
         let state = state.clone();
@@ -565,6 +577,28 @@ pub fn TunnelCard(
                                 }
                             }
                         }
+                        if show_bandwidth && !is_deleting() {
+                            if let Some(url) = portal_url() {
+                                div { class: "mt-2 pt-2 border-t border-tunnel-card-border",
+                                    p { class: "text-xs text-foreground/80",
+                                        "Manage WAF, hostnames, and other tunnel settings in "
+                                        a {
+                                            class: "text-button-link-foreground cursor-pointer inline-flex items-center gap-1",
+                                            onclick: move |_| {
+                                                let _ = that(&url);
+                                            },
+                                            "Datum Cloud"
+                                            Icon {
+                                                source: IconSource::Named("external-link".into()),
+                                                size: 12,
+                                                class: "text-icon-select",
+                                            }
+                                        }
+                                        "."
+                                    }
+                                }
+                            }
+                        }
                     }
                     div { class: "relative",
                         DropdownMenu {
@@ -572,7 +606,7 @@ pub fn TunnelCard(
                             default_open: false,
                             on_open_change: move |v| menu_open.set(Some(v)),
                             disabled: is_disabled,
-                            DropdownMenuTrigger { class: if is_disabled() { "w-8 h-8 rounded-lg border border-app-border text-foreground/50 flex items-center justify-center bg-transparent opacity-70 cursor-not-allowed pointer-events-none" } else { "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent focus:outline-2 focus:outline-app-border/50" },
+                            DropdownMenuTrigger { class: if is_disabled() { "w-8 h-8 rounded-lg border border-app-border text-foreground/50 flex items-center justify-center bg-transparent opacity-70 cursor-not-allowed pointer-events-none" } else { "w-8 h-8 rounded-lg border border-app-border text-foreground/60 flex items-center justify-center bg-transparent focus:outline-2 focus:outline-app-border/50 cursor-pointer" },
                                 Icon {
                                     source: IconSource::Named("ellipsis".into()),
                                     size: 16,
@@ -604,6 +638,23 @@ pub fn TunnelCard(
                                     disabled: is_disabled,
                                     on_select: move |_| on_edit.call(tunnel_for_edit.clone()),
                                     "Edit"
+                                }
+                                {
+                                    if let Some(url) = portal_url() {
+                                        rsx! {
+                                            DropdownMenuItem::<String> {
+                                                value: use_signal(|| "portal".to_string()),
+                                                index: use_signal(|| 1),
+                                                disabled: is_deleting,
+                                                on_select: move |_| {
+                                                    let _ = that(&url);
+                                                },
+                                                "Manage settings"
+                                            }
+                                        }
+                                    } else {
+                                        rsx! {}
+                                    }
                                 }
                                 DropdownMenuSeparator {}
                                 DropdownMenuItem::<String> {

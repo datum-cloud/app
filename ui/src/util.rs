@@ -16,3 +16,8 @@ pub fn humanize_bytes(bytes: u64) -> String {
 
     format!("{:.1} {}", size, UNITS[unit_idx])
 }
+
+pub fn tunnel_edge_portal_url(web_url: &str, project_id: &str, tunnel_id: &str) -> String {
+    let base = web_url.trim_end_matches('/');
+    format!("{base}/project/{project_id}/edge/{tunnel_id}/overview")
+}

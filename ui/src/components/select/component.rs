@@ -61,8 +61,8 @@ impl Clone for SelectTriggerPropsWithSize {
 #[component]
 pub fn SelectTrigger(props: SelectTriggerPropsWithSize) -> Element {
     let class = match props.size {
-        SelectSize::Default => "w-full h-9 min-w-0 rounded-md border border-app-border bg-card-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default data-disabled:opacity-50 data-disabled:cursor-not-allowed",
-        SelectSize::Small => "w-full h-6 min-w-0 rounded-md border border-app-border bg-card-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-default data-disabled:opacity-50 data-disabled:cursor-not-allowed",
+        SelectSize::Default => "w-full h-9 min-w-0 rounded-md border border-app-border bg-card-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-pointer data-disabled:opacity-50 data-disabled:cursor-not-allowed",
+        SelectSize::Small => "w-full h-6 min-w-0 rounded-md border border-app-border bg-card-background px-2 text-left text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-app-border inline-flex items-center justify-between gap-2 cursor-pointer data-disabled:opacity-50 data-disabled:cursor-not-allowed",
     };
 
     rsx! {
@@ -140,7 +140,7 @@ pub fn SelectGroupLabel(props: SelectGroupLabelProps) -> Element {
 pub fn SelectOption<T: Clone + PartialEq + 'static>(props: SelectOptionProps<T>) -> Element {
     rsx! {
         select::SelectOption::<T> {
-            class: "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-default data-highlighted:bg-content-background flex items-center justify-between gap-2 whitespace-nowrap",
+            class: "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-pointer data-highlighted:bg-content-background flex items-center justify-between gap-2 whitespace-nowrap data-disabled:cursor-not-allowed data-disabled:opacity-50",
             value: props.value,
             text_value: props.text_value,
             disabled: props.disabled,
@@ -172,7 +172,7 @@ pub fn SelectOptionItem(
     use_effect(move || {
         value_signal.set(value.clone());
     });
-    let base_class = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-default data-highlighted:bg-content-background flex items-center justify-between gap-2 whitespace-nowrap";
+    let base_class = "w-full text-left px-2 py-2 text-xs hover:bg-content-background text-foreground rounded-md cursor-pointer data-highlighted:bg-content-background flex items-center justify-between gap-2 whitespace-nowrap data-disabled:cursor-not-allowed data-disabled:opacity-50";
     let class = match &option_class {
         Some(extra) => format!("{base_class} {extra}"),
         None => base_class.to_string(),
