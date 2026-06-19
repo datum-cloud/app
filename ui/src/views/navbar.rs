@@ -30,6 +30,7 @@ pub fn Chrome() -> Element {
     let mut invite_user_dialog_open = use_signal(|| false);
     let mut editing_tunnel = use_signal(|| None::<lib::TunnelSummary>);
     let mut open_add_tunnel_from_tray = consume_context::<Signal<bool>>();
+    let mut open_tunnel_from_tray = consume_context::<Signal<Option<String>>>();
 
     provide_context(OpenEditTunnelDialog {
         editing_tunnel,
@@ -41,6 +42,13 @@ pub fn Chrome() -> Element {
             nav.push(Route::ProxiesList {});
             add_tunnel_dialog_open.set(true);
             open_add_tunnel_from_tray.set(false);
+        }
+    });
+
+    use_effect(move || {
+        if let Some(id) = open_tunnel_from_tray() {
+            nav.push(Route::TunnelBandwidth { id });
+            open_tunnel_from_tray.set(None);
         }
     });
 
@@ -239,7 +247,7 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
                                 on_open_change: move |v| profile_menu_open.set(Some(v)),
                                 disabled: use_signal(|| false),
                                 DropdownMenuTrigger {
-                                    class: "flex items-center gap-2 cursor-default focus:outline-none hover:opacity-80 transition-opacity",
+                                    class: "flex items-center gap-2 cursor-pointer focus:outline-none hover:opacity-80 transition-opacity",
                                     tabindex: "-1",
                                     div { class: "w-[37px] h-[37px] rounded-lg border border-app-border bg-white flex items-center justify-center overflow-hidden shrink-0",
                                         if let Some(avatar_url) = user_avatar_url.as_ref() {

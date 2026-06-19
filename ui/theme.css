@@ -232,8 +232,16 @@
     @apply font-sans;
   }
 
+  button:not(:disabled) {
+    @apply cursor-pointer;
+  }
+
+  button:disabled {
+    @apply cursor-not-allowed;
+  }
+
   a {
-    @apply focus:outline-1 focus:outline-app-border;
+    @apply cursor-pointer focus:outline-1 focus:outline-app-border;
   }
 }
 

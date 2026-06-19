@@ -9,6 +9,7 @@ mod node;
 pub mod project_control_plane;
 mod repo;
 mod state;
+pub mod tunnel_activity;
 pub mod tunnels;
 pub mod update;
 
@@ -20,6 +21,7 @@ pub use node::*;
 pub use project_control_plane::ProjectControlPlaneClient;
 pub use repo::Repo;
 pub use state::*;
+pub use tunnel_activity::{TunnelActivityEntry, TunnelActivityTracker};
 pub use tunnels::{TunnelDeleteOutcome, TunnelService, TunnelSummary};
 pub use update::{UpdateChannel, UpdateChecker, UpdateInfo, UpdateSettings};
 
