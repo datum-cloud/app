@@ -1390,6 +1390,11 @@
       outline-style: none;
     }
   }
+  .disabled\:cursor-not-allowed {
+    &:disabled {
+      cursor: not-allowed;
+    }
+  }
   .disabled\:bg-content-background {
     &:disabled {
       background-color: var(--content-background);
@@ -1635,7 +1640,14 @@
     font-family: "Alliance No1", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
   a {
+    cursor: pointer;
     &:focus {
       outline-style: var(--tw-outline-style);
       outline-width: 1px;

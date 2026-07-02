@@ -13,7 +13,7 @@ use crate::views::{
 #[cfg(feature = "desktop")]
 use dioxus_desktop::{
     trayicon::{
-        menu::{IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem},
+        menu::{Icon as MenuIcon, IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem},
         Icon, TrayIcon, TrayIconBuilder,
     },
     use_muda_event_handler, use_window,
@@ -507,13 +507,15 @@ fn App() -> Element {
     }
 
     let mut open_add_tunnel_from_tray = use_signal(|| false);
+    let mut open_tunnel_from_tray = use_signal(|| None::<String>);
     let mut login_state_for_tray = use_signal(|| None::<lib::datum_cloud::LoginState>);
+    let mut tray_menu_version = use_signal(|| 0u32);
+    #[cfg(feature = "desktop")]
+    let mut tray_holder = use_signal(|| None::<std::sync::Arc<TrayState>>);
 
     // Create tray when app state is ready. Must run before early return.
     #[cfg(feature = "desktop")]
     {
-        let mut tray_holder = use_signal(|| None::<TrayIcon>);
-
         use_effect(move || {
             if !app_state_ready() {
                 return;
@@ -526,8 +528,37 @@ fn App() -> Element {
         });
 
         let window = use_window();
+        let tray_for_handler = tray_holder;
         use_muda_event_handler(move |event| -> () {
-            let _: () = match event.id.0.as_str() {
+            let id = event.id.0.as_str();
+            if let Some(idx) = id
+                .strip_prefix("recent_tunnel:")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                if login_state_for_tray() == Some(lib::datum_cloud::LoginState::Missing)
+                    || login_state_for_tray().is_none()
+                {
+                    return;
+                }
+                let Some(tray) = tray_for_handler() else {
+                    return;
+                };
+                let tunnel_id = tray
+                    .slot_tunnel_ids
+                    .lock()
+                    .ok()
+                    .and_then(|slots| slots.get(idx).cloned())
+                    .flatten();
+                let Some(tunnel_id) = tunnel_id else {
+                    return;
+                };
+                window.set_visible(true);
+                window.set_focus();
+                open_tunnel_from_tray.set(Some(tunnel_id));
+                return;
+            }
+
+            let _: () = match id {
                 "about" => {
                     let _ = open::that("https://datum.net");
                 }
@@ -679,6 +710,56 @@ fn App() -> Element {
 
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
     provide_context(open_add_tunnel_from_tray);
+    provide_context(open_tunnel_from_tray);
+
+    // Sample tunnel traffic and refresh tray recent-tunnels section.
+    #[cfg(feature = "desktop")]
+    {
+        let state_for_tray_activity = consume_context::<AppState>();
+        let tray_holder_for_sync = tray_holder;
+        let mut tray_menu_version_for_sync = tray_menu_version;
+        use_future(move || {
+            let state = state_for_tray_activity.clone();
+            async move {
+                let refresh = state.tunnel_refresh();
+                loop {
+                    let tunnels = match state.tunnel_service().list_active().await {
+                        Ok(list) => list,
+                        Err(err) => {
+                            tracing::debug!("tray: failed to list tunnels for activity: {err:#}");
+                            state.tunnel_cache()()
+                        }
+                    };
+                    let metrics = state.node().listen.metrics().clone();
+                    if let Ok(mut tracker) = state.tunnel_activity().lock() {
+                        tracker.tick(&tunnels, &metrics);
+                    }
+                    tray_menu_version_for_sync.set(tray_menu_version_for_sync().wrapping_add(1));
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+                        _ = refresh.notified() => {}
+                    }
+                }
+            }
+        });
+
+        use_effect(move || {
+            let _ = tray_menu_version();
+            let _ = auth_changed();
+            let Some(tray) = tray_holder_for_sync() else {
+                return;
+            };
+            let state = consume_context::<AppState>();
+            let logged_in = state.datum().login_state() != lib::datum_cloud::LoginState::Missing;
+            let entries = state
+                .tunnel_activity()
+                .lock()
+                .map(|tracker| tracker.recent_active(5))
+                .unwrap_or_default();
+            sync_tray_recent_menu(&tray, &entries, logged_in);
+        });
+    }
 
     // Signal for whether we're on the login page (used by TitleBar for background color).
     // Start true since we always land on login after splash; Login's use_effect/use_drop keep it in sync.
@@ -801,7 +882,119 @@ fn DiagnosticsPrompt(
 }
 
 #[cfg(feature = "desktop")]
-fn init_tray() -> TrayIcon {
+struct TrayState {
+    _tray: TrayIcon,
+    menu: Menu,
+    recent_sep: PredefinedMenuItem,
+    recent_sep_bottom: PredefinedMenuItem,
+    recent_header: MenuItem,
+    recent_items: [IconMenuItem; 5],
+    icon_online: MenuIcon,
+    icon_offline: MenuIcon,
+    slot_tunnel_ids: std::sync::Mutex<[Option<String>; 5]>,
+    /// How many tunnel rows are currently inserted in the menu (0–5).
+    mounted_tunnel_slots: std::sync::Mutex<usize>,
+    recent_section_open: std::sync::Mutex<bool>,
+}
+
+#[cfg(feature = "desktop")]
+fn format_tray_tunnel_label(entry: &lib::TunnelActivityEntry) -> String {
+    let label = truncate_tray_label(&entry.label, 32);
+    if entry.rate_per_s > 0 {
+        let rate = util::humanize_bytes(entry.rate_per_s);
+        format!("{label} — {rate}/s")
+    } else {
+        format!("{label} — No traffic")
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn sync_tray_recent_menu(tray: &TrayState, entries: &[lib::TunnelActivityEntry], logged_in: bool) {
+    let count = if logged_in { entries.len().min(5) } else { 0 };
+
+    let mut mounted = tray
+        .mounted_tunnel_slots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut slots = tray
+        .slot_tunnel_ids
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut section_open = tray
+        .recent_section_open
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    if count == 0 {
+        if *section_open {
+            let _ = tray.menu.remove(&tray.recent_sep_bottom);
+            for i in (0..*mounted).rev() {
+                let _ = tray.menu.remove(&tray.recent_items[i]);
+                slots[i] = None;
+            }
+            let _ = tray.menu.remove(&tray.recent_header);
+            let _ = tray.menu.remove(&tray.recent_sep);
+            *mounted = 0;
+            *section_open = false;
+        }
+        return;
+    }
+
+    if !*section_open {
+        let _ = tray.menu.insert(&tray.recent_sep, 1);
+        tray.recent_header.set_text("Recent tunnels");
+        let _ = tray.menu.insert(&tray.recent_header, 2);
+        *section_open = true;
+    } else {
+        let _ = tray.menu.remove(&tray.recent_sep_bottom);
+    }
+
+    while *mounted > count {
+        let i = *mounted - 1;
+        let _ = tray.menu.remove(&tray.recent_items[i]);
+        slots[i] = None;
+        *mounted -= 1;
+    }
+
+    for i in 0..count {
+        let entry = &entries[i];
+        let text = format_tray_tunnel_label(entry);
+        let icon = if entry.online {
+            tray.icon_online.clone()
+        } else {
+            tray.icon_offline.clone()
+        };
+        tray.recent_items[i].set_text(text);
+        tray.recent_items[i].set_icon(Some(icon));
+        tray.recent_items[i].set_enabled(true);
+        slots[i] = Some(entry.tunnel_id.clone());
+        if i >= *mounted {
+            let _ = tray.menu.insert(&tray.recent_items[i], 3 + i);
+        }
+    }
+
+    for i in count..5 {
+        slots[i] = None;
+    }
+
+    *mounted = count;
+    let _ = tray.menu.insert(&tray.recent_sep_bottom, 3 + count);
+}
+
+#[cfg(feature = "desktop")]
+fn truncate_tray_label(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        return label.to_string();
+    }
+    label
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>()
+        + "…"
+}
+
+#[cfg(feature = "desktop")]
+fn init_tray() -> std::sync::Arc<TrayState> {
     use n0_error::StdResultExt;
 
     let tray_menu = Menu::new();
@@ -826,12 +1019,21 @@ fn init_tray() -> TrayIcon {
         false,
         None,
     );
+    let recent_sep = PredefinedMenuItem::separator();
+    let recent_sep_bottom = PredefinedMenuItem::separator();
+    let recent_header = MenuItem::with_id("recent_header", "Recent tunnels", false, None);
+    let recent_item_0 = IconMenuItem::with_id("recent_tunnel:0", "", true, None, None);
+    let recent_item_1 = IconMenuItem::with_id("recent_tunnel:1", "", true, None, None);
+    let recent_item_2 = IconMenuItem::with_id("recent_tunnel:2", "", true, None, None);
+    let recent_item_3 = IconMenuItem::with_id("recent_tunnel:3", "", true, None, None);
+    let recent_item_4 = IconMenuItem::with_id("recent_tunnel:4", "", true, None, None);
+    let icon_online = make_status_menu_icon(0x86, 0xa1, 0x82);
+    let icon_offline = make_status_menu_icon(0xf0, 0x8c, 0x8c);
     let sep = PredefinedMenuItem::separator();
 
     tray_menu
         .append_items(&[
             &new_tunnel_item,
-            &sep,
             &about_item,
             &show_item,
             &hide_item,
@@ -840,27 +1042,95 @@ fn init_tray() -> TrayIcon {
         ])
         .expect("Failed to build tray menu");
 
-    TrayIconBuilder::new()
+    let menu_for_state = tray_menu.clone();
+    let mut builder = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_tooltip("Datum")
-        .with_icon(icon())
+        .with_icon(tray_icon());
+    let tray = builder
         .build()
         .std_context("building tray icon")
-        .expect("failed to build tray icon")
+        .expect("failed to build tray icon");
+
+    std::sync::Arc::new(TrayState {
+        _tray: tray,
+        menu: menu_for_state,
+        recent_sep,
+        recent_sep_bottom,
+        recent_header,
+        recent_items: [
+            recent_item_0,
+            recent_item_1,
+            recent_item_2,
+            recent_item_3,
+            recent_item_4,
+        ],
+        icon_online,
+        icon_offline,
+        slot_tunnel_ids: std::sync::Mutex::new([None, None, None, None, None]),
+        mounted_tunnel_slots: std::sync::Mutex::new(0),
+        recent_section_open: std::sync::Mutex::new(false),
+    })
+}
+
+/// Load an icon from a PNG file for the tray (colored, non-macOS).
+#[cfg(all(feature = "desktop", not(target_os = "macos")))]
+fn tray_icon() -> Icon {
+    icon()
+}
+
+/// macOS menu bar icon (white logo on transparent background).
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn tray_icon() -> Icon {
+    load_icon_from_bytes(include_bytes!("../assets/tray/tray-icon-template.png"))
+}
+
+#[cfg(feature = "desktop")]
+fn make_status_menu_icon(r: u8, g: u8, b: u8) -> MenuIcon {
+    // muda scales menu icons to 18pt on macOS; 54px covers 3x Retina without upscaling blur.
+    const SIZE: u32 = 54;
+    const DIAMETER: f32 = 30.0;
+    let center = SIZE as f32 / 2.0;
+    let radius = DIAMETER / 2.0;
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - center;
+            let dy = y as f32 + 0.5 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let alpha = if dist <= radius - 0.5 {
+                255
+            } else if dist >= radius + 0.5 {
+                0
+            } else {
+                ((radius + 0.5 - dist) * 255.0).round() as u8
+            };
+            let i = ((y * SIZE + x) * 4) as usize;
+            rgba[i] = r;
+            rgba[i + 1] = g;
+            rgba[i + 2] = b;
+            rgba[i + 3] = alpha;
+        }
+    }
+
+    MenuIcon::from_rgba(rgba, SIZE, SIZE).expect("Failed to create status menu icon")
+}
+
+#[cfg(feature = "desktop")]
+fn load_icon_from_bytes(icon_bytes: &[u8]) -> Icon {
+    use image::GenericImageView;
+
+    let image = image::load_from_memory(icon_bytes).unwrap();
+    let (width, height) = image.dimensions();
+    let rgba = image.to_rgba8().into_raw();
+    Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
 }
 
 /// Load an icon from a PNG file for the tray
 #[cfg(feature = "desktop")]
 fn icon() -> Icon {
-    use image::GenericImageView;
-
-    let icon_bytes = include_bytes!("../assets/bundle/linux/512.png");
-    let image = image::load_from_memory(icon_bytes).unwrap();
-
-    let (width, height) = image.dimensions();
-    let rgba = image.to_rgba8().into_raw();
-
-    Icon::from_rgba(rgba, width, height).expect("Failed to create icon from image")
+    load_icon_from_bytes(include_bytes!("../assets/bundle/linux/512.png"))
 }
 
 /// Load an icon from a PNG file for the window
@@ -877,8 +1147,6 @@ fn window_icon() -> dioxus_desktop::tao::window::Icon {
     dioxus_desktop::tao::window::Icon::from_rgba(rgba, width, height)
         .expect("Failed to create window icon from image")
 }
-
-/// Custom Objective-C class to handle About menu action and route navigation
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 mod macos_menu_handler {
     use objc2::rc::Retained;
