@@ -1,9 +1,11 @@
 use dioxus::prelude::WritableExt;
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
-    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelService, TunnelSummary,
+    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelActivityTracker, TunnelService,
+    TunnelSummary,
 };
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -14,6 +16,7 @@ pub struct AppState {
     heartbeat: HeartbeatAgent,
     tunnel_refresh: std::sync::Arc<Notify>,
     tunnel_cache: dioxus::signals::Signal<Vec<TunnelSummary>>,
+    tunnel_activity: Arc<Mutex<TunnelActivityTracker>>,
     /// IDs of tunnels we've just deleted locally but whose backend resources
     /// (HTTPProxy + ConnectorAdvertisement + …) may still appear in the next
     /// few `list_active` polls while Kubernetes is reaping them. Tombstones
@@ -40,6 +43,7 @@ impl AppState {
             heartbeat,
             tunnel_refresh: std::sync::Arc::new(Notify::new()),
             tunnel_cache: dioxus::signals::Signal::new(Vec::new()),
+            tunnel_activity: Arc::new(Mutex::new(TunnelActivityTracker::new())),
             pending_deletions: dioxus::signals::Signal::new(HashSet::new()),
         };
         Ok(app_state)
@@ -80,6 +84,10 @@ impl AppState {
     pub fn set_tunnel_cache(&self, tunnels: Vec<TunnelSummary>) {
         let mut cache = self.tunnel_cache;
         cache.set(tunnels);
+    }
+
+    pub fn tunnel_activity(&self) -> Arc<Mutex<TunnelActivityTracker>> {
+        self.tunnel_activity.clone()
     }
 
     pub fn upsert_tunnel(&self, tunnel: TunnelSummary) {
