@@ -3,6 +3,7 @@ use std::{fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 use iroh::{
     Endpoint, EndpointId, SecretKey,
     address_lookup::dns::DnsAddressLookup,
+    dns::{DnsProtocol, DnsResolver},
     endpoint::{default_relay_mode, presets},
     protocol::Router,
 };
@@ -15,7 +16,6 @@ use iroh_proxy_utils::{
     downstream::{DownstreamProxy, EndpointAuthority, ProxyMode},
     upstream::{AuthError, AuthHandler, UpstreamProxy},
 };
-use iroh_relay::dns::{DnsProtocol, DnsResolver};
 use iroh_relay::{RelayConfig, RelayMap};
 use iroh_services::CLIENT_HOST_ALPN;
 use n0_error::{Result, StdResultExt};
@@ -310,7 +310,7 @@ impl OutboundProxyHandle {
 pub(crate) async fn build_endpoint(secret_key: SecretKey, common: &Config) -> Result<Endpoint> {
     let relay_mode = relay_mode_from_env_or_build().await?;
     let mut builder = match common.discovery_mode {
-        crate::config::DiscoveryMode::Dns => Endpoint::empty_builder()
+        crate::config::DiscoveryMode::Dns => Endpoint::builder(presets::Empty)
             .relay_mode(relay_mode)
             .secret_key(secret_key),
         crate::config::DiscoveryMode::Default | crate::config::DiscoveryMode::Hybrid => {

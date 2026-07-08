@@ -27,7 +27,7 @@ pub fn start(endpoint: Endpoint) -> Result<(ApiSecret, Router)> {
         .spawn();
 
     // Create an ApiSecret ticket string that clients can put into N0DES_API_SECRET.
-    let api_secret_key = SecretKey::generate(&mut rand::rng());
+    let api_secret_key = SecretKey::generate();
     let api_secret = ApiSecret::new(api_secret_key, endpoint.addr());
 
     Ok((api_secret, router))
