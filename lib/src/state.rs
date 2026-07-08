@@ -269,18 +269,18 @@ impl FromStr for AdvertismentTicket {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        iroh_tickets::Ticket::deserialize(s)
+        Self::decode_string(s)
     }
 }
 
 impl Ticket for AdvertismentTicket {
     const KIND: &'static str = "datum";
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn encode_bytes(&self) -> Vec<u8> {
         postcard::to_allocvec(&self).expect("serialize should work")
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
+    fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
         let ticket: Self = postcard::from_bytes(bytes)?;
         Ok(ticket)
     }

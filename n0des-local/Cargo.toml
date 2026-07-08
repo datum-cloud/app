@@ -7,8 +7,8 @@ publish = false
 [dependencies]
 iroh = { workspace = true }
 iroh-n0des = "0.10"
-irpc = "0.13"
-irpc-iroh = "0.13"
+irpc = "0.17"
+irpc-iroh = "0.17"
 n0-error = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
