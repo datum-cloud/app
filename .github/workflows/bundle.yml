@@ -635,12 +635,13 @@ jobs:
             version "${VERSION}"
             sha256 "${DMG_SHA}"
 
-            url "https://github.com/${REPO}/releases/download/${TAG}/Datum.dmg"
+            url "https://github.com/${REPO}/releases/download/v#{version}/Datum.dmg",
+              verified: "github.com/${REPO}/"
             name "Datum"
             desc "Quickly and safely expose local environments to the internet, for free."
             homepage "https://www.datum.net/"
 
-            depends_on macos: ">= :big_sur"
+            depends_on macos: :big_sur
 
             app "Datum.app"
           end
