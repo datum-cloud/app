@@ -215,13 +215,8 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
             .unwrap_or_default()
     };
 
-    // Disable Invite when org is Personal (matches web app: org?.type === 'Personal')
-    let invite_disabled = use_memo(move || {
-        !selected_context
-            .read()
-            .as_ref()
-            .map_or(false, |c| c.can_send_invite())
-    });
+    // Invite requires a selected org; all orgs can invite (unified organizations).
+    let invite_disabled = use_memo(move || selected_context.read().is_none());
 
     rsx! {
         // App header bar - below titlebar, contains Add tunnel button and user menu

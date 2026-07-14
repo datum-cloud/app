@@ -48,24 +48,11 @@ pub struct SelectedContext {
     pub org_name: String,
     pub project_id: String,
     pub project_name: String,
-    /// Organization type (e.g. "personal", "team"). Invitations are only allowed when not "personal".
-    #[serde(default)]
-    pub org_type: String,
 }
 
 impl SelectedContext {
     pub fn label(&self) -> String {
         format!("{} / {}", self.org_name, self.project_name)
-    }
-
-    /// True if this org is a personal org (invitations not allowed).
-    pub fn is_personal_org(&self) -> bool {
-        self.org_type.eq_ignore_ascii_case("personal")
-    }
-
-    /// True if the user can send invitations (org is not personal and type is known).
-    pub fn can_send_invite(&self) -> bool {
-        !self.org_type.is_empty() && !self.is_personal_org()
     }
 }
 

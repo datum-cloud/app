@@ -260,7 +260,9 @@ impl DatumCloudClient {
                     .get("organization")?
                     .as_object()?;
                 let name = org.get("displayName")?.as_str()?;
-                let r#type = org.get("type")?.as_str()?;
+                // `type` is deprecated (ignored when the UnifiedOrganizations feature
+                // gate is enabled) and absent from most memberships; treat as optional.
+                let r#type = org.get("type").and_then(|v| v.as_str()).unwrap_or_default();
                 let spec = item.get("spec")?.as_object()?;
                 let resource_id = spec
                     .get("organizationRef")?
@@ -282,7 +284,11 @@ impl DatumCloudClient {
                 Api::ResourceManager(ResourceManager::OrganizationMemberships),
             )
             .await?;
-        parse_orgs(&json).context("Failed to parse reply")
+        let mut orgs: Vec<Organization> = parse_orgs(&json).context("Failed to parse reply")?;
+        // A user can hold multiple memberships in the same org; keep one entry per org.
+        let mut seen = std::collections::HashSet::new();
+        orgs.retain(|org| seen.insert(org.resource_id.clone()));
+        Ok(orgs)
     }
 
     pub async fn projects(&self, org_id: &str) -> Result<Vec<Project>> {
