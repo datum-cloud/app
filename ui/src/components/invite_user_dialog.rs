@@ -105,11 +105,7 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
         None
     }
 
-    let can_invite = use_memo(move || {
-        selected_context()
-            .as_ref()
-            .map_or(false, |c| c.can_send_invite())
-    });
+    let can_invite = use_memo(move || selected_context().is_some());
     let email_validation = use_memo(move || validate_email(&email()));
     let email_invalid = use_memo(move || email().trim().is_empty() || email_validation().is_some());
     let no_role_selected = use_memo(move || selected_role_name().is_none());
@@ -127,10 +123,6 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
         move |(email_value, role_ref): (String, Option<RoleReference>)| async move {
             let state = consume_context::<AppState>();
             let ctx = state.selected_context().context("No org selected")?;
-            if !ctx.can_send_invite() {
-                n0_error::bail_any!("Invitations are not available for personal organizations");
-            }
-
             state
                 .datum()
                 .create_user_invitation_org(
@@ -203,7 +195,7 @@ pub fn InviteUserDialog(open: ReadSignal<bool>, on_open_change: EventHandler<boo
                 } else if !can_invite() {
                     div { class: "space-y-5 mt-5 w-[452px]",
                         p { class: "text-sm text-foreground",
-                            "Invitations are only available for team organizations, not personal organizations."
+                            "Select an organization and project before inviting users."
                         }
                         div { class: "flex justify-end pt-2",
                             Button {
