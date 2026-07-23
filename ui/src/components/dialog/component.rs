@@ -3,11 +3,13 @@ use dioxus_primitives::dialog::{
     self, DialogContentProps, DialogDescriptionProps, DialogRootProps, DialogTitleProps,
 };
 
+use crate::util::OVERLAY_TITLEBAR_OFFSET;
+
 #[component]
 pub fn DialogRoot(props: DialogRootProps) -> Element {
     rsx! {
         dialog::DialogRoot {
-            class: "bg-foreground/30 absolute mt-[32px] top-0 left-0 w-full h-full inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100 backdrop-blur-[2px]",
+            class: "bg-foreground/30 absolute {OVERLAY_TITLEBAR_OFFSET} top-0 left-0 w-full h-full inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100 backdrop-blur-[2px]",
             id: props.id,
             is_modal: props.is_modal,
             open: props.open,

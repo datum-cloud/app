@@ -1,3 +1,4 @@
+pub mod allowance_bucket;
 pub mod connector;
 pub mod connector_advertisement;
 pub mod connector_class;

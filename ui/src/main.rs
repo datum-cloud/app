@@ -211,15 +211,14 @@ fn init_tracing() {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
-    // Promote WARN to a Sentry event (in addition to the default ERROR -> Event
-    // and INFO -> Breadcrumb). The codebase uses `warn!` for most meaningful
-    // failure paths (auth, kube, refresh) and very few `error!` sites, so the
-    // default filter sends almost nothing to Sentry.
+    // ERROR -> Sentry event; WARN/INFO -> breadcrumb only (attached to later
+    // events). Do not promote WARN to events — expected operational failures
+    // (quota, kube 403, refresh blips) would otherwise flood Sentry.
     let sentry_layer = sentry::integrations::tracing::layer().event_filter(|md| {
         use sentry::integrations::tracing::EventFilter;
         match *md.level() {
             tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb,
-            tracing::Level::WARN => EventFilter::Event | EventFilter::Breadcrumb,
+            tracing::Level::WARN => EventFilter::Breadcrumb,
             tracing::Level::INFO => EventFilter::Breadcrumb,
             _ => EventFilter::Ignore,
         }
@@ -841,10 +840,11 @@ fn DiagnosticsPrompt(
     on_opt_out: EventHandler<MouseEvent>,
 ) -> Element {
     use crate::components::{Button, ButtonKind};
+    use crate::util::OVERLAY_TITLEBAR_OFFSET;
 
     rsx! {
         div {
-            class: "mt-[32px] fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
+            class: "{OVERLAY_TITLEBAR_OFFSET} fixed inset-0 z-50 flex items-center justify-center animate-in fade-in duration-100",
             style: "background-color: rgba(0,0,0,0.2); -webkit-backdrop-filter: blur(1px); backdrop-filter: blur(1px);",
             onclick: move |evt| {
                 evt.stop_propagation();
