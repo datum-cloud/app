@@ -21,3 +21,16 @@ pub fn tunnel_edge_portal_url(web_url: &str, project_id: &str, tunnel_id: &str) 
     let base = web_url.trim_end_matches('/');
     format!("{base}/project/{project_id}/edge/{tunnel_id}/overview")
 }
+
+pub fn project_quotas_portal_url(web_url: &str, project_id: &str) -> String {
+    let base = web_url.trim_end_matches('/');
+    format!("{base}/project/{project_id}/quotas")
+}
+
+/// Top offset for full-screen overlays so they clear the custom macOS title bar.
+/// Windows/Linux use the native title bar (outside the webview), so no offset.
+#[cfg(target_os = "macos")]
+pub const OVERLAY_TITLEBAR_OFFSET: &str = "mt-[32px]";
+
+#[cfg(not(target_os = "macos"))]
+pub const OVERLAY_TITLEBAR_OFFSET: &str = "";
