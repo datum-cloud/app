@@ -217,6 +217,10 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
 
     // Invite requires a selected org; all orgs can invite (unified organizations).
     let invite_disabled = use_memo(move || selected_context.read().is_none());
+    let quota_exhausted = state.tunnel_create_quota()()
+        .as_ref()
+        .map(|q| q.is_exhausted())
+        .unwrap_or(false);
 
     rsx! {
         // App header bar - below titlebar, contains Add tunnel button and user menu
@@ -224,11 +228,20 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
             div { class: "max-w-4xl mx-auto flex items-center justify-between w-full px-4 py-3",
                 // Left side: Add tunnel button
                 if auth_state.get().is_ok() && selected_context.read().is_some() {
-                    Button {
-                        leading_icon: Some(IconSource::Named("plus".into())),
-                        text: "Add New",
-                        kind: ButtonKind::Primary,
-                        onclick: move |_| add_tunnel_dialog_open.set(true),
+                    // Wrap so the native tooltip still shows when the button is disabled
+                    // (disabled elements don't fire hover events in some browsers).
+                    span { title: if quota_exhausted { "You've hit your tunnel limit" } else { "" },
+                        Button {
+                            leading_icon: Some(IconSource::Named("plus".into())),
+                            text: "Add New",
+                            kind: ButtonKind::Primary,
+                            disabled: quota_exhausted,
+                            onclick: move |_| {
+                                if !quota_exhausted {
+                                    add_tunnel_dialog_open.set(true);
+                                }
+                            },
+                        }
                     }
                 }
                 div { class: "flex-1" }
