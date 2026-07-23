@@ -18,11 +18,17 @@ pub use diagnostics::DiagnosticsSettings;
 pub use heartbeat::HeartbeatAgent;
 pub use http_user_agent::datum_http_user_agent;
 pub use node::*;
-pub use project_control_plane::ProjectControlPlaneClient;
+pub use project_control_plane::{
+    ProjectControlPlaneClient, error_looks_like_quota, is_kube_auth_failure,
+    is_kube_quota_exceeded, message_looks_like_quota,
+};
 pub use repo::Repo;
 pub use state::*;
 pub use tunnel_activity::{TunnelActivityEntry, TunnelActivityTracker};
-pub use tunnels::{TunnelDeleteOutcome, TunnelService, TunnelSummary};
+pub use tunnels::{
+    CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE, HTTPPROXY_QUOTA_RESOURCE_TYPE, TunnelCreateQuota,
+    TunnelDeleteOutcome, TunnelService, TunnelSummary, tunnel_create_quota_from_buckets,
+};
 pub use update::{UpdateChannel, UpdateChecker, UpdateInfo, UpdateSettings};
 
 /// The root domain for datum connect urls to subdomain from. A proxy URL will
