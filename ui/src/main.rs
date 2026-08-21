@@ -1043,10 +1043,15 @@ fn init_tray() -> std::sync::Arc<TrayState> {
         .expect("Failed to build tray menu");
 
     let menu_for_state = tray_menu.clone();
-    let mut builder = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
-        .with_tooltip("Datum")
-        .with_icon(tray_icon());
+    let builder = {
+        let builder = TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("Datum")
+            .with_icon(tray_icon());
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_as_template(true);
+        builder
+    };
     let tray = builder
         .build()
         .std_context("building tray icon")
@@ -1079,7 +1084,7 @@ fn tray_icon() -> Icon {
     icon()
 }
 
-/// macOS menu bar icon (white logo on transparent background).
+/// macOS menu bar icon (monochrome logo on transparent background; tinted by the system).
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 fn tray_icon() -> Icon {
     load_icon_from_bytes(include_bytes!("../assets/tray/tray-icon-template.png"))
