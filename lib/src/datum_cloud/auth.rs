@@ -598,16 +598,11 @@ mod test_refresh {
         outcomes: Mutex<VecDeque<TestRefreshOutcome>>,
     }
 
-    fn refreshed_auth_state(
-        expires_in: Duration,
-        generation: usize,
-    ) -> AuthState {
+    fn refreshed_auth_state(expires_in: Duration, generation: usize) -> AuthState {
         AuthState {
             tokens: AuthTokens {
                 access_token: AccessToken::new(format!("access-token-{generation}")),
-                refresh_token: Some(RefreshToken::new(format!(
-                    "refresh-token-{generation}"
-                ))),
+                refresh_token: Some(RefreshToken::new(format!("refresh-token-{generation}"))),
                 issued_at: Utc::now(),
                 expires_in,
             },
@@ -1016,8 +1011,8 @@ mod refresh_race_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::*;
     use super::test_refresh::{TestRefreshController, TestRefreshOutcome};
+    use super::*;
 
     const ROTATION_RACE_ERR: &str = "Failed to refresh tokens: Server returned error response: invalid_request: Errors.OIDCSession.RefreshTokenInvalid";
 
@@ -1093,10 +1088,7 @@ mod refresh_race_tests {
 
     #[test]
     fn logs_out_on_non_revoked_refresh_failure() {
-        assert_eq!(
-            refresh_failure_action(false),
-            RefreshFailureAction::Logout
-        );
+        assert_eq!(refresh_failure_action(false), RefreshFailureAction::Logout);
     }
 
     #[test]
@@ -1131,7 +1123,10 @@ mod refresh_race_tests {
         let loaded = client.load();
         let auth = loaded.get().expect("session kept");
         assert_eq!(auth.tokens.access_token.secret(), "access-token-1");
-        assert_eq!(auth.tokens.refresh_token.as_ref().unwrap().secret(), "refresh-token-1");
+        assert_eq!(
+            auth.tokens.refresh_token.as_ref().unwrap().secret(),
+            "refresh-token-1"
+        );
     }
 
     #[tokio::test]
