@@ -45,6 +45,19 @@ impl TunnelActivityTracker {
     /// Metrics are keyed by local endpoint authority; two tunnels targeting the same
     /// host:port share counters.
     pub fn tick(&mut self, tunnels: &[TunnelSummary], metrics: &UpstreamMetrics) {
+        let counters: HashMap<String, (u64, u64)> = tunnels
+            .iter()
+            .map(|tunnel| (tunnel.id.clone(), metrics_bytes_for_tunnel(metrics, tunnel)))
+            .collect();
+        self.tick_counters(tunnels, &counters);
+    }
+
+    /// Same as [`Self::tick`], but takes per-tunnel byte counters (for a remote agent).
+    pub fn tick_counters(
+        &mut self,
+        tunnels: &[TunnelSummary],
+        counters: &HashMap<String, (u64, u64)>,
+    ) {
         let now = Instant::now();
         let active_ids: std::collections::HashSet<&str> =
             tunnels.iter().map(|t| t.id.as_str()).collect();
@@ -55,7 +68,7 @@ impl TunnelActivityTracker {
             let Some(_authority) = tunnel.origin_authority() else {
                 continue;
             };
-            let (send, recv) = metrics_bytes_for_tunnel(metrics, tunnel);
+            let (send, recv) = counters.get(&tunnel.id).copied().unwrap_or((0, 0));
 
             let entry =
                 self.tunnels
@@ -147,7 +160,7 @@ impl TunnelActivityTracker {
     }
 }
 
-fn metrics_bytes_for_tunnel(metrics: &UpstreamMetrics, tunnel: &TunnelSummary) -> (u64, u64) {
+pub fn metrics_bytes_for_tunnel(metrics: &UpstreamMetrics, tunnel: &TunnelSummary) -> (u64, u64) {
     let Some(authority) = tunnel.origin_authority() else {
         return (0, 0);
     };

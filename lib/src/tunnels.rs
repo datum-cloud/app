@@ -63,7 +63,7 @@ fn proxy_uses_connector(proxy: &HTTPProxy, connector_name: &str) -> bool {
         })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TunnelSummary {
     pub id: String,
     pub label: String,
@@ -82,9 +82,28 @@ impl TunnelSummary {
             .ok()
             .map(Authority::from)
     }
+
+    /// Prefer the named public hostname over the v4./v6. machine records.
+    pub fn public_hostname(&self) -> Option<&str> {
+        self.hostnames
+            .iter()
+            .find(|host| !host.starts_with("v4.") && !host.starts_with("v6."))
+            .or_else(|| self.hostnames.first())
+            .map(String::as_str)
+    }
+
+    /// HTTPS URL for [`Self::public_hostname`], if one has been assigned.
+    pub fn public_url(&self) -> Option<String> {
+        let host = self.public_hostname()?;
+        if host.contains("://") {
+            Some(host.to_string())
+        } else {
+            Some(format!("https://{host}"))
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TunnelDeleteOutcome {
     pub project_id: String,
     pub connector_deleted: bool,
@@ -94,7 +113,7 @@ pub struct TunnelDeleteOutcome {
 ///
 /// Missing buckets are treated as "unknown" (allow create) so a transient quota API
 /// failure or missing registration does not hard-block the UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TunnelCreateQuota {
     pub project_id: String,
     /// Remaining HTTPProxy quota, if the bucket was found.
@@ -1310,6 +1329,49 @@ fn create_traffic_protection_policies_enabled() -> bool {
     match raw {
         Some(value) if matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO") => false,
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(hostnames: Vec<&str>) -> TunnelSummary {
+        TunnelSummary {
+            id: "t1".into(),
+            label: "app".into(),
+            endpoint: "http://127.0.0.1:4123".into(),
+            hostnames: hostnames.into_iter().map(str::to_string).collect(),
+            enabled: true,
+            accepted: true,
+            programmed: true,
+        }
+    }
+
+    #[test]
+    fn public_url_skips_v4_v6_records() {
+        let tunnel = summary(vec![
+            "v4.example.iroh.datum.net",
+            "vast-gold-mine.iroh.datum.net",
+        ]);
+        assert_eq!(
+            tunnel.public_url().as_deref(),
+            Some("https://vast-gold-mine.iroh.datum.net")
+        );
+    }
+
+    #[test]
+    fn public_url_passthrough_when_scheme_present() {
+        let tunnel = summary(vec!["https://custom.example.com"]);
+        assert_eq!(
+            tunnel.public_url().as_deref(),
+            Some("https://custom.example.com")
+        );
+    }
+
+    #[test]
+    fn public_url_none_without_hostnames() {
+        assert!(summary(vec![]).public_url().is_none());
     }
 }
 
