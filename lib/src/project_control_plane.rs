@@ -83,10 +83,13 @@ impl ProjectControlPlaneClient {
     /// Run a kube operation with auth handling (idempotent / read variant):
     ///
     /// 1. Preflight: refresh the access token if near expiry and rebuild the client.
-    /// 2. Run the operation. On 401/403, force a refresh and retry once.
-    /// 3. If the retry also returns 401/403, clear the local auth state and return
+    /// 2. Run the operation. On 401, force a refresh and retry once.
+    /// 3. If the retry also returns 401, clear the local auth state and return
     ///    [`Unauthorized`]. The watch on `login_state` will then drive a redirect
     ///    to login in the UI.
+    ///
+    /// 403 responses (RBAC denial, quota admission, etc.) are returned as normal
+    /// errors and do **not** clear the session.
     ///
     /// The closure is `Fn` so it can be invoked twice. Use this for idempotent
     /// operations (lists, gets, deletes). For non-idempotent writes, use
@@ -125,7 +128,7 @@ impl ProjectControlPlaneClient {
                     "kube auth failure persisted after refresh; logging out"
                 );
                 if let Err(e) = self.datum.auth().logout().await {
-                    warn!("Failed to clear auth state after persistent 401/403: {e:#}");
+                    warn!("Failed to clear auth state after persistent 401: {e:#}");
                 }
                 Err(Unauthorized.into())
             }
@@ -137,8 +140,9 @@ impl ProjectControlPlaneClient {
     /// but without retrying. Use for non-idempotent writes (create/patch/etc.) where
     /// re-running the closure would produce secondary errors like "AlreadyExists".
     ///
-    /// On 401/403 the local auth state is cleared and [`Unauthorized`] is returned;
+    /// On 401 the local auth state is cleared and [`Unauthorized`] is returned;
     /// the UI's login-state watcher then routes the user back to the login screen.
+    /// 403 responses (RBAC, quota, etc.) are returned as normal errors.
     pub async fn with_auth<T, F, Fut>(&self, op: F) -> Result<T>
     where
         F: FnOnce(Client) -> Fut,
@@ -150,7 +154,7 @@ impl ProjectControlPlaneClient {
             Err(err) if is_kube_auth_failure(&err) => {
                 warn!(err = %err, "kube auth failure; logging out");
                 if let Err(e) = self.datum.auth().logout().await {
-                    warn!("Failed to clear auth state on 401/403: {e:#}");
+                    warn!("Failed to clear auth state on 401: {e:#}");
                 }
                 Err(Unauthorized.into())
             }
@@ -227,9 +231,39 @@ impl ProjectControlPlaneClient {
     }
 }
 
-/// True if the kube error indicates the bearer token was rejected.
+/// True if the kube error indicates the bearer token was rejected (HTTP 401).
+///
+/// 403 Forbidden is **not** treated as auth failure: it covers RBAC denials and
+/// admission webhook rejections (e.g. Milo quota). Logging out on those would
+/// dump the user to the login screen incorrectly.
 pub fn is_kube_auth_failure(err: &kube::Error) -> bool {
-    matches!(err, kube::Error::Api(resp) if resp.code == 401 || resp.code == 403)
+    matches!(err, kube::Error::Api(resp) if resp.code == 401)
+}
+
+/// True if the kube error is a quota admission rejection (403 with a quota message).
+pub fn is_kube_quota_exceeded(err: &kube::Error) -> bool {
+    match err {
+        kube::Error::Api(resp) if resp.code == 403 => message_looks_like_quota(&resp.message),
+        _ => false,
+    }
+}
+
+/// True if an error chain (or Display string) looks like a Milo quota rejection.
+pub fn error_looks_like_quota(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if message_looks_like_quota(&e.to_string()) {
+            return true;
+        }
+        cur = e.source();
+    }
+    false
+}
+
+/// True if a message string looks like a Milo quota rejection.
+pub fn message_looks_like_quota(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("quota") || lower.contains("you've reached your quota")
 }
 
 #[cfg(test)]
@@ -246,15 +280,32 @@ mod is_kube_auth_failure_tests {
         })
     }
 
+    fn api_err_msg(code: u16, message: &str) -> kube::Error {
+        kube::Error::Api(ErrorResponse {
+            status: "Failure".to_string(),
+            message: message.to_string(),
+            reason: "Forbidden".to_string(),
+            code,
+        })
+    }
+
     #[test]
-    fn classifies_401_and_403_api_errors() {
+    fn classifies_401_as_auth_failure() {
         assert!(is_kube_auth_failure(&api_err(401)));
-        assert!(is_kube_auth_failure(&api_err(403)));
+    }
+
+    #[test]
+    fn does_not_treat_403_as_auth_failure() {
+        assert!(!is_kube_auth_failure(&api_err(403)));
+        assert!(!is_kube_auth_failure(&api_err_msg(
+            403,
+            "You've reached your quota for this resource type (Insufficient quota resources.)"
+        )));
     }
 
     #[test]
     fn ignores_other_api_status_codes() {
-        for code in [200u16, 404, 409, 410, 500, 503] {
+        for code in [200u16, 403, 404, 409, 410, 500, 503] {
             assert!(
                 !is_kube_auth_failure(&api_err(code)),
                 "code {code} should not be an auth failure"
@@ -266,5 +317,30 @@ mod is_kube_auth_failure_tests {
     fn ignores_non_api_errors() {
         let err = kube::Error::TlsRequired;
         assert!(!is_kube_auth_failure(&err));
+    }
+
+    #[test]
+    fn detects_quota_exceeded_403() {
+        let err = api_err_msg(
+            403,
+            "httpproxies.networking.datumapis.com \"tunnel-jw8vf\" is forbidden: You've reached your quota for this resource type (Insufficient quota resources. Contact your account administrator to review quota limits and usage.).",
+        );
+        assert!(is_kube_quota_exceeded(&err));
+        assert!(!is_kube_auth_failure(&err));
+    }
+
+    #[test]
+    fn ignores_non_quota_403() {
+        let err = api_err_msg(403, "httpproxies.networking.datumapis.com is forbidden");
+        assert!(!is_kube_quota_exceeded(&err));
+    }
+
+    #[test]
+    fn error_looks_like_quota_from_display() {
+        let err = std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Insufficient quota resources available",
+        );
+        assert!(error_looks_like_quota(&err));
     }
 }

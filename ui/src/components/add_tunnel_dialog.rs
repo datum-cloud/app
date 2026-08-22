@@ -1,6 +1,7 @@
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
-use lib::{TcpProxyData, TunnelSummary};
+use lib::{message_looks_like_quota, TcpProxyData, TunnelSummary};
+use open::that;
 
 use crate::{
     components::{
@@ -9,6 +10,7 @@ use crate::{
         Button, ButtonKind,
     },
     state::AppState,
+    util::project_quotas_portal_url,
 };
 
 /// Strips "http://" or "https://" from the front of a string (case-insensitive).
@@ -58,6 +60,7 @@ pub fn AddTunnelDialog(
     /// Called after a successful save so the parent can refresh the tunnels list.
     on_save_success: EventHandler<()>,
 ) -> Element {
+    let state = consume_context::<AppState>();
     let mut address = use_signal(String::new);
     let mut label = use_signal(String::new);
     let mut basic_auth_enabled = use_signal(|| false);
@@ -145,6 +148,30 @@ pub fn AddTunnelDialog(
     let address_invalid =
         use_memo(move || address().trim().is_empty() || address_validation().is_some());
 
+    let quota_exhausted = !is_edit
+        && state.tunnel_create_quota()()
+            .as_ref()
+            .map(|q| q.is_exhausted())
+            .unwrap_or(false);
+    let quotas_url = state
+        .selected_context()
+        .map(|ctx| project_quotas_portal_url(state.datum().web_url(), &ctx.project_id));
+
+    let create_blocked = !is_edit && quota_exhausted;
+    let submit_disabled = save_tunnel.pending()
+        || save_create_tunnel.pending()
+        || address_invalid()
+        || create_blocked;
+
+    let save_err = save_tunnel
+        .value()
+        .and_then(|r| r.err())
+        .or_else(|| save_create_tunnel.value().and_then(|r| r.err()));
+    let save_err_text = save_err.as_ref().map(|e| e.to_string());
+    let save_err_is_quota = save_err_text
+        .as_ref()
+        .is_some_and(|t| !is_edit && message_looks_like_quota(t));
+
     rsx! {
         DialogRoot {
             open: open(),
@@ -153,6 +180,26 @@ pub fn AddTunnelDialog(
             DialogContent {
                 DialogTitle { "{title}" }
                 form { class: "space-y-5 mt-5 w-[452px]", autocomplete: "off",
+                    if create_blocked {
+                        div { class: "rounded-md border border-card-border bg-card-background p-4 shadow-card",
+                            div { class: "text-sm font-medium text-foreground",
+                                "You've hit your tunnel limit"
+                            }
+                            div { class: "text-sm mt-1 text-foreground/60",
+                                "You can delete a tunnel from the list, or review your quotas in the portal and contact support if you need further assistance."
+                            }
+                            if let Some(url) = quotas_url.clone() {
+                                button {
+                                    class: "mt-2 text-sm text-foreground/70 underline underline-offset-2 hover:text-foreground cursor-pointer",
+                                    r#type: "button",
+                                    onclick: move |_| {
+                                        let _ = that(&url);
+                                    },
+                                    "Review quotas"
+                                }
+                            }
+                        }
+                    }
                     Input {
                         id: Some("tunnel-name".into()),
                         label: Some("Display name".into()),
@@ -173,36 +220,38 @@ pub fn AddTunnelDialog(
                         onchange: move |e: FormEvent| address.set(e.value()),
                         r#type: "text",
                     }
-                    // TODO: Add basic authentication
-                    // div { class: "flex flex-col gap-2",
-                    //     div { class: "flex items-center justify-between",
-                    //         label { class: "text-xs text-form-label/90", "Basic authentication" }
-                    //         Switch {
-                    //             checked: basic_auth_enabled(),
-                    //             on_checked_change: move |checked| basic_auth_enabled.set(checked),
-                    //             SwitchThumb {}
-                    //         }
-                    //     }
-                    //     div { class: "text-1xs text-form-description",
-                    //         "We'll automatically generate a username and password for you."
-                    //     }
-                    // }
-                    if let Some(err) = save_tunnel
-                        .value()
-                        .and_then(|r| r.err())
-                        .or_else(|| save_create_tunnel.value().and_then(|r| r.err()))
-                    {
+                    if save_err_is_quota {
+                        div { class: "rounded-md border border-card-border bg-card-background p-4 shadow-card",
+                            div { class: "text-sm font-medium text-foreground",
+                                "You've hit your tunnel limit"
+                            }
+                            div { class: "text-sm mt-1 text-foreground/60",
+                                "You can delete a tunnel from the list, or review your quotas in the portal and contact support if you need further assistance."
+                            }
+                            if let Some(url) = quotas_url.clone() {
+                                button {
+                                    class: "mt-2 text-sm text-foreground/70 underline underline-offset-2 hover:text-foreground cursor-pointer",
+                                    r#type: "button",
+                                    onclick: move |_| {
+                                        let _ = that(&url);
+                                    },
+                                    "Review quotas"
+                                }
+                            }
+                        }
+                    } else if let Some(err_text) = save_err_text.clone() {
                         div { class: "rounded-md border border-red-200 bg-red-50 p-4 text-red-800",
                             div { class: "text-sm font-semibold", "{error_title}" }
-                            div { class: "text-sm mt-1 break-words", "{err}" }
+                            div { class: "text-sm mt-1 break-words", "{err_text}" }
                         }
                     }
                     div { class: "flex items-center gap-2.5 pt-2 justify-start",
                         Button {
                             kind: ButtonKind::Primary,
-                            class: if save_tunnel.pending() || save_create_tunnel.pending() || address_invalid() { Some("opacity-60".to_string()) } else { None },
+                            disabled: submit_disabled,
+                            class: if submit_disabled { Some("opacity-60".to_string()) } else { None },
                             onclick: move |_| {
-                                if address_invalid() {
+                                if submit_disabled {
                                     return;
                                 }
                                 if let Some(tunnel_id) = initial_tunnel

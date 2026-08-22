@@ -41,7 +41,7 @@ use crate::{
         SwitchThumb,
     },
     state::AppState,
-    util::tunnel_edge_portal_url,
+    util::{project_quotas_portal_url, tunnel_edge_portal_url},
     Route,
 };
 
@@ -112,6 +112,19 @@ pub fn ProxiesList() -> Element {
                     };
                 has_loaded_for_future.set(true);
                 let _ = list;
+
+                match state_for_future
+                    .tunnel_service()
+                    .tunnel_create_quota_active()
+                    .await
+                {
+                    Ok(quota) => state_for_future.set_tunnel_create_quota(quota),
+                    Err(err) => {
+                        tracing::warn!("failed to load tunnel create quota: {err:#}");
+                        // Keep the last known quota rather than clearing — a transient
+                        // failure should not flash the create button on/off.
+                    }
+                }
 
                 if has_pending_hostname || has_pending_status {
                     // Poll every 3 seconds when waiting for hostname provisioning
@@ -200,6 +213,13 @@ pub fn ProxiesList() -> Element {
         .ok()
         .and_then(|a| a.profile.first_name.clone())
         .unwrap_or_else(|| "there".to_string());
+    let quota_exhausted = state.tunnel_create_quota()()
+        .as_ref()
+        .map(|q| q.is_exhausted())
+        .unwrap_or(false);
+    let quotas_url = state
+        .selected_context()
+        .map(|ctx| project_quotas_portal_url(state.datum().web_url(), &ctx.project_id));
 
     const EMPTY_MOON: Asset = asset!("/assets/images/empty-card-moon.png");
     const EMPTY_ROCKS: Asset = asset!("/assets/images/empty-card-rocks.png");
@@ -283,7 +303,12 @@ pub fn ProxiesList() -> Element {
                         class: "w-fit text-foreground",
                         text: "Add New",
                         leading_icon: Some(IconSource::Named("plus".into())),
-                        onclick: move |_| dialog_open.set(true),
+                        disabled: quota_exhausted,
+                        onclick: move |_| {
+                            if !quota_exhausted {
+                                dialog_open.set(true);
+                            }
+                        },
                     }
                 }
                 div { class: "rounded-lg bg-background h-48" }
@@ -328,6 +353,23 @@ pub fn ProxiesList() -> Element {
                 div { class: "mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-alert-red-dark",
                     div { class: "text-sm font-semibold", "Failed to load tunnels" }
                     div { class: "text-xs mt-1 break-words", "{err}" }
+                }
+            }
+            if quota_exhausted {
+                div { class: "mb-4 rounded-lg border border-card-border bg-card-background px-4 py-3 shadow-card",
+                    div { class: "text-sm font-medium text-foreground", "You've hit your tunnel limit" }
+                    div { class: "text-xs mt-1 text-foreground/60",
+                        "You can delete a tunnel below, or review your quotas in the portal and contact support if you need further assistance."
+                    }
+                    if let Some(url) = quotas_url.clone() {
+                        button {
+                            class: "mt-2 text-xs text-foreground/70 underline underline-offset-2 hover:text-foreground cursor-pointer",
+                            onclick: move |_| {
+                                let _ = that(&url);
+                            },
+                            "Review quotas"
+                        }
+                    }
                 }
             }
             {list}

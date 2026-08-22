@@ -1,8 +1,8 @@
 use dioxus::prelude::WritableExt;
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
-    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelActivityTracker, TunnelService,
-    TunnelSummary,
+    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelActivityTracker,
+    TunnelCreateQuota, TunnelService, TunnelSummary,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,9 @@ pub struct AppState {
     /// flipped off; they are cleared automatically by `proxies_list` once the
     /// API stops returning the ID.
     pending_deletions: dioxus::signals::Signal<HashSet<String>>,
+    /// Latest create-quota snapshot for the selected project (refreshed with the
+    /// tunnel list). `None` means not yet loaded or no project selected.
+    tunnel_create_quota: dioxus::signals::Signal<Option<TunnelCreateQuota>>,
 }
 
 impl AppState {
@@ -45,6 +48,7 @@ impl AppState {
             tunnel_cache: dioxus::signals::Signal::new(Vec::new()),
             tunnel_activity: Arc::new(Mutex::new(TunnelActivityTracker::new())),
             pending_deletions: dioxus::signals::Signal::new(HashSet::new()),
+            tunnel_create_quota: dioxus::signals::Signal::new(None),
         };
         Ok(app_state)
     }
@@ -84,6 +88,15 @@ impl AppState {
     pub fn set_tunnel_cache(&self, tunnels: Vec<TunnelSummary>) {
         let mut cache = self.tunnel_cache;
         cache.set(tunnels);
+    }
+
+    pub fn tunnel_create_quota(&self) -> dioxus::signals::Signal<Option<TunnelCreateQuota>> {
+        self.tunnel_create_quota
+    }
+
+    pub fn set_tunnel_create_quota(&self, quota: Option<TunnelCreateQuota>) {
+        let mut signal = self.tunnel_create_quota;
+        signal.set(quota);
     }
 
     pub fn tunnel_activity(&self) -> Arc<Mutex<TunnelActivityTracker>> {
@@ -155,6 +168,8 @@ impl AppState {
         self.datum
             .set_selected_context(selected_context.clone())
             .await?;
+        // Drop stale quota until the tunnel poll refreshes for the new project.
+        self.set_tunnel_create_quota(None);
         Ok(())
     }
 }

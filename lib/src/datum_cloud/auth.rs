@@ -17,7 +17,7 @@ use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -30,6 +30,44 @@ use super::ApiEnv;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Refresh auth or relogin if access token is valid for less than 30min
 const REFRESH_AUTH_WHEN: Duration = Duration::from_secs(60 * 30);
+
+/// What to do when an OIDC refresh request fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshFailureAction {
+    /// Zitadel rotated the refresh token (or another process did). Keep the
+    /// still-valid access token instead of logging the user out.
+    KeepSession,
+    /// Genuine failure: clear local auth so the UI returns to login.
+    Logout,
+}
+
+/// True when another waiter already refreshed while we queued on the lock.
+fn should_skip_locked_refresh(force: bool, needs_refresh: bool) -> bool {
+    !force && !needs_refresh
+}
+
+/// Classify a refresh-token error the same way cloud-portal does.
+///
+/// Zitadel strictly rotates refresh tokens. A concurrent refresh (this process
+/// or the CLI sharing `oauth.*.yml`) that already used RT1 gets
+/// `invalid_request: Errors.OIDCSession.RefreshTokenInvalid` for the loser.
+/// That is not a real logout.
+fn is_refresh_token_revoked_message(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("refreshtokeninvalid")
+        || lower.contains("invalid_grant")
+        || (lower.contains("invalid_request") && lower.contains("refresh"))
+}
+
+fn refresh_failure_action(is_revoked: bool) -> RefreshFailureAction {
+    if is_revoked {
+        // Match cloud-portal: rotation races are not genuine logouts, even when the
+        // access token has just expired. Downstream 401s force re-evaluation.
+        RefreshFailureAction::KeepSession
+    } else {
+        RefreshFailureAction::Logout
+    }
+}
 
 pub struct AuthProvider {
     pub issuer_url: String,
@@ -240,7 +278,7 @@ impl StatelessClient {
 
     pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
         let refresh_token = tokens.refresh_token.as_ref().context("No refresh token")?;
-        debug!("Refreshing access token");
+        info!("Refreshing access token");
         let tokens = self
             .oidc
             .exchange_refresh_token(refresh_token)
@@ -251,7 +289,7 @@ impl StatelessClient {
         let state = self
             .parse_token_response(tokens, refresh_nonce_verifier)
             .await?;
-        debug!("Access token refreshed");
+        info!(expires_at = %state.tokens.expires_at(), "Access token refreshed");
         Ok(state)
     }
 
@@ -536,13 +574,122 @@ fn set_sentry_user(auth: Option<&AuthState>) {
     });
 }
 
+#[cfg(test)]
+mod test_refresh {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::*;
+
+    pub enum TestRefreshOutcome {
+        ExtendExpiry(Duration),
+        Error(&'static str),
+        DelayThenExtend { delay: Duration, extend: Duration },
+    }
+
+    /// Scripted refresh responses for [`AuthClient::test_client`].
+    pub struct TestRefreshController {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        call_count: AtomicUsize,
+        refresh_tokens_used: Mutex<Vec<String>>,
+        outcomes: Mutex<VecDeque<TestRefreshOutcome>>,
+    }
+
+    fn refreshed_auth_state(expires_in: Duration, generation: usize) -> AuthState {
+        AuthState {
+            tokens: AuthTokens {
+                access_token: AccessToken::new(format!("access-token-{generation}")),
+                refresh_token: Some(RefreshToken::new(format!("refresh-token-{generation}"))),
+                issued_at: Utc::now(),
+                expires_in,
+            },
+            profile: UserProfile {
+                user_id: "user-test".to_string(),
+                email: "test@example.com".to_string(),
+                first_name: Some("Test".to_string()),
+                last_name: None,
+                avatar_url: None,
+                registration_approval: Some("Approved".to_string()),
+            },
+        }
+    }
+
+    impl TestRefreshController {
+        pub fn new(outcomes: Vec<TestRefreshOutcome>) -> Arc<Self> {
+            Arc::new(Self {
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                call_count: AtomicUsize::new(0),
+                refresh_tokens_used: Mutex::new(Vec::new()),
+                outcomes: Mutex::new(outcomes.into()),
+            })
+        }
+
+        pub fn call_count(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
+        }
+
+        pub fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+
+        pub fn refresh_tokens_used(&self) -> Vec<String> {
+            self.refresh_tokens_used.lock().unwrap().clone()
+        }
+
+        pub async fn refresh(&self, tokens: &AuthTokens) -> Result<AuthState> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            let generation = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(rt) = tokens.refresh_token.as_ref() {
+                self.refresh_tokens_used
+                    .lock()
+                    .unwrap()
+                    .push(rt.secret().to_string());
+            }
+
+            let outcome = self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(TestRefreshOutcome::Error("no test outcome queued"));
+
+            let result = match outcome {
+                TestRefreshOutcome::ExtendExpiry(extend) => {
+                    Ok(refreshed_auth_state(extend, generation))
+                }
+                TestRefreshOutcome::Error(msg) => Err(anyerr!(msg)),
+                TestRefreshOutcome::DelayThenExtend { delay, extend } => {
+                    tokio::time::sleep(delay).await;
+                    Ok(refreshed_auth_state(extend, generation))
+                }
+            };
+
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+}
+
 #[derive(derive_more::Debug, Clone)]
 pub struct AuthClient {
     state: AuthStateWrapper,
     env: ApiEnv,
     /// OIDC client with JWKs. Swapped before each login/refresh so we always have fresh keys
     /// (avoids "No matching key found" when Datum Cloud rotates signing keys; datum-cloud/app#121).
-    client: Arc<ArcSwap<StatelessClient>>,
+    /// Absent in unit tests that inject [`TestRefreshController`].
+    client: Option<Arc<ArcSwap<StatelessClient>>>,
+    /// Serializes OIDC refresh so concurrent callers cannot reuse a rotated refresh token.
+    #[debug(skip)]
+    refresh_lock: Arc<Mutex<()>>,
+    /// Injected refresh responses for unit tests (never set in production).
+    #[cfg(test)]
+    #[debug(skip)]
+    test_refresh_hook: Option<Arc<test_refresh::TestRefreshController>>,
     _refresh_task: Option<Arc<n0_future::task::AbortOnDropHandle<()>>>,
 }
 
@@ -553,7 +700,10 @@ impl AuthClient {
         let mut client = Self {
             state: auth,
             env,
-            client: Arc::new(ArcSwap::new(auth_client)),
+            client: Some(Arc::new(ArcSwap::new(auth_client))),
+            refresh_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            test_refresh_hook: None,
             _refresh_task: None,
         };
         client.start_refresh_loop();
@@ -566,7 +716,10 @@ impl AuthClient {
         let mut client = Self {
             state: auth,
             env,
-            client: Arc::new(ArcSwap::new(auth_client)),
+            client: Some(Arc::new(ArcSwap::new(auth_client))),
+            refresh_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            test_refresh_hook: None,
             _refresh_task: None,
         };
         client.start_refresh_loop();
@@ -578,7 +731,9 @@ impl AuthClient {
     async fn ensure_fresh_client(&self) -> Result<Arc<StatelessClient>> {
         let fresh =
             Arc::new(StatelessClient::with_provider(self.env, self.env.auth_provider()).await?);
-        self.client.store(fresh.clone());
+        if let Some(client) = &self.client {
+            client.store(fresh.clone());
+        }
         Ok(fresh)
     }
 
@@ -642,14 +797,10 @@ impl AuthClient {
     }
 
     async fn refresh_if_needed(&self) -> Result<()> {
-        let state = self.state.load();
-        let Ok(auth) = state.get() else {
+        if self.state.load().get().is_err() {
             return Ok(());
-        };
-        if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) {
-            self.refresh().await?;
         }
-        Ok(())
+        self.refresh_locked(false).await
     }
 
     pub async fn load_refreshed(&self) -> Result<Arc<MaybeAuth>> {
@@ -657,7 +808,7 @@ impl AuthClient {
         match state.get() {
             Err(_) => Ok(state),
             Ok(inner) if inner.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
-                self.refresh().await?;
+                self.refresh_locked(false).await?;
                 Ok(self.state.load())
             }
             Ok(_) => Ok(state),
@@ -672,34 +823,13 @@ impl AuthClient {
     pub async fn login(&self) -> Result<()> {
         let auth = self.state.load();
         let auth = match auth.get() {
-            Err(_) => {
-                let client = self.ensure_fresh_client().await?;
-                client
-                    .login(|url, _cancel_token| async move {
-                        if let Err(err) = open::that(&url) {
-                            warn!("Failed to auto-open url: {err}");
-                            eprintln!("Open this URL in a browser to complete the login:\n{url}");
-                        }
-                    })
-                    .await?
-            }
+            Err(_) => self.interactive_login().await?,
             Ok(auth) if auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN) => {
-                let client = self.ensure_fresh_client().await?;
-                match client.refresh(&auth.tokens).await {
-                    Ok(auth) => auth,
+                match self.refresh_locked(false).await {
+                    Ok(()) => return Ok(()),
                     Err(err) => {
                         warn!("Failed to refresh auth token: {err:#}");
-                        let client = self.ensure_fresh_client().await?;
-                        client
-                            .login(|url, _cancel_token| async move {
-                                if let Err(e) = open::that(&url) {
-                                    warn!("Failed to auto-open url: {e}");
-                                    eprintln!(
-                                        "Open this URL in a browser to complete the login:\n{url}"
-                                    );
-                                }
-                            })
-                            .await?
+                        self.interactive_login().await?
                     }
                 }
             }
@@ -709,41 +839,92 @@ impl AuthClient {
         Ok(())
     }
 
-    pub async fn refresh(&self) -> Result<()> {
-        let auth = self.state.load();
-        let auth = auth.get()?;
+    async fn interactive_login(&self) -> Result<AuthState> {
         let client = self.ensure_fresh_client().await?;
-        let new_auth = match client.refresh(&auth.tokens).await {
-            Ok(auth) => auth,
-            Err(err) => {
-                warn!("Failed to refresh auth tokens, logging out: {err:#}");
-                self.state.set(None).await?;
-                Err(err).context("Failed to refresh auth tokens, needs login")?
-            }
-        };
-        self.state.set(Some(new_auth)).await?;
-        Ok(())
+        client
+            .login(|url, _cancel_token| async move {
+                if let Err(err) = open::that(&url) {
+                    warn!("Failed to auto-open url: {err}");
+                    eprintln!("Open this URL in a browser to complete the login:\n{url}");
+                }
+            })
+            .await
+    }
+
+    pub async fn refresh(&self) -> Result<()> {
+        self.state.load().get()?;
+        self.refresh_locked(false).await
     }
 
     /// Force a token refresh even if the access token is not near expiry.
     ///
     /// Used by API callers when the server rejects an apparently-valid token
     /// (e.g. token revoked server-side, key rotation, perm change). On failure
-    /// the local auth state is cleared so the UI redirects to login.
+    /// the local auth state is cleared so the UI redirects to login, unless the
+    /// error is a refresh-token rotation race (including on a just-expired access token).
     pub async fn force_refresh(&self) -> Result<()> {
-        let auth = self.state.load();
-        let auth = auth.get()?;
-        let client = self.ensure_fresh_client().await?;
-        let new_auth = match client.refresh(&auth.tokens).await {
-            Ok(auth) => auth,
-            Err(err) => {
-                warn!("Failed to force-refresh auth tokens, logging out: {err:#}");
-                self.state.set(None).await?;
-                Err(err).context("Failed to force-refresh auth tokens, needs login")?
-            }
+        self.state.load().get()?;
+        self.refresh_locked(true).await
+    }
+
+    /// Serialize OIDC refresh. Reload tokens after acquiring the lock so waiters
+    /// never reuse a refresh token another task just rotated.
+    async fn refresh_locked(&self, force: bool) -> Result<()> {
+        let _guard = self.refresh_lock.lock().await;
+        let state = self.state.load();
+        let Ok(auth) = state.get() else {
+            return Ok(());
         };
-        self.state.set(Some(new_auth)).await?;
-        Ok(())
+        if should_skip_locked_refresh(force, auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN)) {
+            return Ok(());
+        }
+
+        match self.exchange_refresh_token(&auth.tokens).await {
+            Ok(new_auth) => {
+                self.state.set(Some(new_auth)).await?;
+                Ok(())
+            }
+            Err(err) => self.handle_refresh_failure(err).await,
+        }
+    }
+
+    async fn exchange_refresh_token(&self, tokens: &AuthTokens) -> Result<AuthState> {
+        #[cfg(test)]
+        if let Some(hook) = self.test_refresh_hook.as_ref() {
+            return hook.refresh(tokens).await;
+        }
+        let client = self.ensure_fresh_client().await?;
+        client.refresh(tokens).await
+    }
+
+    async fn handle_refresh_failure(&self, err: n0_error::AnyError) -> Result<()> {
+        let message = format!("{err:#}");
+        let access_expired = self
+            .state
+            .load()
+            .get()
+            .map(|auth| auth.tokens.is_expired())
+            .unwrap_or(true);
+        match refresh_failure_action(is_refresh_token_revoked_message(&message)) {
+            RefreshFailureAction::KeepSession => {
+                if access_expired {
+                    warn!(
+                        "Refresh token rejected on just-expired access token (likely rotation race); \
+                         keeping current session: {message}"
+                    );
+                } else {
+                    warn!(
+                        "Refresh token rejected (likely rotation race); keeping current session: {message}"
+                    );
+                }
+                Ok(())
+            }
+            RefreshFailureAction::Logout => {
+                warn!("Failed to refresh auth tokens, logging out: {message}");
+                self.state.set(None).await?;
+                Err(err).context("Failed to refresh auth tokens, needs login")
+            }
+        }
     }
 
     /// Refresh the user profile from the API without refreshing tokens.
@@ -761,11 +942,11 @@ impl AuthClient {
             Err(err) => return Err(err),
         }
 
-        // One forced refresh and retry. If anything in this branch fails we treat it
-        // as a hard logout signal so the user doesn't sit on a half-functional session.
+        // One forced refresh and retry. Logout-class refresh failures already
+        // cleared local auth; rotation-race keep-session returns Ok and we retry
+        // the profile fetch with the still-valid access token.
         if let Err(err) = self.force_refresh().await {
             warn!("refresh_profile: forced refresh failed: {err:#}");
-            // force_refresh already cleared local auth on failure.
             return Err(Unauthorized.into());
         }
         match self.try_fetch_profile_once().await {
@@ -787,6 +968,8 @@ impl AuthClient {
         let user_id = auth.profile.user_id.clone();
         let new_profile = self
             .client
+            .as_ref()
+            .context("no oidc client")?
             .load()
             .fetch_user_profile(&auth.tokens, &user_id)
             .await?;
@@ -802,11 +985,242 @@ impl AuthClient {
         self.state.set(Some(new_auth)).await?;
         Ok(())
     }
+
+    #[cfg(test)]
+    async fn test_client(auth: AuthState, hook: Arc<test_refresh::TestRefreshController>) -> Self {
+        let state = AuthStateWrapper::empty();
+        state.set(Some(auth)).await.expect("seed auth state");
+        Self {
+            state,
+            env: ApiEnv::Staging,
+            client: None,
+            refresh_lock: Arc::new(Mutex::new(())),
+            test_refresh_hook: Some(hook),
+            _refresh_task: None,
+        }
+    }
 }
 
 /// Refresh requests don't have nonces.
 fn refresh_nonce_verifier(_: Option<&Nonce>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod refresh_race_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::test_refresh::{TestRefreshController, TestRefreshOutcome};
+    use super::*;
+
+    const ROTATION_RACE_ERR: &str = "Failed to refresh tokens: Server returned error response: invalid_request: Errors.OIDCSession.RefreshTokenInvalid";
+
+    fn test_profile() -> UserProfile {
+        UserProfile {
+            user_id: "user-test".to_string(),
+            email: "test@example.com".to_string(),
+            first_name: Some("Test".to_string()),
+            last_name: None,
+            avatar_url: None,
+            registration_approval: Some("Approved".to_string()),
+        }
+    }
+
+    fn test_auth_state(expires_in: Duration, refresh_token: &str) -> AuthState {
+        AuthState {
+            tokens: AuthTokens {
+                access_token: AccessToken::new("access-token".to_string()),
+                refresh_token: Some(RefreshToken::new(refresh_token.to_string())),
+                issued_at: Utc::now(),
+                expires_in,
+            },
+            profile: test_profile(),
+        }
+    }
+
+    fn expired_test_auth_state(refresh_token: &str) -> AuthState {
+        AuthState {
+            tokens: AuthTokens {
+                access_token: AccessToken::new("access-token".to_string()),
+                refresh_token: Some(RefreshToken::new(refresh_token.to_string())),
+                issued_at: Utc::now() - Duration::from_secs(3600),
+                expires_in: Duration::from_secs(1800),
+            },
+            profile: test_profile(),
+        }
+    }
+
+    #[test]
+    fn classifies_zitadel_refresh_token_invalid() {
+        assert!(is_refresh_token_revoked_message(ROTATION_RACE_ERR));
+        assert!(is_refresh_token_revoked_message(
+            "invalid_grant: refresh token is invalid"
+        ));
+        assert!(is_refresh_token_revoked_message(
+            "invalid_request: refresh token has been rotated"
+        ));
+    }
+
+    #[test]
+    fn does_not_classify_unrelated_refresh_errors() {
+        assert!(!is_refresh_token_revoked_message(
+            "Failed to refresh tokens: error sending request for url"
+        ));
+        assert!(!is_refresh_token_revoked_message(
+            "Failed to refresh tokens: connection timed out"
+        ));
+        assert!(!is_refresh_token_revoked_message("No refresh token"));
+        assert!(!is_refresh_token_revoked_message(
+            "invalid_request: redirect_uri mismatch"
+        ));
+    }
+
+    #[test]
+    fn keeps_session_on_refresh_token_revoked() {
+        // Matches cloud-portal: keep session for rotation races whether or not the
+        // access token has just expired.
+        assert_eq!(
+            refresh_failure_action(true),
+            RefreshFailureAction::KeepSession
+        );
+    }
+
+    #[test]
+    fn logs_out_on_non_revoked_refresh_failure() {
+        assert_eq!(refresh_failure_action(false), RefreshFailureAction::Logout);
+    }
+
+    #[test]
+    fn skips_locked_refresh_when_another_waiter_already_refreshed() {
+        assert!(should_skip_locked_refresh(false, false));
+        assert!(!should_skip_locked_refresh(false, true));
+        assert!(!should_skip_locked_refresh(true, false));
+        assert!(!should_skip_locked_refresh(true, true));
+    }
+
+    #[tokio::test]
+    async fn concurrent_refresh_serializes_and_coalesces() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::DelayThenExtend {
+            delay: Duration::from_millis(100),
+            extend: Duration::from_secs(12 * 3600),
+        }]);
+        let auth = test_auth_state(Duration::from_secs(15 * 60), "rt1");
+        let client = Arc::new(AuthClient::test_client(auth, hook.clone()).await);
+
+        let (first, second) = tokio::join!(client.refresh(), client.refresh());
+
+        assert!(first.is_ok(), "first refresh should succeed: {first:?}");
+        assert!(second.is_ok(), "waiter should coalesce: {second:?}");
+        assert_eq!(hook.call_count(), 1, "only one OIDC refresh should run");
+        assert_eq!(hook.max_active(), 1, "refresh must not overlap");
+        assert_eq!(
+            hook.refresh_tokens_used(),
+            vec!["rt1".to_string()],
+            "winner must not reuse a token rotated by a concurrent caller"
+        );
+
+        let loaded = client.load();
+        let auth = loaded.get().expect("session kept");
+        assert_eq!(auth.tokens.access_token.secret(), "access-token-1");
+        assert_eq!(
+            auth.tokens.refresh_token.as_ref().unwrap().secret(),
+            "refresh-token-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotation_race_keeps_session_when_access_token_valid() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::Error(ROTATION_RACE_ERR)]);
+        let auth = test_auth_state(Duration::from_secs(15 * 60), "rt1");
+        let client = AuthClient::test_client(auth, hook).await;
+
+        let result = client.refresh().await;
+        assert!(result.is_ok(), "rotation race must not log out: {result:?}");
+        assert!(!client.load().is_none(), "auth state must remain");
+        assert_ne!(client.login_state(), LoginState::Missing);
+
+        let loaded = client.load();
+        let auth = loaded.get().expect("session kept");
+        assert_eq!(auth.tokens.access_token.secret(), "access-token");
+        assert_eq!(auth.tokens.refresh_token.as_ref().unwrap().secret(), "rt1");
+    }
+
+    #[tokio::test]
+    async fn rotation_race_keeps_session_when_access_token_just_expired() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::Error(ROTATION_RACE_ERR)]);
+        let auth = expired_test_auth_state("rt1");
+        assert!(auth.tokens.is_expired(), "fixture must be just-expired");
+        let client = AuthClient::test_client(auth, hook).await;
+
+        let result = client.refresh().await;
+        assert!(result.is_ok(), "portal-aligned keep-session: {result:?}");
+        assert!(!client.load().is_none());
+        assert_ne!(client.login_state(), LoginState::Missing);
+    }
+
+    #[tokio::test]
+    async fn genuine_refresh_failure_logs_out() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::Error(
+            "Failed to refresh tokens: connection timed out",
+        )]);
+        let auth = test_auth_state(Duration::from_secs(15 * 60), "rt1");
+        let client = AuthClient::test_client(auth, hook).await;
+
+        let result = client.refresh().await;
+        assert!(result.is_err(), "non-revoked failure should propagate");
+        assert!(client.load().is_none(), "auth state must be cleared");
+        assert_eq!(client.login_state(), LoginState::Missing);
+    }
+
+    #[tokio::test]
+    async fn force_refresh_runs_even_when_access_token_is_fresh() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::ExtendExpiry(
+            Duration::from_secs(12 * 3600),
+        )]);
+        let auth = test_auth_state(Duration::from_secs(12 * 3600), "rt1");
+        assert!(
+            !auth.tokens.expires_in_less_than(REFRESH_AUTH_WHEN),
+            "fixture must be outside the refresh window"
+        );
+        let client = AuthClient::test_client(auth, hook.clone()).await;
+
+        client.force_refresh().await.expect("force refresh");
+
+        assert_eq!(hook.call_count(), 1);
+        let loaded = client.load();
+        let auth = loaded.get().expect("session kept");
+        assert_eq!(auth.tokens.access_token.secret(), "access-token-1");
+    }
+
+    #[tokio::test]
+    async fn load_refreshed_triggers_refresh_when_near_expiry() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::ExtendExpiry(
+            Duration::from_secs(12 * 3600),
+        )]);
+        let auth = test_auth_state(Duration::from_secs(15 * 60), "rt1");
+        let client = AuthClient::test_client(auth, hook.clone()).await;
+
+        client.load_refreshed().await.expect("load refreshed");
+
+        assert_eq!(hook.call_count(), 1);
+        let loaded = client.load();
+        let auth = loaded.get().expect("session kept");
+        assert_eq!(auth.tokens.access_token.secret(), "access-token-1");
+    }
+
+    #[tokio::test]
+    async fn load_refreshed_skips_refresh_when_token_is_fresh() {
+        let hook = TestRefreshController::new(vec![TestRefreshOutcome::ExtendExpiry(
+            Duration::from_secs(12 * 3600),
+        )]);
+        let auth = test_auth_state(Duration::from_secs(12 * 3600), "rt1");
+        let client = AuthClient::test_client(auth, hook.clone()).await;
+
+        client.load_refreshed().await.expect("load refreshed");
+
+        assert_eq!(hook.call_count(), 0, "fresh token should not refresh");
+    }
 }
 
 mod types {
