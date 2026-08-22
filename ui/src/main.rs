@@ -126,6 +126,15 @@ fn main() {
         .install_default()
         .expect("rustls default crypto provider");
 
+    if lib::agent::wants_headless_agent() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        if let Err(err) = runtime.block_on(lib::agent::run_headless_agent_from_args()) {
+            eprintln!("{err:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Load .env first so any process-env-driven config (DATUM_API_ENV, etc.) is
     // visible to the rest of init. We keep the load result so we can log it
     // *after* tracing is set up.
@@ -722,16 +731,22 @@ fn App() -> Element {
             async move {
                 let refresh = state.tunnel_refresh();
                 loop {
-                    let tunnels = match state.tunnel_service().list_active().await {
+                    let tunnels = match state.list_tunnels().await {
                         Ok(list) => list,
                         Err(err) => {
                             tracing::debug!("tray: failed to list tunnels for activity: {err:#}");
                             state.tunnel_cache()()
                         }
                     };
-                    let metrics = state.node().listen.metrics().clone();
+                    let counters = match state.tunnel_byte_counters().await {
+                        Ok(counters) => counters,
+                        Err(err) => {
+                            tracing::debug!("tray: failed to read tunnel metrics: {err:#}");
+                            std::collections::HashMap::new()
+                        }
+                    };
                     if let Ok(mut tracker) = state.tunnel_activity().lock() {
-                        tracker.tick(&tunnels, &metrics);
+                        tracker.tick_counters(&tunnels, &counters);
                     }
                     tray_menu_version_for_sync.set(tray_menu_version_for_sync().wrapping_add(1));
 

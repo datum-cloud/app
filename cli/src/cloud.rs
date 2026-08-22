@@ -1,12 +1,8 @@
 //! Login, context, agent, and tunnel CLI commands.
 
-use std::fs::OpenOptions;
-use std::process::Stdio;
 use std::time::Duration;
 
-use lib::agent::{
-    self, AgentClient, AgentStatus, CreateTunnelRequest, running_agent_info, wait_until_ready,
-};
+use lib::agent::{self, AgentClient, AgentStatus, CreateTunnelRequest, running_agent_info};
 use lib::datum_cloud::{ApiEnv, DatumCloudClient, LoginState, resolve_selected_context};
 use lib::{Repo, SelectedContext};
 use n0_error::{Result, StdResultExt};
@@ -295,50 +291,10 @@ pub async fn tunnel(repo: Repo, command: TunnelCommands) -> Result<()> {
 }
 
 async fn connect_or_start(repo: &Repo) -> Result<AgentClient> {
-    if let Ok(client) = AgentClient::connect(repo) {
-        return Ok(client);
+    if agent::running_agent_info(repo)?.is_none() {
+        eprintln!("Starting datum-connect agent…");
     }
-    eprintln!("Starting datum-connect agent…");
-    spawn_detached_agent(repo)?;
-    match wait_until_ready(repo, Duration::from_secs(20)).await {
-        Ok(client) => Ok(client),
-        Err(err) => n0_error::bail_any!(
-            "{err:#}. Check {} for agent logs.",
-            repo.agent_log_path().display()
-        ),
-    }
-}
-
-pub fn spawn_detached_agent(repo: &Repo) -> Result<()> {
-    let exe = std::env::current_exe().std_context("failed to resolve current executable")?;
-    let log_path = repo.agent_log_path();
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .std_context("failed to open agent.log")?;
-    let log_err = log.try_clone().std_context("failed to clone agent.log")?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--repo").arg(repo.path());
-    cmd.args(["agent", "start"]);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::from(log));
-    cmd.stderr(Stdio::from(log_err));
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    cmd.spawn()
-        .std_context("failed to spawn datum-connect agent")?;
-    Ok(())
+    agent::ensure_agent(repo).await
 }
 
 async fn require_logged_in(repo: Repo) -> Result<DatumCloudClient> {
