@@ -6,6 +6,7 @@ use chrono::{Duration, Utc};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::{BufferedStreamExt, TryStreamExt, task::AbortOnDropHandle};
 use rand::Rng;
+use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tracing::warn;
 
@@ -109,6 +110,11 @@ impl DatumCloudClient {
         selected_context: Option<SelectedContext>,
     ) -> Result<()> {
         self.session.set_selected_context(selected_context).await
+    }
+
+    /// Re-read `selected_context.yml` so a long-lived agent picks up CLI/GUI changes.
+    pub async fn reload_selected_context(&self) -> Result<Option<SelectedContext>> {
+        self.session.reload_selected_context().await
     }
 
     fn project_control_plane_url(&self, project_id: &str) -> String {
@@ -563,6 +569,19 @@ impl SessionStateWrapper {
         Ok(())
     }
 
+    async fn reload_selected_context(&self) -> Result<Option<SelectedContext>> {
+        let Some(repo) = self.repo.as_ref() else {
+            return Ok(self.selected_context());
+        };
+        let selected = repo.read_selected_context().await?;
+        let current = self.selected_context();
+        if current != selected {
+            self.selected_context.store(Arc::new(selected.clone()));
+            let _ = self.selected_context_tx.send(selected.clone());
+        }
+        Ok(selected)
+    }
+
     fn orgs_projects(&self) -> Vec<OrganizationWithProjects> {
         self.orgs_projects.load_full().as_ref().clone()
     }
@@ -582,23 +601,105 @@ impl SessionStateWrapper {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Organization {
     pub resource_id: String,
     pub display_name: String,
     pub r#type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OrganizationWithProjects {
     pub org: Organization,
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Project {
     pub resource_id: String,
     pub display_name: String,
+}
+
+/// Resolve a project (and optional org) name or id into a selected context.
+///
+/// `project` and `org` match `resource_id` first, then display name
+/// (case-insensitive). Ambiguous matches return an error listing candidates.
+pub fn resolve_selected_context(
+    orgs: &[OrganizationWithProjects],
+    project: &str,
+    org: Option<&str>,
+) -> Result<SelectedContext> {
+    let project_key = project.trim();
+    if project_key.is_empty() {
+        n0_error::bail_any!("Project is required");
+    }
+
+    let filtered: Vec<&OrganizationWithProjects> = match org
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(org_key) => {
+            let matches: Vec<&OrganizationWithProjects> = orgs
+                .iter()
+                .filter(|entry| org_matches(&entry.org, org_key))
+                .collect();
+            if matches.is_empty() {
+                n0_error::bail_any!("No organization matched `{org_key}`");
+            }
+            if matches.len() > 1 {
+                let names = matches
+                    .iter()
+                    .map(|entry| format!("{} ({})", entry.org.display_name, entry.org.resource_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                n0_error::bail_any!("Multiple organizations matched `{org_key}`: {names}");
+            }
+            matches
+        }
+        None => orgs.iter().collect(),
+    };
+
+    let mut hits: Vec<(&Organization, &Project)> = Vec::new();
+    for entry in filtered {
+        for proj in &entry.projects {
+            if project_matches(proj, project_key) {
+                hits.push((&entry.org, proj));
+            }
+        }
+    }
+
+    match hits.as_slice() {
+        [] => n0_error::bail_any!("No project matched `{project_key}`"),
+        [(org, proj)] => Ok(SelectedContext {
+            org_id: org.resource_id.clone(),
+            org_name: org.display_name.clone(),
+            project_id: proj.resource_id.clone(),
+            project_name: proj.display_name.clone(),
+        }),
+        rest => {
+            let names = rest
+                .iter()
+                .map(|(org, proj)| {
+                    format!(
+                        "{} / {} ({} / {})",
+                        org.display_name, proj.display_name, org.resource_id, proj.resource_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            n0_error::bail_any!(
+                "Multiple projects matched `{project_key}`: {names}. Pass --org to disambiguate."
+            )
+        }
+    }
+}
+
+fn org_matches(org: &Organization, key: &str) -> bool {
+    org.resource_id == key || org.display_name.eq_ignore_ascii_case(key)
+}
+
+fn project_matches(project: &Project, key: &str) -> bool {
+    project.resource_id == key || project.display_name.eq_ignore_ascii_case(key)
 }
 
 /// Summary of an IAM Role for listing (e.g. in invite dialog).
@@ -951,5 +1052,78 @@ mod auth_failure_tests {
             &*log.lock().unwrap(),
             &["first-401", "refreshed", "retry-401-logout"]
         );
+    }
+}
+
+#[cfg(test)]
+mod resolve_context_tests {
+    use super::*;
+
+    fn org(id: &str, name: &str, projects: Vec<Project>) -> OrganizationWithProjects {
+        OrganizationWithProjects {
+            org: Organization {
+                resource_id: id.to_string(),
+                display_name: name.to_string(),
+                r#type: "standard".to_string(),
+            },
+            projects,
+        }
+    }
+
+    fn project(id: &str, name: &str) -> Project {
+        Project {
+            resource_id: id.to_string(),
+            display_name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn matches_project_id() {
+        let orgs = vec![org(
+            "org-1",
+            "Acme",
+            vec![project("proj-1", "Web"), project("proj-2", "API")],
+        )];
+        let ctx = resolve_selected_context(&orgs, "proj-2", None).unwrap();
+        assert_eq!(ctx.project_id, "proj-2");
+        assert_eq!(ctx.project_name, "API");
+        assert_eq!(ctx.org_id, "org-1");
+    }
+
+    #[test]
+    fn matches_project_display_name_case_insensitive() {
+        let orgs = vec![org("org-1", "Acme", vec![project("proj-1", "Web")])];
+        let ctx = resolve_selected_context(&orgs, "web", None).unwrap();
+        assert_eq!(ctx.project_id, "proj-1");
+    }
+
+    #[test]
+    fn disambiguates_with_org() {
+        let orgs = vec![
+            org("org-1", "Acme", vec![project("p1", "Web")]),
+            org("org-2", "Beta", vec![project("p2", "Web")]),
+        ];
+        let ctx = resolve_selected_context(&orgs, "Web", Some("Beta")).unwrap();
+        assert_eq!(ctx.project_id, "p2");
+        assert_eq!(ctx.org_id, "org-2");
+    }
+
+    #[test]
+    fn errors_on_ambiguous_project() {
+        let orgs = vec![
+            org("org-1", "Acme", vec![project("p1", "Web")]),
+            org("org-2", "Beta", vec![project("p2", "Web")]),
+        ];
+        let err = resolve_selected_context(&orgs, "Web", None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Multiple projects"), "{msg}");
+        assert!(msg.contains("--org"), "{msg}");
+    }
+
+    #[test]
+    fn errors_when_missing() {
+        let orgs = vec![org("org-1", "Acme", vec![project("p1", "Web")])];
+        let err = resolve_selected_context(&orgs, "missing", None).unwrap_err();
+        assert!(format!("{err:#}").contains("No project matched"));
     }
 }

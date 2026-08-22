@@ -1,3 +1,4 @@
+pub mod agent;
 mod auth;
 pub mod config;
 pub mod datum_apis;

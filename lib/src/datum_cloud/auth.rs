@@ -1002,10 +1002,12 @@ mod redirect_server {
 
         let hero_b64 = BASE64.encode(LOGIN_SUCCESS_PNG);
         let font_b64 = BASE64.encode(ALLIANCE_NO1_REGULAR_TTF);
+        let favicon_light_b64 = BASE64.encode(FAVICON_LIGHT_32);
         let favicon_dark_b64 = BASE64.encode(FAVICON_DARK_32);
         let html = OAUTH_REDIRECT_HTML
             .replace("{{HERO_B64}}", &hero_b64)
             .replace("{{FONT_B64}}", &font_b64)
+            .replace("{{FAVICON_LIGHT_B64}}", &favicon_light_b64)
             .replace("{{FAVICON_DARK_B64}}", &favicon_dark_b64);
 
         axum::response::Html(html)
@@ -1021,6 +1023,14 @@ mod redirect_server {
       rel="icon"
       type="image/png"
       sizes="32x32"
+      media="(prefers-color-scheme: light)"
+      href="data:image/png;base64,{{FAVICON_LIGHT_B64}}"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      media="(prefers-color-scheme: dark)"
       href="data:image/png;base64,{{FAVICON_DARK_B64}}"
     />
     <style>
