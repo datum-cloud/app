@@ -8,6 +8,7 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use serde_json::json;
 use tracing::{debug, warn};
 
+use crate::datum_apis::allowance_bucket::AllowanceBucket;
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
     ConnectorConnectionType, ConnectorSpec, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
@@ -34,10 +35,17 @@ use gateway_api::apis::standard::httproutes::{
 };
 
 const DEFAULT_PCP_NAMESPACE: &str = "default";
+const QUOTA_BUCKET_NAMESPACE: &str = "milo-system";
 const DEFAULT_CONNECTOR_CLASS_NAME: &str = "iroh-quic-tunnel";
 const CONNECTOR_SELECTOR_FIELD: &str = "status.connectionDetails.publicKey.id";
 const ADVERTISEMENT_CONNECTOR_FIELD: &str = "spec.connectorRef.name";
 const DISPLAY_NAME_ANNOTATION: &str = "app.kubernetes.io/name";
+
+/// Milo resourceType for HTTPProxy entity quota (one claim per tunnel create).
+pub const HTTPPROXY_QUOTA_RESOURCE_TYPE: &str = "networking.datumapis.com/httpproxies";
+/// Milo resourceType for ConnectorAdvertisement entity quota (one claim per tunnel create).
+pub const CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE: &str =
+    "networking.datumapis.com/connectoradvertisements";
 
 /// Returns true if any rule in the HTTPProxy has a backend that references the given connector by name.
 fn proxy_uses_connector(proxy: &HTTPProxy, connector_name: &str) -> bool {
@@ -99,6 +107,62 @@ impl TunnelSummary {
 pub struct TunnelDeleteOutcome {
     pub project_id: String,
     pub connector_deleted: bool,
+}
+
+/// Snapshot of whether the selected project has remaining quota to create a tunnel.
+///
+/// Missing buckets are treated as "unknown" (allow create) so a transient quota API
+/// failure or missing registration does not hard-block the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunnelCreateQuota {
+    pub project_id: String,
+    /// Remaining HTTPProxy quota, if the bucket was found.
+    pub httpproxies_available: Option<i64>,
+    /// Remaining ConnectorAdvertisement quota, if the bucket was found.
+    pub connector_advertisements_available: Option<i64>,
+}
+
+impl TunnelCreateQuota {
+    /// True when every known required bucket has at least one unit available.
+    /// If a bucket is missing (`None`), it does not block create.
+    pub fn can_create_tunnel(&self) -> bool {
+        self.httpproxies_available.map(|n| n >= 1).unwrap_or(true)
+            && self
+                .connector_advertisements_available
+                .map(|n| n >= 1)
+                .unwrap_or(true)
+    }
+
+    /// True when at least one known bucket is present and exhausted.
+    pub fn is_exhausted(&self) -> bool {
+        !self.can_create_tunnel()
+    }
+}
+
+/// Derive create-quota status from a list of AllowanceBuckets.
+pub fn tunnel_create_quota_from_buckets(
+    project_id: impl Into<String>,
+    buckets: &[AllowanceBucket],
+) -> TunnelCreateQuota {
+    let mut httpproxies_available = None;
+    let mut connector_advertisements_available = None;
+    for bucket in buckets {
+        let available = bucket.status.as_ref().map(|s| s.available);
+        match bucket.spec.resource_type.as_str() {
+            HTTPPROXY_QUOTA_RESOURCE_TYPE => {
+                httpproxies_available = available;
+            }
+            CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE => {
+                connector_advertisements_available = available;
+            }
+            _ => {}
+        }
+    }
+    TunnelCreateQuota {
+        project_id: project_id.into(),
+        httpproxies_available,
+        connector_advertisements_available,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +259,30 @@ impl TunnelService {
             n0_error::bail_any!("No project selected");
         };
         self.delete_project(&selected.project_id, tunnel_id).await
+    }
+
+    /// List Milo AllowanceBuckets for the selected project and return whether a
+    /// new tunnel can be created given remaining HTTPProxy / ConnectorAdvertisement quota.
+    pub async fn tunnel_create_quota_active(&self) -> Result<Option<TunnelCreateQuota>> {
+        let Some(selected) = self.datum.selected_context() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.tunnel_create_quota_project(&selected.project_id)
+                .await?,
+        ))
+    }
+
+    pub async fn tunnel_create_quota_project(&self, project_id: &str) -> Result<TunnelCreateQuota> {
+        let pcp = self.datum.project_control_plane_client(project_id).await?;
+        let buckets = pcp
+            .with_auth_retry(|client| {
+                let buckets: Api<AllowanceBucket> = Api::namespaced(client, QUOTA_BUCKET_NAMESPACE);
+                async move { buckets.list(&ListParams::default()).await }
+            })
+            .await
+            .context("Failed to list project allowance buckets")?;
+        Ok(tunnel_create_quota_from_buckets(project_id, &buckets.items))
     }
 
     pub async fn list_project(&self, project_id: &str) -> Result<Vec<TunnelSummary>> {
@@ -1284,5 +1372,80 @@ mod tests {
     #[test]
     fn public_url_none_without_hostnames() {
         assert!(summary(vec![]).public_url().is_none());
+    }
+}
+
+#[cfg(test)]
+mod tunnel_create_quota_tests {
+    use super::*;
+    use crate::datum_apis::allowance_bucket::{
+        AllowanceBucket, AllowanceBucketSpec, AllowanceBucketStatus, ConsumerRef,
+    };
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+    fn bucket(resource_type: &str, available: i64) -> AllowanceBucket {
+        AllowanceBucket {
+            metadata: ObjectMeta::default(),
+            spec: AllowanceBucketSpec {
+                consumer_ref: ConsumerRef {
+                    api_group: Some("resourcemanager.miloapis.com".to_string()),
+                    kind: "Project".to_string(),
+                    name: "proj".to_string(),
+                    namespace: None,
+                },
+                resource_type: resource_type.to_string(),
+            },
+            status: Some(AllowanceBucketStatus {
+                limit: available + 1,
+                allocated: 1,
+                available,
+            }),
+        }
+    }
+
+    #[test]
+    fn allows_create_when_both_have_capacity() {
+        let q = tunnel_create_quota_from_buckets(
+            "proj",
+            &[
+                bucket(HTTPPROXY_QUOTA_RESOURCE_TYPE, 2),
+                bucket(CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE, 1),
+            ],
+        );
+        assert!(q.can_create_tunnel());
+        assert!(!q.is_exhausted());
+    }
+
+    #[test]
+    fn blocks_when_httpproxies_exhausted() {
+        let q = tunnel_create_quota_from_buckets(
+            "proj",
+            &[
+                bucket(HTTPPROXY_QUOTA_RESOURCE_TYPE, 0),
+                bucket(CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE, 5),
+            ],
+        );
+        assert!(!q.can_create_tunnel());
+        assert!(q.is_exhausted());
+    }
+
+    #[test]
+    fn blocks_when_advertisements_exhausted() {
+        let q = tunnel_create_quota_from_buckets(
+            "proj",
+            &[
+                bucket(HTTPPROXY_QUOTA_RESOURCE_TYPE, 3),
+                bucket(CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE, 0),
+            ],
+        );
+        assert!(!q.can_create_tunnel());
+    }
+
+    #[test]
+    fn missing_buckets_do_not_block() {
+        let q = tunnel_create_quota_from_buckets("proj", &[]);
+        assert!(q.can_create_tunnel());
+        assert_eq!(q.httpproxies_available, None);
+        assert_eq!(q.connector_advertisements_available, None);
     }
 }
