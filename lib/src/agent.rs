@@ -5,6 +5,8 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +14,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use n0_error::{Result, StdResultExt};
 use rand::Rng;
@@ -23,8 +25,13 @@ use tracing::{info, warn};
 
 use crate::datum_cloud::{ApiEnv, DatumCloudClient, LoginState, NotLoggedIn, UserProfile};
 use crate::http_user_agent::datum_http_user_agent;
-use crate::tunnels::{TunnelService, TunnelSummary};
+use crate::tunnel_activity::metrics_bytes_for_tunnel;
+use crate::tunnels::{TunnelCreateQuota, TunnelService, TunnelSummary};
 use crate::{HeartbeatAgent, ListenNode, Repo, SelectedContext};
+
+/// Hidden flag both the CLI and the desktop app honor so either binary can
+/// spawn the same detached listener.
+pub const HEADLESS_AGENT_FLAG: &str = "--headless-agent";
 
 const DEFAULT_HOSTNAME_TIMEOUT: Duration = Duration::from_secs(30);
 const HOSTNAME_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -86,6 +93,38 @@ impl From<&TunnelSummary> for TunnelView {
     }
 }
 
+impl From<TunnelView> for TunnelSummary {
+    fn from(view: TunnelView) -> Self {
+        Self {
+            id: view.id,
+            label: view.label,
+            endpoint: view.endpoint,
+            hostnames: view.hostnames,
+            enabled: view.enabled,
+            accepted: view.accepted,
+            programmed: view.programmed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTunnelRequest {
+    pub label: String,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEnabledRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelMetric {
+    pub id: String,
+    pub bytes_from_origin: u64,
+    pub bytes_to_origin: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteTunnelResponse {
     pub id: String,
@@ -136,6 +175,7 @@ struct AgentState {
     token: String,
     info: AgentInfo,
     datum: DatumCloudClient,
+    listen: ListenNode,
     tunnels: TunnelService,
     heartbeat: HeartbeatAgent,
 }
@@ -338,14 +378,21 @@ pub async fn run_agent(repo: Repo, shutdown: CancellationToken) -> Result<()> {
         token: info.token.clone(),
         info: info.clone(),
         datum,
+        listen,
         tunnels,
         heartbeat,
     });
 
     let app = Router::new()
         .route("/status", get(status))
+        .route("/quota", get(quota))
+        .route("/metrics", get(metrics))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
-        .route("/tunnels/:id", get(get_tunnel).delete(delete_tunnel))
+        .route(
+            "/tunnels/:id",
+            get(get_tunnel).patch(update_tunnel).delete(delete_tunnel),
+        )
+        .route("/tunnels/:id/enabled", put(set_enabled))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
 
@@ -532,6 +579,82 @@ async fn delete_tunnel(
     }))
 }
 
+async fn update_tunnel(
+    State(state): State<Arc<AgentState>>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateTunnelRequest>,
+) -> std::result::Result<Json<TunnelView>, ApiError> {
+    if req.label.trim().is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "label is required"));
+    }
+    if req.endpoint.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "endpoint is required",
+        ));
+    }
+    sync_selected_context(&state).await?;
+    let summary = state
+        .tunnels
+        .update_active(&id, req.label.trim(), req.endpoint.trim())
+        .await
+        .map_err(map_tunnel_err)?;
+    Ok(Json(TunnelView::from(&summary)))
+}
+
+async fn set_enabled(
+    State(state): State<Arc<AgentState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SetEnabledRequest>,
+) -> std::result::Result<Json<TunnelView>, ApiError> {
+    sync_selected_context(&state).await?;
+    let summary = state
+        .tunnels
+        .set_enabled_active(&id, req.enabled)
+        .await
+        .map_err(map_tunnel_err)?;
+    if req.enabled
+        && let Some(ctx) = state.datum.selected_context()
+    {
+        state.heartbeat.register_project(ctx.project_id).await;
+    }
+    Ok(Json(TunnelView::from(&summary)))
+}
+
+async fn quota(
+    State(state): State<Arc<AgentState>>,
+) -> std::result::Result<Json<Option<TunnelCreateQuota>>, ApiError> {
+    sync_selected_context(&state).await?;
+    let quota = state
+        .tunnels
+        .tunnel_create_quota_active()
+        .await
+        .map_err(map_tunnel_err)?;
+    Ok(Json(quota))
+}
+
+async fn metrics(
+    State(state): State<Arc<AgentState>>,
+) -> std::result::Result<Json<Vec<TunnelMetric>>, ApiError> {
+    sync_selected_context(&state).await?;
+    let tunnels = state.tunnels.list_active().await.map_err(map_tunnel_err)?;
+    let metrics = state.listen.metrics();
+    Ok(Json(
+        tunnels
+            .iter()
+            .map(|tunnel| {
+                let (bytes_from_origin, bytes_to_origin) =
+                    metrics_bytes_for_tunnel(metrics.as_ref(), tunnel);
+                TunnelMetric {
+                    id: tunnel.id.clone(),
+                    bytes_from_origin,
+                    bytes_to_origin,
+                }
+            })
+            .collect(),
+    ))
+}
+
 fn map_tunnel_err(err: n0_error::AnyError) -> ApiError {
     if err.downcast_ref::<NotLoggedIn>().is_some() {
         return ApiError::new(
@@ -677,10 +800,20 @@ impl AgentClient {
     }
 
     pub async fn get_tunnel(&self, id: &str) -> Result<TunnelView> {
+        match self.get_tunnel_optional(id).await? {
+            Some(tunnel) => Ok(tunnel),
+            None => n0_error::bail_any!("Tunnel `{id}` not found"),
+        }
+    }
+
+    pub async fn get_tunnel_optional(&self, id: &str) -> Result<Option<TunnelView>> {
         let (status, bytes) = self
             .send(reqwest::Method::GET, &format!("/tunnels/{id}"), None::<&()>)
             .await?;
-        Self::decode_success(status, &bytes)
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(Self::decode_success(status, &bytes)?))
     }
 
     pub async fn create_tunnel(&self, req: &CreateTunnelRequest) -> Result<TunnelView> {
@@ -700,6 +833,145 @@ impl AgentClient {
             .await?;
         Self::decode_success(status, &bytes)
     }
+
+    pub async fn update_tunnel(&self, id: &str, req: &UpdateTunnelRequest) -> Result<TunnelView> {
+        let (status, bytes) = self
+            .send(reqwest::Method::PATCH, &format!("/tunnels/{id}"), Some(req))
+            .await?;
+        Self::decode_success(status, &bytes)
+    }
+
+    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<TunnelView> {
+        let (status, bytes) = self
+            .send(
+                reqwest::Method::PUT,
+                &format!("/tunnels/{id}/enabled"),
+                Some(&SetEnabledRequest { enabled }),
+            )
+            .await?;
+        Self::decode_success(status, &bytes)
+    }
+
+    pub async fn quota(&self) -> Result<Option<TunnelCreateQuota>> {
+        let (status, bytes) = self
+            .send(reqwest::Method::GET, "/quota", None::<&()>)
+            .await?;
+        Self::decode_success(status, &bytes)
+    }
+
+    pub async fn metrics(&self) -> Result<Vec<TunnelMetric>> {
+        let (status, bytes) = self
+            .send(reqwest::Method::GET, "/metrics", None::<&()>)
+            .await?;
+        Self::decode_success(status, &bytes)
+    }
+}
+
+/// True when this process was launched as the detached listener.
+pub fn wants_headless_agent() -> bool {
+    std::env::args().any(|arg| arg == HEADLESS_AGENT_FLAG)
+}
+
+/// `--repo` from argv, otherwise the default app-support location.
+pub fn repo_path_from_cli_args() -> PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--repo" {
+            if let Some(path) = args.next() {
+                return PathBuf::from(path);
+            }
+        } else if let Some(path) = arg.strip_prefix("--repo=") {
+            return PathBuf::from(path);
+        }
+    }
+    Repo::default_location()
+}
+
+/// Spawn a detached listener using this binary, then wait until it answers.
+pub async fn ensure_agent(repo: &Repo) -> Result<AgentClient> {
+    if let Ok(client) = AgentClient::connect(repo)
+        && client.status().await.is_ok()
+    {
+        return Ok(client);
+    }
+    spawn_detached_agent(repo)?;
+    match wait_until_ready(repo, Duration::from_secs(20)).await {
+        Ok(client) => Ok(client),
+        Err(err) => n0_error::bail_any!(
+            "{err:#}. Check {} for agent logs.",
+            repo.agent_log_path().display()
+        ),
+    }
+}
+
+/// Fork this executable with [`HEADLESS_AGENT_FLAG`] so the listener outlives
+/// the GUI or CLI that started it.
+pub fn spawn_detached_agent(repo: &Repo) -> Result<()> {
+    let exe = std::env::current_exe().std_context("failed to resolve current executable")?;
+    let log_path = repo.agent_log_path();
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .std_context("failed to open agent.log")?;
+    let log_err = log.try_clone().std_context("failed to clone agent.log")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--repo").arg(repo.path());
+    cmd.arg(HEADLESS_AGENT_FLAG);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::from(log));
+    cmd.stderr(Stdio::from(log_err));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd.spawn()
+        .std_context("failed to spawn datum-connect agent")?;
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
+}
+
+/// Entry point for `--headless-agent` in the CLI and the desktop app.
+pub async fn run_headless_agent_from_args() -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+
+    let repo = Repo::open_or_create(repo_path_from_cli_args()).await?;
+    let shutdown = CancellationToken::new();
+    let shutdown_for_signal = shutdown.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown_for_signal.cancel();
+    });
+    run_agent(repo, shutdown).await
 }
 
 pub async fn wait_until_ready(repo: &Repo, timeout: Duration) -> Result<AgentClient> {

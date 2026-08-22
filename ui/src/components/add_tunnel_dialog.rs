@@ -93,18 +93,13 @@ pub fn AddTunnelDialog(
     // Create tunnel (same logic as create_proxy.rs)
     let mut save_create_tunnel = use_action(move |_| async move {
         let state = consume_context::<AppState>();
-        let project_id = state
-            .selected_context()
-            .context("No project selected")?
-            .project_id;
+        state.selected_context().context("No project selected")?;
         let tunnel = state
-            .tunnel_service()
-            .create_active(label().trim(), address().trim())
+            .create_tunnel(label().trim(), address().trim())
             .await
             .context("Failed to create tunnel")?;
         state.upsert_tunnel(tunnel);
         state.bump_tunnel_refresh();
-        state.heartbeat().register_project(project_id).await;
         on_save_success.call(());
         on_open_change.call(false);
         n0_error::Ok(())
@@ -114,8 +109,7 @@ pub fn AddTunnelDialog(
     let mut save_tunnel = use_action(move |tunnel_id: String| async move {
         let state = consume_context::<AppState>();
         let updated = state
-            .tunnel_service()
-            .update_active(&tunnel_id, label().trim(), address().trim())
+            .update_tunnel(&tunnel_id, label().trim(), address().trim())
             .await
             .context("Failed to update tunnel")?;
         state.upsert_tunnel(updated);

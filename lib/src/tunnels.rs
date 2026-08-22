@@ -113,7 +113,7 @@ pub struct TunnelDeleteOutcome {
 ///
 /// Missing buckets are treated as "unknown" (allow create) so a transient quota API
 /// failure or missing registration does not hard-block the UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TunnelCreateQuota {
     pub project_id: String,
     /// Remaining HTTPProxy quota, if the bucket was found.

@@ -66,58 +66,54 @@ pub fn ProxiesList() -> Element {
                 // data so the UI doesn't briefly clear while we report the error. On auth
                 // failures the lib layer calls `auth.logout()` for us, which Chrome observes
                 // and uses to redirect to the login screen.
-                let (list, has_pending_hostname, has_pending_status) =
-                    match state_for_future.tunnel_service().list_active().await {
-                        Ok(list) => {
-                            // Drop tunnels we just deleted locally that the backend hasn't
-                            // finished reaping yet. Without this, a still-terminating
-                            // HTTPProxy whose ConnectorAdvertisement is already gone would
-                            // reappear in the UI with `enabled = false` (toggle "flips off")
-                            // until the proxy is fully removed, forcing the user to click
-                            // Delete a second time.
-                            let api_ids: std::collections::HashSet<String> =
-                                list.iter().map(|t| t.id.clone()).collect();
-                            state_for_future.reconcile_pending_deletions(&api_ids);
-                            let pending = state_for_future.pending_deletions()();
-                            let list: Vec<_> = list
-                                .into_iter()
-                                .filter(|t| !pending.contains(&t.id))
-                                .collect();
+                let (list, has_pending_hostname, has_pending_status) = match state_for_future
+                    .list_tunnels()
+                    .await
+                {
+                    Ok(list) => {
+                        // Drop tunnels we just deleted locally that the backend hasn't
+                        // finished reaping yet. Without this, a still-terminating
+                        // HTTPProxy whose ConnectorAdvertisement is already gone would
+                        // reappear in the UI with `enabled = false` (toggle "flips off")
+                        // until the proxy is fully removed, forcing the user to click
+                        // Delete a second time.
+                        let api_ids: std::collections::HashSet<String> =
+                            list.iter().map(|t| t.id.clone()).collect();
+                        state_for_future.reconcile_pending_deletions(&api_ids);
+                        let pending = state_for_future.pending_deletions()();
+                        let list: Vec<_> = list
+                            .into_iter()
+                            .filter(|t| !pending.contains(&t.id))
+                            .collect();
 
-                            // Merge with current cache so we don't briefly show all tunnels as
-                            // pending when a single tunnel is updated (backend may return
-                            // stale/reconciling state).
-                            let cache_signal = state_for_future.tunnel_cache();
-                            let current = cache_signal();
-                            let list = merge_tunnel_list_with_cache(current, list);
-                            // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
-                            // resource(s) instead of listing all tunnels each cycle.
-                            let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
-                            let has_pending_status =
-                                list.iter().any(|t| !t.accepted || !t.programmed);
-                            state_for_future.set_tunnel_cache(list.clone());
-                            load_error_for_future.set(None);
-                            (list, has_pending_hostname, has_pending_status)
-                        }
-                        Err(err) => {
-                            tracing::warn!("failed to list tunnels: {err:#}");
-                            load_error_for_future.set(Some(err.to_string()));
-                            let cache_signal = state_for_future.tunnel_cache();
-                            let list = cache_signal();
-                            let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
-                            let has_pending_status =
-                                list.iter().any(|t| !t.accepted || !t.programmed);
-                            (list, has_pending_hostname, has_pending_status)
-                        }
-                    };
+                        // Merge with current cache so we don't briefly show all tunnels as
+                        // pending when a single tunnel is updated (backend may return
+                        // stale/reconciling state).
+                        let cache_signal = state_for_future.tunnel_cache();
+                        let current = cache_signal();
+                        let list = merge_tunnel_list_with_cache(current, list);
+                        // TODO(zachsmith1): When pending, poll only the specific HTTPProxy
+                        // resource(s) instead of listing all tunnels each cycle.
+                        let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+                        let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
+                        state_for_future.set_tunnel_cache(list.clone());
+                        load_error_for_future.set(None);
+                        (list, has_pending_hostname, has_pending_status)
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to list tunnels: {err:#}");
+                        load_error_for_future.set(Some(err.to_string()));
+                        let cache_signal = state_for_future.tunnel_cache();
+                        let list = cache_signal();
+                        let has_pending_hostname = list.iter().any(|t| t.hostnames.is_empty());
+                        let has_pending_status = list.iter().any(|t| !t.accepted || !t.programmed);
+                        (list, has_pending_hostname, has_pending_status)
+                    }
+                };
                 has_loaded_for_future.set(true);
                 let _ = list;
 
-                match state_for_future
-                    .tunnel_service()
-                    .tunnel_create_quota_active()
-                    .await
-                {
+                match state_for_future.fetch_tunnel_create_quota().await {
                     Ok(quota) => state_for_future.set_tunnel_create_quota(quota),
                     Err(err) => {
                         tracing::warn!("failed to load tunnel create quota: {err:#}");
@@ -158,19 +154,9 @@ pub fn ProxiesList() -> Element {
         let state = state.clone();
         async move {
             debug!("on delete called: {}", tunnel.id);
-            let outcome = state
-                .tunnel_service()
-                .delete_active(&tunnel.id)
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!("delete tunnel failed: {err:#}");
-                })?;
-            if outcome.connector_deleted {
-                state
-                    .heartbeat()
-                    .deregister_project(&outcome.project_id)
-                    .await;
-            }
+            let _outcome = state.delete_tunnel(&tunnel.id).await.inspect_err(|err| {
+                tracing::warn!("delete tunnel failed: {err:#}");
+            })?;
             // Tombstone the ID so the next list_active poll doesn't resurrect
             // the tunnel with `enabled = false` while Kubernetes is still
             // reaping the HTTPProxy. The poll loop clears the tombstone once
@@ -463,18 +449,7 @@ pub fn TunnelCard(
         let state = state.clone();
         let tunnel_id = tunnel_id_for_toggle.clone();
         async move {
-            state
-                .tunnel_service()
-                .set_enabled_active(&tunnel_id, next_enabled)
-                .await?;
-            if next_enabled {
-                if let Some(selected) = state.selected_context() {
-                    state
-                        .heartbeat()
-                        .register_project(selected.project_id)
-                        .await;
-                }
-            }
+            state.set_tunnel_enabled(&tunnel_id, next_enabled).await?;
             state.bump_tunnel_refresh();
             n0_error::Ok(())
         }

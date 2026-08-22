@@ -245,6 +245,10 @@ async fn main() -> n0_error::Result<()> {
         .install_default()
         .expect("rustls default crypto provider");
 
+    if lib::agent::wants_headless_agent() {
+        return lib::agent::run_headless_agent_from_args().await;
+    }
+
     // Load .env first so any process-env-driven config is visible to the rest
     // of init. We keep the load result so we can log it *after* tracing is up.
     let dotenv_path = dotenv::dotenv().ok();
