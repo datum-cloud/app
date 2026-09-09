@@ -1722,7 +1722,7 @@ dependencies = [
  "async-trait",
  "clap",
  "dotenv",
- "hickory-proto 0.25.2",
+ "hickory-proto 0.26.1",
  "hickory-server",
  "humantime",
  "iroh-base",
