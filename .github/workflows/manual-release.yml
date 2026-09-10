@@ -390,10 +390,11 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download All Artifacts
+      - name: Download bundle artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
+          pattern: DatumConnect-*
 
       - name: Create stable asset aliases
         run: |
