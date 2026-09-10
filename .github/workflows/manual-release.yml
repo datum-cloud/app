@@ -167,6 +167,9 @@ jobs:
             (Get-Content ../lib/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content ../lib/Cargo.toml
           }
 
+      - name: Update Cargo.lock
+        run: cargo update --workspace
+
       - name: Bundle (macOS)
         if: runner.os == 'macOS'
         working-directory: ./ui
