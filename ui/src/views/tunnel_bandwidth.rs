@@ -57,7 +57,7 @@ pub fn TunnelBandwidth(id: String) -> Element {
                     }
                     load_error.set(None);
 
-                    match state.tunnel_service().get_active(&id).await {
+                    match state.get_tunnel(&id).await {
                         Ok(Some(tunnel)) => {
                             loading.set(false);
                             title.set(tunnel.label.clone());
@@ -85,8 +85,6 @@ pub fn TunnelBandwidth(id: String) -> Element {
         let state = consume_context::<AppState>();
         let notify_loaded = notify_loaded.clone();
         async move {
-            let metrics = state.node().listen.metrics().clone();
-
             // We compute bytes/sec over the interval between *plotted* samples (not per-metric tick),
             // otherwise bursty traffic can happen between samples and we'd plot a flatline.
             let mut last_sample_at = std::time::Instant::now();
@@ -106,14 +104,14 @@ pub fn TunnelBandwidth(id: String) -> Element {
                     notified.await;
                     continue;
                 };
-                let Some(authority) = tunnel.origin_authority() else {
+                if tunnel.origin_authority().is_none() {
                     warn!(?tunnel, "failed to parse authority from tunnel summary");
                     break;
-                };
+                }
 
-                let (send, recv) = match metrics.get(&authority) {
-                    Some(m) => (m.bytes_from_origin(), m.bytes_to_origin()),
-                    None => (0, 0),
+                let (send, recv) = match state.tunnel_byte_counters().await {
+                    Ok(counters) => counters.get(&tunnel.id).copied().unwrap_or((0, 0)),
+                    Err(_) => (0, 0),
                 };
 
                 // First metric just initializes the baseline.
@@ -254,19 +252,9 @@ pub fn TunnelBandwidth(id: String) -> Element {
         let state = state.clone();
         async move {
             debug!("on delete called: {}", tunnel.id);
-            let outcome = state
-                .tunnel_service()
-                .delete_active(&tunnel.id)
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!("delete tunnel failed: {err:#}");
-                })?;
-            if outcome.connector_deleted {
-                state
-                    .heartbeat()
-                    .deregister_project(&outcome.project_id)
-                    .await;
-            }
+            let _outcome = state.delete_tunnel(&tunnel.id).await.inspect_err(|err| {
+                tracing::warn!("delete tunnel failed: {err:#}");
+            })?;
             state.remove_tunnel(&tunnel.id);
             state.bump_tunnel_refresh();
             n0_error::Ok(())

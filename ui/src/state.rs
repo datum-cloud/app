@@ -1,19 +1,19 @@
 use dioxus::prelude::WritableExt;
 use lib::{
+    agent::{self, AgentClient, CreateTunnelRequest, UpdateTunnelRequest},
     datum_cloud::{ApiEnv, DatumCloudClient},
-    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelActivityTracker,
-    TunnelCreateQuota, TunnelService, TunnelSummary,
+    Repo, SelectedContext, TunnelActivityTracker, TunnelCreateQuota, TunnelDeleteOutcome,
+    TunnelSummary,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use tracing::info;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct AppState {
-    node: Node,
+    repo: Repo,
     datum: DatumCloudClient,
-    heartbeat: HeartbeatAgent,
     tunnel_refresh: std::sync::Arc<Notify>,
     tunnel_cache: dioxus::signals::Signal<Vec<TunnelSummary>>,
     tunnel_activity: Arc<Mutex<TunnelActivityTracker>>,
@@ -34,16 +34,12 @@ impl AppState {
         let repo_path = Repo::default_location();
         info!(repo_path = %repo_path.display(), "ui: loading repo");
         let repo = Repo::open_or_create(repo_path).await?;
-        let (node, datum) = tokio::try_join! {
-            Node::new(repo.clone()),
-            DatumCloudClient::with_repo(ApiEnv::default(), repo)
-        }?;
-        let heartbeat = HeartbeatAgent::new(datum.clone(), node.listen.clone());
-        heartbeat.start().await;
+        let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
+        // One ListenNode per machine, in a detached agent. This window is only a client.
+        agent::ensure_agent(&repo).await?;
         let app_state = AppState {
-            node,
+            repo,
             datum,
-            heartbeat,
             tunnel_refresh: std::sync::Arc::new(Notify::new()),
             tunnel_cache: dioxus::signals::Signal::new(Vec::new()),
             tunnel_activity: Arc::new(Mutex::new(TunnelActivityTracker::new())),
@@ -57,20 +53,89 @@ impl AppState {
         &self.datum
     }
 
-    pub fn node(&self) -> &Node {
-        &self.node
+    async fn agent(&self) -> n0_error::Result<AgentClient> {
+        agent::ensure_agent(&self.repo).await
     }
 
-    pub fn heartbeat(&self) -> &HeartbeatAgent {
-        &self.heartbeat
+    pub async fn list_tunnels(&self) -> n0_error::Result<Vec<TunnelSummary>> {
+        let views = self.agent().await?.list_tunnels().await?;
+        Ok(views.into_iter().map(TunnelSummary::from).collect())
     }
 
-    pub fn listen_node(&self) -> &ListenNode {
-        &self.node().listen
+    pub async fn get_tunnel(&self, id: &str) -> n0_error::Result<Option<TunnelSummary>> {
+        Ok(self
+            .agent()
+            .await?
+            .get_tunnel_optional(id)
+            .await?
+            .map(TunnelSummary::from))
     }
 
-    pub fn tunnel_service(&self) -> TunnelService {
-        TunnelService::new(self.datum.clone(), self.node.listen.clone())
+    pub async fn create_tunnel(
+        &self,
+        label: &str,
+        endpoint: &str,
+    ) -> n0_error::Result<TunnelSummary> {
+        let view = self
+            .agent()
+            .await?
+            .create_tunnel(&CreateTunnelRequest {
+                label: label.to_string(),
+                endpoint: endpoint.to_string(),
+                wait_hostname: false,
+                timeout_secs: None,
+            })
+            .await?;
+        Ok(TunnelSummary::from(view))
+    }
+
+    pub async fn update_tunnel(
+        &self,
+        id: &str,
+        label: &str,
+        endpoint: &str,
+    ) -> n0_error::Result<TunnelSummary> {
+        let view = self
+            .agent()
+            .await?
+            .update_tunnel(
+                id,
+                &UpdateTunnelRequest {
+                    label: label.to_string(),
+                    endpoint: endpoint.to_string(),
+                },
+            )
+            .await?;
+        Ok(TunnelSummary::from(view))
+    }
+
+    pub async fn set_tunnel_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> n0_error::Result<TunnelSummary> {
+        let view = self.agent().await?.set_enabled(id, enabled).await?;
+        Ok(TunnelSummary::from(view))
+    }
+
+    pub async fn delete_tunnel(&self, id: &str) -> n0_error::Result<TunnelDeleteOutcome> {
+        let outcome = self.agent().await?.delete_tunnel(id).await?;
+        Ok(TunnelDeleteOutcome {
+            project_id: outcome.project_id,
+            connector_deleted: outcome.connector_deleted,
+        })
+    }
+
+    pub async fn fetch_tunnel_create_quota(&self) -> n0_error::Result<Option<TunnelCreateQuota>> {
+        self.agent().await?.quota().await
+    }
+
+    pub async fn tunnel_byte_counters(&self) -> n0_error::Result<HashMap<String, (u64, u64)>> {
+        let metrics = self.agent().await?.metrics().await?;
+        Ok(metrics
+            .into_iter()
+            .map(|m| (m.id, (m.bytes_from_origin, m.bytes_to_origin)))
+            .collect())
     }
 
     pub fn tunnel_refresh(&self) -> std::sync::Arc<Notify> {

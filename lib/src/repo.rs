@@ -22,6 +22,8 @@ impl Repo {
     const AUTH_FILE: &str = "auth.yml";
     const STATE_FILE: &str = "state.yml";
     const SELECTED_CONTEXT_FILE: &str = "selected_context.yml";
+    const AGENT_INFO_FILE: &str = "agent.json";
+    const AGENT_LOG_FILE: &str = "agent.log";
 
     pub fn default_location() -> PathBuf {
         match std::env::var("DATUM_CONNECT_REPO") {
@@ -183,5 +185,13 @@ impl Repo {
     /// Get the base directory path of this repo
     pub fn path(&self) -> &PathBuf {
         &self.0
+    }
+
+    pub fn agent_info_path(&self) -> PathBuf {
+        self.0.join(Self::AGENT_INFO_FILE)
+    }
+
+    pub fn agent_log_path(&self) -> PathBuf {
+        self.0.join(Self::AGENT_LOG_FILE)
     }
 }

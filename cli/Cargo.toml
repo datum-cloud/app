@@ -22,3 +22,5 @@ iroh-base.workspace = true
 z32 = "1.0.3"
 rand.workspace = true
 sentry.workspace = true
+serde_json.workspace = true
+rustls.workspace = true

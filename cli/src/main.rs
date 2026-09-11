@@ -1,5 +1,6 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
+mod cloud;
 mod dns_dev;
 mod tunnel_dev;
 
@@ -9,7 +10,7 @@ use lib::{
 };
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::info;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
@@ -22,6 +23,34 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Log in to Datum Cloud via the browser.
+    Login {
+        /// Re-run the browser login even if a valid session exists.
+        #[clap(long)]
+        force: bool,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Clear the stored Datum Cloud session.
+    Logout {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Show login, selected project, and agent status.
+    Status {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Select the Datum Cloud organization and project used for tunnels.
+    #[clap(subcommand)]
+    Context(ContextCommands),
+    /// Run or inspect the headless listener that serves tunnels.
+    #[clap(subcommand)]
+    Agent(AgentCommands),
+    /// Create and manage public tunnels through the running agent.
+    #[clap(subcommand)]
+    Tunnel(TunnelCommands),
+
     /// Start a tunnel server that exposes configured local services through the Datum gateway.
     Serve,
 
@@ -41,6 +70,82 @@ enum Commands {
     /// Add proxies.
     #[clap(subcommand, alias = "ls")]
     Add(AddCommands),
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ContextCommands {
+    /// Show the currently selected organization and project.
+    Show {
+        #[clap(long)]
+        json: bool,
+    },
+    /// List organizations and projects.
+    List {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Select a project by id or name.
+    Set {
+        /// Project resource id or display name.
+        #[clap(long)]
+        project: String,
+        /// Organization resource id or display name (required when the project name is ambiguous).
+        #[clap(long)]
+        org: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum AgentCommands {
+    /// Start the agent in the foreground.
+    Start,
+    /// Stop a running agent.
+    Stop,
+    /// Show whether the agent is running.
+    Status {
+        #[clap(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum TunnelCommands {
+    /// Create a tunnel to a local HTTP endpoint.
+    Create {
+        /// Display name for the tunnel.
+        #[clap(long)]
+        label: String,
+        /// Local host:port or URL, e.g. 127.0.0.1:4123.
+        #[clap(long)]
+        endpoint: String,
+        /// Block until Datum assigns a public hostname.
+        #[clap(long)]
+        wait_hostname: bool,
+        /// How long to wait for a hostname when --wait-hostname is set.
+        #[clap(long, default_value = "30s")]
+        timeout: humantime::Duration,
+        #[clap(long)]
+        json: bool,
+    },
+    /// List tunnels in the selected project.
+    List {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Show one tunnel.
+    Get {
+        id: String,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Delete a tunnel.
+    Delete {
+        id: String,
+        #[clap(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, clap::Parser)]
@@ -134,6 +239,16 @@ pub struct ConnectArgs {
 
 #[tokio::main]
 async fn main() -> n0_error::Result<()> {
+    // Required before any TLS use (kube, reqwest, iroh). The GUI does the same
+    // in ui/src/main.rs; without it the agent panics in rustls when creating a tunnel.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("rustls default crypto provider");
+
+    if lib::agent::wants_headless_agent() {
+        return lib::agent::run_headless_agent_from_args().await;
+    }
+
     // Load .env first so any process-env-driven config is visible to the rest
     // of init. We keep the load result so we can log it *after* tracing is up.
     let dotenv_path = dotenv::dotenv().ok();
@@ -164,8 +279,10 @@ async fn main() -> n0_error::Result<()> {
         }
     });
 
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(sentry_layer)
         .init();
 
@@ -179,6 +296,12 @@ async fn main() -> n0_error::Result<()> {
     let repo = Repo::open_or_create(path).await?;
 
     match args.command {
+        Commands::Login { force, json } => cloud::login(repo, force, json).await?,
+        Commands::Logout { json } => cloud::logout(repo, json).await?,
+        Commands::Status { json } => cloud::status(repo, json).await?,
+        Commands::Context(command) => cloud::context(repo, command).await?,
+        Commands::Agent(command) => cloud::agent(repo, command).await?,
+        Commands::Tunnel(command) => cloud::tunnel(repo, command).await?,
         Commands::List => {
             let datum = DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()).await?;
             let orgs = datum.orgs_and_projects().await?;
