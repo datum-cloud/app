@@ -11,9 +11,9 @@ use hickory_proto::rr::{
     rdata::{NS, SOA, TXT},
 };
 use hickory_server::{
-    ServerFuture,
-    authority::{Catalog, ZoneType},
-    store::in_memory::InMemoryAuthority,
+    Server,
+    store::in_memory::InMemoryZoneHandler,
+    zone_handler::{AxfrPolicy, Catalog, ZoneType},
 };
 use iroh_base::EndpointId;
 use n0_error::StdResultExt;
@@ -49,7 +49,7 @@ pub async fn serve(
     let catalog = ArcCatalog::new(build_catalog(&config_path, &origin)?);
     let handler = SharedCatalog::new(catalog.clone());
 
-    let mut server = ServerFuture::new(handler);
+    let mut server = Server::new(handler);
     let socket = UdpSocket::bind(bind_addr).await?;
     server.register_socket(socket);
 
@@ -141,7 +141,8 @@ fn build_catalog(config_path: &PathBuf, fallback_origin: &str) -> n0_error::Resu
     let origin = normalize_origin(&origin);
 
     let zone_name = Name::from_str(&format!("{origin}.")).anyerr()?;
-    let mut authority = InMemoryAuthority::empty(zone_name.clone(), ZoneType::Primary, false);
+    let mut authority: InMemoryZoneHandler =
+        InMemoryZoneHandler::empty(zone_name.clone(), ZoneType::Primary, AxfrPolicy::Deny);
 
     let serial = 1;
     let ttl = 30;
@@ -149,11 +150,11 @@ fn build_catalog(config_path: &PathBuf, fallback_origin: &str) -> n0_error::Resu
     let rname = Name::from_str(&format!("admin.{origin}.")).anyerr()?;
     let soa = SOA::new(mname.clone(), rname, serial, 60, 60, 60, 30);
     let mut soa_record = Record::from_rdata(zone_name.clone(), ttl, RData::SOA(soa));
-    soa_record.set_dns_class(DNSClass::IN);
+    soa_record.dns_class = DNSClass::IN;
     authority.upsert_mut(soa_record, serial);
 
     let mut ns_record = Record::from_rdata(zone_name.clone(), ttl, RData::NS(NS(mname)));
-    ns_record.set_dns_class(DNSClass::IN);
+    ns_record.dns_class = DNSClass::IN;
     authority.upsert_mut(ns_record, serial);
 
     for record in config.records {
@@ -179,7 +180,7 @@ fn build_catalog(config_path: &PathBuf, fallback_origin: &str) -> n0_error::Resu
         }
         let txt = TXT::new(txt_entries);
         let mut txt_record = Record::from_rdata(name, ttl, RData::TXT(txt));
-        txt_record.set_dns_class(DNSClass::IN);
+        txt_record.dns_class = DNSClass::IN;
         authority.upsert_mut(txt_record, serial);
     }
 
@@ -224,13 +225,20 @@ impl SharedCatalog {
 
 #[async_trait::async_trait]
 impl hickory_server::server::RequestHandler for SharedCatalog {
-    async fn handle_request<R: hickory_server::server::ResponseHandler>(
+    async fn handle_request<
+        R: hickory_server::server::ResponseHandler,
+        T: hickory_server::net::runtime::Time,
+    >(
         &self,
         request: &hickory_server::server::Request,
         response_handle: R,
     ) -> hickory_server::server::ResponseInfo {
         let catalog = self.inner.inner.read().await;
-        hickory_server::server::RequestHandler::handle_request(&*catalog, request, response_handle)
-            .await
+        hickory_server::server::RequestHandler::handle_request::<R, T>(
+            &*catalog,
+            request,
+            response_handle,
+        )
+        .await
     }
 }
