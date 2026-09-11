@@ -1052,7 +1052,8 @@ fn parse_target(target: &str) -> Result<ParsedTarget> {
     let target = target.trim();
     if let Ok(url) = url::Url::parse(target) {
         let host = url.host_str().context("missing host")?;
-        let port = url.port().context("missing port")?;
+        // Url drops a port that matches the scheme default, so http://host:80 has no port().
+        let port = url.port_or_known_default().context("missing port")?;
         return Ok(ParsedTarget {
             address: host.to_string(),
             port,
@@ -1115,7 +1116,7 @@ fn normalize_endpoint(endpoint: &str) -> String {
 fn strip_scheme(endpoint: &str) -> String {
     if let Ok(url) = url::Url::parse(endpoint)
         && let Some(host) = url.host_str()
-        && let Some(port) = url.port()
+        && let Some(port) = url.port_or_known_default()
     {
         return format!("{host}:{port}");
     }
@@ -1385,5 +1386,30 @@ mod tunnel_create_quota_tests {
         assert!(q.can_create_tunnel());
         assert_eq!(q.httpproxies_available, None);
         assert_eq!(q.connector_advertisements_available, None);
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn parse_target_keeps_non_default_port() {
+        let target = parse_target(&normalize_endpoint("127.0.0.1:5173")).unwrap();
+        assert_eq!(target.address, "127.0.0.1");
+        assert_eq!(target.port, 5173);
+    }
+
+    #[test]
+    fn parse_target_keeps_default_http_port() {
+        let target = parse_target(&normalize_endpoint("127.0.0.1:80")).unwrap();
+        assert_eq!(target.address, "127.0.0.1");
+        assert_eq!(target.port, 80);
+    }
+
+    #[test]
+    fn strip_scheme_keeps_default_http_port() {
+        assert_eq!(strip_scheme("http://127.0.0.1:80"), "127.0.0.1:80");
+        assert_eq!(strip_scheme("http://127.0.0.1:5173"), "127.0.0.1:5173");
     }
 }
