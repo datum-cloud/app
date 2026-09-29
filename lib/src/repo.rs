@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use iroh::SecretKey;
 use log::{info, warn};
@@ -123,8 +123,18 @@ impl Repo {
             return self.create_key(&key_file_path).await;
         };
 
-        let key = tokio::fs::read(key_file_path).await?;
-        let key = key.as_slice().try_into().anyerr()?;
+        Self::read_secret_key(key_file_path).await
+    }
+
+    /// Reads a raw 32-byte ed25519 secret key from a file.
+    pub async fn read_secret_key(path: impl AsRef<Path>) -> Result<SecretKey> {
+        let path = path.as_ref();
+        let key = tokio::fs::read(path)
+            .await
+            .with_context(|_| format!("failed to read secret key {}", path.display()))?;
+        let key = key.as_slice().try_into().with_std_context(|_| {
+            format!("secret key {} must be exactly 32 bytes", path.display())
+        })?;
         Ok(SecretKey::from_bytes(key))
     }
 
