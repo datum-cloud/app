@@ -29,6 +29,16 @@ impl State {
         }
     }
 
+    /// Enables the proxy for `data`, adding it if no proxy targets that host and port yet.
+    pub fn ensure_tcp_proxy(&mut self, data: TcpProxyData, label: Option<String>) {
+        if let Some(existing) = self.proxies.iter_mut().find(|p| p.info.data == data) {
+            existing.enabled = true;
+        } else {
+            self.proxies
+                .push(ProxyState::new(Advertisment::new(data, label)));
+        }
+    }
+
     pub fn remove_proxy(&mut self, resouce_id: &str) -> Option<ProxyState> {
         if let Some(idx) = self
             .proxies
@@ -294,6 +304,19 @@ mod tests {
     fn parse_tcp_proxy_data_rejects_invalid_port() {
         let err = TcpProxyData::from_host_port_str("example.test:abc").unwrap_err();
         assert!(err.to_string().contains("invalid port"));
+    }
+
+    #[test]
+    fn ensure_tcp_proxy_is_idempotent() {
+        let data = TcpProxyData::from_host_port_str("agent.test:7777").unwrap();
+        let mut state = State::default();
+        state.ensure_tcp_proxy(data.clone(), Some("exec".to_string()));
+        state.proxies[0].enabled = false;
+        state.ensure_tcp_proxy(data.clone(), None);
+        assert_eq!(state.proxies.len(), 1);
+        assert!(state.proxies[0].enabled);
+        assert_eq!(state.proxies[0].info.data, data);
+        assert_eq!(state.proxies[0].info.label.as_deref(), Some("exec"));
     }
 
     // #[test]
