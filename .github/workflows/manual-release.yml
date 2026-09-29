@@ -421,3 +421,14 @@ jobs:
             artifacts/**/ui/dist/*.dmg
             artifacts/**/ui/dist/*.AppImage
             artifacts/**/ui/dist/*.exe
+
+  # The release tag is created with GITHUB_TOKEN, which does not trigger the
+  # tag push that publishes the image in cli-image.yml.
+  image:
+    needs: [release]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/cli-image.yml
+    with:
+      version: ${{ inputs.version }}
