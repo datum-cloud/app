@@ -165,7 +165,7 @@ async fn main() -> n0_error::Result<()> {
             .filter(|s| !s.is_empty())
             .and_then(|s| s.parse().ok()),
         release: sentry::release_name!(),
-        send_default_pii: true,
+        send_default_pii: false,
         traces_sample_rate: 0.1,
         ..Default::default()
     });
