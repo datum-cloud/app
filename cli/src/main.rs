@@ -9,7 +9,7 @@ use lib::{
 };
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::info;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Datum Connect Agent
 #[derive(Parser, Debug)]
@@ -23,7 +23,7 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Start a tunnel server that exposes configured local services through the Datum gateway.
-    Serve,
+    Serve(ServeArgs),
 
     /// Join a proxy, i.e. connect to the proxy and expose the service locally.
     Connect(ConnectArgs),
@@ -118,6 +118,24 @@ pub struct TunnelDevArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct ServeArgs {
+    /// Read the endpoint identity from this file (a raw 32-byte ed25519 secret key)
+    /// instead of the repo's listen key. The file is only read, never created.
+    #[clap(long, env = "DATUM_CONNECT_LISTEN_KEY_FILE")]
+    pub listen_key_file: Option<PathBuf>,
+
+    /// Expose a TCP service at HOST:PORT before serving, adding it if not configured yet.
+    ///
+    /// Repeatable; the environment variable takes a comma-separated list.
+    #[clap(
+        long = "tcp-proxy",
+        env = "DATUM_CONNECT_TCP_PROXIES",
+        value_delimiter = ','
+    )]
+    pub tcp_proxies: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
 pub struct ConnectArgs {
     /// The addresses to listen on for incoming tcp connections.
     ///
@@ -147,7 +165,7 @@ async fn main() -> n0_error::Result<()> {
             .filter(|s| !s.is_empty())
             .and_then(|s| s.parse().ok()),
         release: sentry::release_name!(),
-        send_default_pii: true,
+        send_default_pii: false,
         traces_sample_rate: 0.1,
         ..Default::default()
     });
@@ -164,8 +182,9 @@ async fn main() -> n0_error::Result<()> {
         }
     });
 
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
         .with(sentry_layer)
         .init();
 
@@ -218,8 +237,29 @@ async fn main() -> n0_error::Result<()> {
                 .await?;
             println!("OK.");
         }
-        Commands::Serve => {
-            let node = ListenNode::new(repo).await?;
+        Commands::Serve(args) => {
+            if !args.tcp_proxies.is_empty() {
+                let services = args
+                    .tcp_proxies
+                    .iter()
+                    .map(|host| TcpProxyData::from_host_port_str(host))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let state = repo.load_state().await?;
+                state
+                    .update(&repo, |state| {
+                        for service in services {
+                            state.ensure_tcp_proxy(service, None);
+                        }
+                    })
+                    .await?;
+            }
+            let node = match args.listen_key_file {
+                Some(path) => {
+                    let secret_key = Repo::read_secret_key(&path).await?;
+                    ListenNode::with_secret_key(repo, secret_key).await?
+                }
+                None => ListenNode::new(repo).await?,
+            };
             let endpoint_id = node.endpoint_id();
             println!("listening as {}", endpoint_id);
             let bound_addrs = node.endpoint().bound_sockets();
@@ -253,7 +293,8 @@ async fn main() -> n0_error::Result<()> {
                     p.info.resource_id, p.info.data.host, p.info.data.port
                 )
             }
-            tokio::signal::ctrl_c().await?;
+            shutdown_signal().await?;
+            node.shutdown().await;
             println!()
         }
         Commands::Connect(args) => {
@@ -270,7 +311,7 @@ async fn main() -> n0_error::Result<()> {
                 handle.advertisment().host,
                 handle.advertisment().port,
             );
-            tokio::signal::ctrl_c().await?;
+            shutdown_signal().await?;
             handle.abort();
         }
         Commands::DnsDev(args) => match args {
@@ -298,4 +339,18 @@ async fn main() -> n0_error::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            res = tokio::signal::ctrl_c() => res,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }

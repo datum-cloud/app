@@ -59,10 +59,14 @@ pub struct ListenNode {
 }
 
 impl ListenNode {
-    #[instrument("listen-node", skip_all)]
     pub async fn new(repo: Repo) -> Result<Self> {
-        let config = repo.config().await?;
         let secret_key = repo.listen_key().await?;
+        Self::with_secret_key(repo, secret_key).await
+    }
+
+    #[instrument("listen-node", skip_all)]
+    pub async fn with_secret_key(repo: Repo, secret_key: SecretKey) -> Result<Self> {
+        let config = repo.config().await?;
         let endpoint = build_endpoint(secret_key, &config).await?;
         let state = repo.load_state().await?;
 
@@ -170,6 +174,12 @@ impl ListenNode {
 
     pub fn endpoint_id(&self) -> EndpointId {
         self.router.endpoint().id()
+    }
+
+    pub async fn shutdown(&self) {
+        if let Err(err) = self.router.shutdown().await {
+            warn!("Listen node shutdown did not finish cleanly: {err:#}");
+        }
     }
 }
 
