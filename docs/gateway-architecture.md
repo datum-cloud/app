@@ -1,4 +1,9 @@
-# Gateway Architecture: Tunnel Design
+# Gateway architecture: tunnel design
+
+> Historical desktop architecture. This page describes the legacy `ListenNode`
+> and `UpstreamProxy` path. It is not the architecture reference for the current
+> headless Connect daemon or managed VPC gateway. See the current
+> [Connect architecture overview](../../connect/README.md#architecture).
 
 This document explains the architecture of the datum-connect gateway and how it proxies HTTP requests through iroh/QUIC tunnels to desktop applications.
 
