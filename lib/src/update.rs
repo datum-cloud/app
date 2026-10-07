@@ -620,7 +620,8 @@ impl UpdateChecker {
         let path_str = path.to_string_lossy().to_string();
         let parent_pid = std::process::id();
 
-        #[cfg(unix)]
+        // Only macOS/Linux (not Android/other unix) support background install & restart.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             let exe = std::env::current_exe().anyerr()?;
             let exe_str = exe.to_string_lossy().to_string();
@@ -694,7 +695,7 @@ Start-Process -FilePath '{}'
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn get_install_script_unix(&self) -> String {
         // Dev bypass: when DATUM_UPDATE_FAKE=1, just restart the app (skip actual install)
         if std::env::var("DATUM_UPDATE_FAKE").as_deref() == Ok("1") {

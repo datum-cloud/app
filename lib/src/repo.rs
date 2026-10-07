@@ -23,13 +23,33 @@ impl Repo {
     const STATE_FILE: &str = "state.yml";
     const SELECTED_CONTEXT_FILE: &str = "selected_context.yml";
 
+    /// Resolve the repo base directory.
+    ///
+    /// The standard desktop path crates (`dirs`/`directories`/`base-dirs`) have
+    /// no reliable Android support, so on Android we use the per-app writable
+    /// data directory instead of panicking on a missing "local data dir".
     pub fn default_location() -> PathBuf {
-        match std::env::var("DATUM_CONNECT_REPO") {
-            Ok(path) => path.into(),
-            Err(_) => dirs_next::data_local_dir()
-                .expect("Failed to get local data dir")
-                .join("Datum"),
+        if let Ok(path) = std::env::var("DATUM_CONNECT_REPO") {
+            return path.into();
         }
+
+        #[cfg(target_os = "android")]
+        {
+            // The Android runtime sets ANDROID_PRIVATE to the app's internal
+            // private data directory for native processes. Fall back to a
+            // relative path (Android app CWD is its data directory) so we
+            // never hard-panic at startup.
+            let base = std::env::var("ANDROID_PRIVATE")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            base.join("Datum")
+        }
+
+        #[cfg(not(target_os = "android"))]
+        dirs_next::data_local_dir()
+            .unwrap_or_else(|| std::env::temp_dir())
+            .join("Datum")
     }
 
     /// Opens or creates a repo at the given base directory.
