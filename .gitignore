@@ -5,3 +5,10 @@
 /ui/dist
 # nix
 /result
+# Android APK build artifacts
+*.apk
+android-nix/result
+# Android signing keystore (do not commit — secret)
+*.jks
+# Android emulator AVD / user data (local only)
+/.android/

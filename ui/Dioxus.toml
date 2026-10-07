@@ -29,7 +29,7 @@ script = []
 script = []
 
 [bundle]
-identifier = "net.datum.desktop"
+identifier = "net.datum.connect"
 publisher = "Datum"
 icon = ["assets/bundle/macos/Datum.icns", "assets/bundle/windows/Datum.ico", "assets/bundle/linux/1024.png", "assets/bundle/linux/512.png", "assets/bundle/linux/256.png"]
 resources = ["assets/*"]
@@ -47,3 +47,9 @@ signing_identity = "-"
 entitlements = "entitlements.plist"
 # Minimum macOS version
 minimum_system_version = "11.0"
+
+[bundle.android]
+jks_file = "datum-release.jks"
+jks_password = "datumdevsign1"
+key_alias = "datum"
+key_password = "datumdevsign1"
