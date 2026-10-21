@@ -266,12 +266,11 @@ pub fn AddTunnelDialog(
             return None;
         }
         match text.parse::<u16>() {
-            Ok(p) if p == 0 => Some("Use a port from 1 to 65535".to_string()),
             Ok(p) if state_for_used.local_tunnels().used_ports().contains(&p) => {
                 Some(format!("Another local tunnel uses port {p}"))
             }
-            Ok(_) => None,
-            Err(_) => Some("Use a port from 1 to 65535".to_string()),
+            Ok(p) if p != 0 => None,
+            _ => Some("Use a port from 1 to 65535".to_string()),
         }
     });
 
@@ -285,8 +284,7 @@ pub fn AddTunnelDialog(
         .map(|ctx| project_quotas_portal_url(state.datum().web_url(), &ctx.project_id));
 
     let create_blocked = !is_edit && current_kind == NewTunnelKind::Public && quota_exhausted;
-    let any_pending =
-        save_tunnel.pending() || save_create_tunnel.pending() || save_local.pending();
+    let any_pending = save_tunnel.pending() || save_create_tunnel.pending() || save_local.pending();
     let form_invalid = match current_kind {
         NewTunnelKind::Public => address_invalid() || create_blocked || !publish_allowed,
         NewTunnelKind::Share => address_invalid() || local_name_error().is_some(),
@@ -325,7 +323,7 @@ pub fn AddTunnelDialog(
     let ticket_invalid = matches!(parsed_ticket(), Some(Err(_)));
     let port_placeholder = match default_port() {
         Some(p) if p != 0 => p.to_string(),
-        _ => "Any free port".to_string(),
+        _ => "Any".to_string(),
     };
 
     rsx! {
@@ -445,7 +443,7 @@ pub fn AddTunnelDialog(
                                 label { r#for: "connect-ticket", class: "text-xs text-form-label/90", "Ticket" }
                                 textarea {
                                     id: "connect-ticket",
-                                    class: if ticket_invalid { "w-full h-20 resize-none rounded-lg border border-alert-red-dark bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-alert-red-dark" } else { "w-full h-20 resize-none rounded-lg border border-app-border bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-app-border" },
+                                    class: if ticket_invalid { "w-full h-16 resize-none rounded-lg border border-alert-red-dark bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-alert-red-dark" } else { "w-full h-16 resize-none rounded-lg border border-app-border bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-app-border" },
                                     placeholder: "DCSHARE2…",
                                     spellcheck: "false",
                                     autocapitalize: "off",
@@ -460,26 +458,27 @@ pub fn AddTunnelDialog(
                                     "{ticket_hint}"
                                 }
                             }
-                            Input {
-                                id: Some("connect-name".into()),
-                                label: Some("Name (optional)".into()),
-                                error: local_name_error(),
-                                value: "{label}",
-                                placeholder: "Name from the sharing computer",
-                                maxlength: "64",
-                                oninput: move |e: FormEvent| label.set(e.value()),
-                            }
-                            Input {
-                                id: Some("connect-port".into()),
-                                label: Some("Local port (optional)".into()),
-                                description: Some("The service opens at http://127.0.0.1 on this port.".into()),
-                                error: port_error(),
-                                value: "{port}",
-                                placeholder: "{port_placeholder}",
-                                inputmode: "numeric",
-                                oninput: move |e: FormEvent| {
-                                    port.set(e.value().chars().filter(char::is_ascii_digit).take(5).collect());
-                                },
+                            div { class: "grid grid-cols-[1fr_9rem] gap-3 items-start",
+                                Input {
+                                    id: Some("connect-name".into()),
+                                    label: Some("Name (optional)".into()),
+                                    error: local_name_error(),
+                                    value: "{label}",
+                                    placeholder: "Name from the sharer",
+                                    maxlength: "64",
+                                    oninput: move |e: FormEvent| label.set(e.value()),
+                                }
+                                Input {
+                                    id: Some("connect-port".into()),
+                                    label: Some("Local port (optional)".into()),
+                                    error: port_error(),
+                                    value: "{port}",
+                                    placeholder: "{port_placeholder}",
+                                    inputmode: "numeric",
+                                    oninput: move |e: FormEvent| {
+                                        port.set(e.value().chars().filter(char::is_ascii_digit).take(5).collect());
+                                    },
+                                }
                             }
                         },
                     }

@@ -137,7 +137,7 @@ pub fn Login() -> Element {
                             onclick: move |_| {
                                 nav.push(Route::LocalTunnelsPage {});
                             },
-                            "Share with your devices without an account"
+                            "Continue without an account"
                         }
                     }
                 }
