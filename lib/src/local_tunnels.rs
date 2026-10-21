@@ -197,8 +197,14 @@ pub fn share_address_error(address: &str) -> Option<String> {
 /// computer's name and the shared port, as `datumctl connect local` does.
 pub fn default_share_name(address: &str) -> String {
     let port = address.trim().rsplit_once(':').map_or("", |(_, port)| port);
-    let name = format!("{}:{port}", crate::tunnels::friendly_device_name());
+    let name = format!("{}:{port}", device_name());
     name.chars().take(MAX_NAME).collect()
+}
+
+/// This computer's name, looked up once: on macOS that runs `scutil`.
+fn device_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(crate::tunnels::friendly_device_name)
 }
 
 /// Validates a user-chosen name against other tunnels' names.
@@ -344,7 +350,7 @@ impl LocalTunnels {
             })),
             file,
             device_key,
-            device_name: crate::tunnels::friendly_device_name(),
+            device_name: device_name().to_string(),
             changed: watch::Sender::new(0),
         })
     }

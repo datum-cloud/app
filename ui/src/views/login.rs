@@ -132,6 +132,13 @@ pub fn Login() -> Element {
                             },
                             "Create an account"
                         }
+                        a {
+                            class: "text-xs text-white/50 cursor-pointer underline text-center",
+                            onclick: move |_| {
+                                nav.push(Route::LocalTunnelsPage {});
+                            },
+                            "Share with your devices without an account"
+                        }
                     }
                 }
                 if let Some(Err(err)) = login.value() {

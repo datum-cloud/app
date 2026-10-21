@@ -7,6 +7,7 @@ use crate::{
         AddTunnelDialog, Button, ButtonKind, Icon, IconSource, InviteUserDialog,
     },
     state::AppState,
+    views::{LocalTicketDialog, LocalTicketTarget},
     Route,
 };
 use dioxus::prelude::*;
@@ -36,6 +37,8 @@ pub fn Chrome() -> Element {
         editing_tunnel,
         dialog_open: add_tunnel_dialog_open,
     });
+    let local_ticket_target = use_signal(|| None::<String>);
+    provide_context(LocalTicketTarget(local_ticket_target));
 
     use_effect(move || {
         if open_add_tunnel_from_tray() {
@@ -52,16 +55,28 @@ pub fn Chrome() -> Element {
         }
     });
 
-    use_effect(move || {
+    // Local tunnels need no account, so their page stays open while logged
+    // out or without a project. Once both exist, the tunnels list shows them.
+    let route = use_route::<Route>();
+    use_effect(use_reactive!(|route| {
         let _ = auth_changed();
+        let local_only = matches!(route, Route::LocalTunnelsPage {});
         if state.datum().login_state() == LoginState::Missing {
-            nav.push(Route::Login {});
+            if !local_only {
+                nav.push(Route::Login {});
+            }
             return;
         }
         if state.selected_context().is_none() {
-            nav.push(Route::SelectProject {});
+            if !local_only {
+                nav.push(Route::SelectProject {});
+            }
+            return;
         }
-    });
+        if local_only {
+            nav.replace(Route::ProxiesList {});
+        }
+    }));
 
     rsx! {
         div { class: "h-screen overflow-hidden flex flex-col bg-content-background text-foreground",
@@ -86,6 +101,7 @@ pub fn Chrome() -> Element {
                 open: invite_user_dialog_open(),
                 on_open_change: move |open| invite_user_dialog_open.set(open),
             }
+            LocalTicketDialog {}
         }
     }
 }
@@ -217,37 +233,36 @@ pub fn AppHeader(props: AppHeaderProps) -> Element {
 
     // Invite requires a selected org; all orgs can invite (unified organizations).
     let invite_disabled = use_memo(move || selected_context.read().is_none());
-    let quota_exhausted = state.tunnel_create_quota()()
-        .as_ref()
-        .map(|q| q.is_exhausted())
-        .unwrap_or(false);
+    let logged_in = auth_state.get().is_ok();
 
     rsx! {
         // App header bar - below titlebar, contains Add tunnel button and user menu
         div { class: "shrink-0 bg-background border-b border-app-border flex items-center w-full mx-auto",
             div { class: "max-w-4xl mx-auto flex items-center justify-between w-full px-4 py-3",
-                // Left side: Add tunnel button
-                if auth_state.get().is_ok() && selected_context.read().is_some() {
-                    // Wrap so the native tooltip still shows when the button is disabled
-                    // (disabled elements don't fire hover events in some browsers).
-                    span { title: if quota_exhausted { "You've hit your tunnel limit" } else { "" },
-                        Button {
-                            leading_icon: Some(IconSource::Named("plus".into())),
-                            text: "Add New",
-                            kind: ButtonKind::Primary,
-                            disabled: quota_exhausted,
-                            onclick: move |_| {
-                                if !quota_exhausted {
-                                    add_tunnel_dialog_open.set(true);
-                                }
-                            },
-                        }
+                // Left side: Add tunnel button. Local tunnels need no project or
+                // account, so it stays available when the project quota is spent
+                // and when logged out; the dialog explains what each kind needs.
+                if !logged_in || selected_context.read().is_some() {
+                    Button {
+                        leading_icon: Some(IconSource::Named("plus".into())),
+                        text: "Add New",
+                        kind: ButtonKind::Primary,
+                        onclick: move |_| add_tunnel_dialog_open.set(true),
                     }
                 }
                 div { class: "flex-1" }
                 // Right side: Org/Project selectors and user menu
                 div { class: "flex items-center justify-center gap-3",
-                    if auth_state.get().is_ok() {
+                    if !logged_in {
+                        Button {
+                            text: "Log in",
+                            kind: ButtonKind::Outline,
+                            onclick: move |_| {
+                                nav.push(Route::Login {});
+                            },
+                        }
+                    }
+                    if logged_in {
                         div { class: "relative",
                             DropdownMenu {
                                 open: profile_menu_open,

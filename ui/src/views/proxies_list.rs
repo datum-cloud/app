@@ -42,6 +42,7 @@ use crate::{
     },
     state::AppState,
     util::{project_quotas_portal_url, tunnel_edge_portal_url},
+    views::LocalTunnelList,
     Route,
 };
 
@@ -228,6 +229,7 @@ pub fn ProxiesList() -> Element {
     let mut editing_tunnel = use_signal(|| None::<TunnelSummary>);
     let mut search_query = use_signal(String::new);
 
+    let no_local_tunnels = state.local_tunnel_list()().is_empty();
     let show_search = tunnels().len() > 2;
     let query = search_query().trim().to_lowercase();
     let filtered_tunnels: Vec<TunnelSummary> = if query.is_empty() {
@@ -303,16 +305,13 @@ pub fn ProxiesList() -> Element {
                         class: "w-fit text-foreground",
                         text: "Add New",
                         leading_icon: Some(IconSource::Named("plus".into())),
-                        disabled: quota_exhausted,
-                        onclick: move |_| {
-                            if !quota_exhausted {
-                                dialog_open.set(true);
-                            }
-                        },
+                        onclick: move |_| dialog_open.set(true),
                     }
                 }
-                div { class: "rounded-lg bg-background h-48" }
-                div { class: "rounded-lg bg-background h-48" }
+                if no_local_tunnels {
+                    div { class: "rounded-lg bg-background h-48" }
+                    div { class: "rounded-lg bg-background h-48" }
+                }
             }
         }
     } else {
@@ -373,6 +372,7 @@ pub fn ProxiesList() -> Element {
                 }
             }
             {list}
+            LocalTunnelList { show_heading: true }
         }
         AddTunnelDialog {
             open: dialog_open,
