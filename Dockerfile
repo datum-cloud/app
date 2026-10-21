@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.98-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.98-trixie AS builder
 
 ARG BUILDARCH
 ARG TARGETARCH
@@ -42,10 +42,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cargo build --locked --release -p datum-connect --target "$target" \
     && cp "target/$target/release/datum-connect" /usr/local/bin/datum-connect
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+  && apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
   && rm -rf /var/lib/apt/lists/* \
   && useradd -u 65532 -r -s /usr/sbin/nologin datum \
   && install -d -o 65532 -g 65532 /var/lib/datum-connect
