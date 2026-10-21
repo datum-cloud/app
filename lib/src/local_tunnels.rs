@@ -53,15 +53,22 @@ pub enum LocalTunnelStatus {
     /// Waiting for a relay, or pairing with the sharer.
     Starting,
     /// A share is running; devices pair with `ticket`.
-    Sharing { ticket: String },
+    Sharing {
+        ticket: String,
+    },
     /// A connection is open at `local_addr`, for example `127.0.0.1:8080`.
-    Open { local_addr: String },
+    Open {
+        local_addr: String,
+    },
     Failed(String),
 }
 
 impl LocalTunnelStatus {
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Starting | Self::Sharing { .. } | Self::Open { .. })
+        matches!(
+            self,
+            Self::Starting | Self::Sharing { .. } | Self::Open { .. }
+        )
     }
 }
 
@@ -156,15 +163,17 @@ pub fn extract_ticket(text: &str) -> Option<String> {
 
 /// Parses a ticket. The error is a message for the user.
 pub fn parse_ticket(ticket: &str) -> std::result::Result<TicketInfo, String> {
-    let ticket: ShareTicket = ticket.trim().parse().map_err(
-        |error: connect_share::TicketError| {
-            let mut message = error.to_string();
-            if let Some(first) = message.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            message
-        },
-    )?;
+    let ticket: ShareTicket =
+        ticket
+            .trim()
+            .parse()
+            .map_err(|error: connect_share::TicketError| {
+                let mut message = error.to_string();
+                if let Some(first) = message.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                message
+            })?;
     Ok(TicketInfo {
         endpoint_id: ticket.endpoint.id.to_string(),
         port: ticket.port,
@@ -219,7 +228,10 @@ pub fn name_error<'a>(name: &str, others: impl IntoIterator<Item = &'a str>) -> 
     if name.chars().any(char::is_control) {
         return Some("Name can't contain control characters".to_string());
     }
-    if others.into_iter().any(|other| other.eq_ignore_ascii_case(name)) {
+    if others
+        .into_iter()
+        .any(|other| other.eq_ignore_ascii_case(name))
+    {
         return Some(format!("Another local tunnel is named \"{name}\""));
     }
     None
@@ -300,6 +312,8 @@ pub struct LocalTunnels {
     /// Sent to sharers when pairing.
     device_name: String,
     changed: watch::Sender<u64>,
+    /// Where shares and dials run. See [`spawn_runtime`].
+    runtime: tokio::runtime::Handle,
 }
 
 impl fmt::Debug for LocalTunnels {
@@ -352,6 +366,7 @@ impl LocalTunnels {
             device_key,
             device_name: device_name().to_string(),
             changed: watch::Sender::new(0),
+            runtime: spawn_runtime().std_context("starting the local tunnels runtime")?,
         })
     }
 
@@ -436,7 +451,11 @@ impl LocalTunnels {
         } else {
             chosen.to_string()
         };
-        self.add(base, !chosen.is_empty(), LocalTunnelKind::Connect { ticket, port })
+        self.add(
+            base,
+            !chosen.is_empty(),
+            LocalTunnelKind::Connect { ticket, port },
+        )
     }
 
     fn add(&self, base: String, name_from_user: bool, kind: LocalTunnelKind) -> Result<String> {
@@ -492,12 +511,26 @@ impl LocalTunnels {
 
         let this = self.clone();
         let id = id.to_string();
-        tokio::spawn(async move {
-            let result = match kind {
-                LocalTunnelKind::Share { address } => this.run_share(&id, token, address, name, cancel).await,
-                LocalTunnelKind::Connect { ticket, port } => {
-                    this.run_connect(&id, token, ticket, port, cancel).await
+        let session = {
+            let this = this.clone();
+            let id = id.clone();
+            self.runtime.spawn(async move {
+                match kind {
+                    LocalTunnelKind::Share { address } => {
+                        this.run_share(&id, token, address, name, cancel).await
+                    }
+                    LocalTunnelKind::Connect { ticket, port } => {
+                        this.run_connect(&id, token, ticket, port, cancel).await
+                    }
                 }
+            })
+        };
+        // Awaiting the session separately turns a panic into a failed status
+        // rather than a tunnel stuck starting.
+        self.runtime.spawn(async move {
+            let result = match session.await {
+                Ok(result) => result,
+                Err(error) => Err(format!("stopped unexpectedly: {error}")),
             };
             if let Err(error) = &result {
                 warn!(%id, %error, "local tunnel stopped");
@@ -564,7 +597,9 @@ impl LocalTunnels {
         port: u16,
         cancel: CancellationToken,
     ) -> std::result::Result<(), String> {
-        let ticket: ShareTicket = ticket.parse().map_err(|e: connect_share::TicketError| e.to_string())?;
+        let ticket: ShareTicket = ticket
+            .parse()
+            .map_err(|e: connect_share::TicketError| e.to_string())?;
         let options = DialOptions {
             ticket,
             bind: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
@@ -696,7 +731,8 @@ impl LocalTunnels {
     }
 
     fn notify(&self) {
-        self.changed.send_modify(|version| *version = version.wrapping_add(1));
+        self.changed
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -728,6 +764,24 @@ impl LocalTunnels {
             warn!(path = %self.file.display(), %error, "local tunnels: failed to save");
         }
     }
+}
+
+/// Starts a single-threaded runtime on its own thread for shares and dials.
+///
+/// iroh's `Endpoint::bind` keeps a tracing span entered across an await. On
+/// a multi-threaded runtime the task can resume on another thread, and the
+/// Sentry tracing layer panics on that mismatch in debug builds, killing the
+/// session. One thread avoids it, and keeps tunnel traffic off the UI's
+/// runtime.
+fn spawn_runtime() -> std::io::Result<tokio::runtime::Handle> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let handle = runtime.handle().clone();
+    std::thread::Builder::new()
+        .name("local-tunnels".to_string())
+        .spawn(move || runtime.block_on(std::future::pending::<()>()))?;
+    Ok(handle)
 }
 
 async fn load_or_create_key(path: &Path) -> Result<SecretKey> {
@@ -865,7 +919,12 @@ mod tests {
         })
         .await;
         // The sharer's name replaces the default "Port N".
-        let name = tunnels.list().into_iter().find(|t| t.id == connect).unwrap().name;
+        let name = tunnels
+            .list()
+            .into_iter()
+            .find(|t| t.id == connect)
+            .unwrap()
+            .name;
         assert_eq!(name, "svc (2)");
 
         let mut stream = tokio::net::TcpStream::connect(&local_addr).await.unwrap();
