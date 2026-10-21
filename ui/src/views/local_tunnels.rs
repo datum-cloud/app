@@ -251,7 +251,9 @@ fn LocalTunnelCard(
         LocalTunnelKind::Connect { ticket, .. } => Some(ticket.clone()),
         _ => None,
     };
-    let first_index = usize::from(show_ticket) + usize::from(open_url.is_some()) + usize::from(connect_ticket.is_some());
+    let first_index = usize::from(show_ticket)
+        + usize::from(open_url.is_some())
+        + usize::from(connect_ticket.is_some());
     let id_for_ticket = tunnel.id.clone();
     let tunnel_for_rename = tunnel.clone();
     let tunnel_for_delete = tunnel.clone();
@@ -383,7 +385,10 @@ fn ErrorRow(text: String) -> Element {
 fn device_label(name: &Option<String>, endpoint_id: &str) -> String {
     match name {
         Some(name) if !name.trim().is_empty() => name.clone(),
-        _ => format!("Device {}…", endpoint_id.chars().take(8).collect::<String>()),
+        _ => format!(
+            "Device {}…",
+            endpoint_id.chars().take(8).collect::<String>()
+        ),
     }
 }
 
@@ -400,7 +405,7 @@ fn ticket_qr_svg(ticket: &str) -> Option<String> {
     let code = qrcode::QrCode::new(ticket.as_bytes()).ok()?;
     Some(
         code.render::<svg::Color>()
-            .min_dimensions(232, 232)
+            .min_dimensions(168, 168)
             .dark_color(svg::Color("#000000"))
             .light_color(svg::Color("#ffffff"))
             .quiet_zone(true)
@@ -454,37 +459,41 @@ pub fn LocalTicketDialog() -> Element {
                             let ticket_for_copy = ticket.clone();
                             let command = format!("datumctl connect dial {ticket}");
                             rsx! {
-                                p { class: "text-xs text-foreground/80 leading-relaxed",
-                                    "Scan the code with the Datum Connect app, or paste the ticket under "
-                                    span { class: "font-medium", "Open a ticket" }
-                                    " on another computer."
-                                }
-                                if let Some(svg) = qr {
-                                    div {
-                                        class: "mx-auto w-fit rounded-lg border border-app-border bg-white p-2",
-                                        dangerous_inner_html: "{svg}",
+                                div { class: "flex gap-4 items-start",
+                                    if let Some(svg) = qr {
+                                        div {
+                                            class: "shrink-0 rounded-lg border border-app-border bg-white p-1",
+                                            dangerous_inner_html: "{svg}",
+                                        }
                                     }
-                                }
-                                div { class: "rounded-lg border border-app-border bg-content-background p-2.5 font-mono text-1xs text-foreground break-all select-all max-h-24 overflow-y-auto",
-                                    "{ticket}"
-                                }
-                                div { class: "flex items-center gap-2.5",
-                                    Button {
-                                        kind: ButtonKind::Primary,
-                                        text: if copied() == Some("ticket") { "Copied" } else { "Copy ticket" },
-                                        leading_icon: if copied() == Some("ticket") { Some(IconSource::Named("check".into())) } else { None },
-                                        onclick: move |_| match copy_to_clipboard(&ticket_for_copy) {
-                                            Ok(()) => copied.set(Some("ticket")),
-                                            Err(error) => tracing::warn!("copy ticket failed: {error}"),
-                                        },
-                                    }
-                                    Button {
-                                        kind: ButtonKind::Ghost,
-                                        text: if copied() == Some("command") { "Copied" } else { "Copy dial command" },
-                                        onclick: move |_| match copy_to_clipboard(&command) {
-                                            Ok(()) => copied.set(Some("command")),
-                                            Err(error) => tracing::warn!("copy command failed: {error}"),
-                                        },
+                                    div { class: "flex flex-col gap-3 min-w-0 flex-1",
+                                        p { class: "text-xs text-foreground/80 leading-relaxed",
+                                            "Scan the code with the Datum Connect app, or paste the ticket under "
+                                            span { class: "font-medium", "Open a ticket" }
+                                            " on another computer."
+                                        }
+                                        div { class: "rounded-lg border border-app-border bg-content-background p-2 font-mono text-[10px] leading-snug text-foreground break-all select-all max-h-20 overflow-y-auto",
+                                            "{ticket}"
+                                        }
+                                        div { class: "flex flex-wrap items-center gap-2",
+                                            Button {
+                                                kind: ButtonKind::Primary,
+                                                text: if copied() == Some("ticket") { "Copied" } else { "Copy ticket" },
+                                                leading_icon: if copied() == Some("ticket") { Some(IconSource::Named("check".into())) } else { None },
+                                                onclick: move |_| match copy_to_clipboard(&ticket_for_copy) {
+                                                    Ok(()) => copied.set(Some("ticket")),
+                                                    Err(error) => tracing::warn!("copy ticket failed: {error}"),
+                                                },
+                                            }
+                                            Button {
+                                                kind: ButtonKind::Ghost,
+                                                text: if copied() == Some("command") { "Copied" } else { "Copy command" },
+                                                onclick: move |_| match copy_to_clipboard(&command) {
+                                                    Ok(()) => copied.set(Some("command")),
+                                                    Err(error) => tracing::warn!("copy command failed: {error}"),
+                                                },
+                                            }
+                                        }
                                     }
                                 }
                                 div { class: "text-1xs text-foreground/60 leading-relaxed",
@@ -544,7 +553,10 @@ pub fn LocalTicketDialog() -> Element {
 }
 
 #[component]
-fn RenameLocalTunnelDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandler<()>) -> Element {
+fn RenameLocalTunnelDialog(
+    tunnel: ReadSignal<Option<LocalTunnel>>,
+    on_close: EventHandler<()>,
+) -> Element {
     let state = consume_context::<AppState>();
     let mut name = use_signal(String::new);
     let mut error = use_signal(|| None::<String>);
@@ -621,7 +633,10 @@ fn RenameLocalTunnelDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: Ev
 }
 
 #[component]
-fn DeleteLocalTunnelDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandler<()>) -> Element {
+fn DeleteLocalTunnelDialog(
+    tunnel: ReadSignal<Option<LocalTunnel>>,
+    on_close: EventHandler<()>,
+) -> Element {
     let state = consume_context::<AppState>();
     let Some(current) = tunnel() else {
         return rsx! {};
