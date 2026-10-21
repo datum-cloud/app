@@ -27,6 +27,28 @@ pub fn project_quotas_portal_url(web_url: &str, project_id: &str) -> String {
     format!("{base}/project/{project_id}/quotas")
 }
 
+/// Copies `text` to the system clipboard.
+///
+/// The clipboard is kept open for the life of the app: on Linux, X11 and
+/// Wayland clipboards are served by the process that set them.
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    static CLIPBOARD: std::sync::OnceLock<Result<std::sync::Mutex<arboard::Clipboard>, String>> =
+        std::sync::OnceLock::new();
+    let clipboard = CLIPBOARD
+        .get_or_init(|| {
+            arboard::Clipboard::new()
+                .map(std::sync::Mutex::new)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    clipboard
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_text(text)
+        .map_err(|e| e.to_string())
+}
+
 /// Top offset for full-screen overlays so they clear the custom macOS title bar.
 /// Windows/Linux use the native title bar (outside the webview), so no offset.
 #[cfg(target_os = "macos")]

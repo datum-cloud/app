@@ -1,8 +1,8 @@
 use dioxus::prelude::WritableExt;
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
-    HeartbeatAgent, ListenNode, Node, Repo, SelectedContext, TunnelActivityTracker,
-    TunnelCreateQuota, TunnelService, TunnelSummary,
+    HeartbeatAgent, ListenNode, LocalTunnel, LocalTunnels, Node, Repo, SelectedContext,
+    TunnelActivityTracker, TunnelCreateQuota, TunnelService, TunnelSummary,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -27,6 +27,10 @@ pub struct AppState {
     /// Latest create-quota snapshot for the selected project (refreshed with the
     /// tunnel list). `None` means not yet loaded or no project selected.
     tunnel_create_quota: dioxus::signals::Signal<Option<TunnelCreateQuota>>,
+    /// Project-less tunnels, which work without a Datum account.
+    local_tunnels: LocalTunnels,
+    /// Snapshot of `local_tunnels`, refreshed by the App whenever it changes.
+    local_tunnel_list: dioxus::signals::Signal<Vec<LocalTunnel>>,
 }
 
 impl AppState {
@@ -34,10 +38,12 @@ impl AppState {
         let repo_path = Repo::default_location();
         info!(repo_path = %repo_path.display(), "ui: loading repo");
         let repo = Repo::open_or_create(repo_path).await?;
-        let (node, datum) = tokio::try_join! {
+        let (node, datum, local_tunnels) = tokio::try_join! {
             Node::new(repo.clone()),
-            DatumCloudClient::with_repo(ApiEnv::default(), repo)
+            DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()),
+            LocalTunnels::load(&repo),
         }?;
+        let local_tunnel_list = dioxus::signals::Signal::new(local_tunnels.list());
         let heartbeat = HeartbeatAgent::new(datum.clone(), node.listen.clone());
         heartbeat.start().await;
         let app_state = AppState {
@@ -49,6 +55,8 @@ impl AppState {
             tunnel_activity: Arc::new(Mutex::new(TunnelActivityTracker::new())),
             pending_deletions: dioxus::signals::Signal::new(HashSet::new()),
             tunnel_create_quota: dioxus::signals::Signal::new(None),
+            local_tunnels,
+            local_tunnel_list,
         };
         Ok(app_state)
     }
@@ -119,6 +127,19 @@ impl AppState {
         let mut list = cache();
         list.retain(|item| item.id != tunnel_id);
         cache.set(list);
+    }
+
+    pub fn local_tunnels(&self) -> &LocalTunnels {
+        &self.local_tunnels
+    }
+
+    pub fn local_tunnel_list(&self) -> dioxus::signals::Signal<Vec<LocalTunnel>> {
+        self.local_tunnel_list
+    }
+
+    pub fn refresh_local_tunnel_list(&self) {
+        let mut list = self.local_tunnel_list;
+        list.set(self.local_tunnels.list());
     }
 
     pub fn pending_deletions(&self) -> dioxus::signals::Signal<HashSet<String>> {

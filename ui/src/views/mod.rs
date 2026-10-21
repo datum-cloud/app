@@ -5,6 +5,7 @@
 //! a common wrapper around all child routes.
 
 mod join_proxy;
+mod local_tunnels;
 mod login;
 mod navbar;
 mod proxies_list;
@@ -14,6 +15,7 @@ mod tray_nav_handler;
 mod tunnel_bandwidth;
 
 pub use join_proxy::JoinProxy;
+pub use local_tunnels::{LocalTicketDialog, LocalTicketTarget, LocalTunnelList, LocalTunnelsPage};
 pub use login::Login;
 pub use navbar::*;
 pub use proxies_list::{ProxiesList, TunnelCard};

@@ -7,7 +7,8 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use crate::components::{Head, InstallingSplash, Splash, UpdateToast};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, Login, ProxiesList, SelectProject, Settings, TrayNavHandler, TunnelBandwidth,
+    Chrome, JoinProxy, LocalTunnelsPage, Login, ProxiesList, SelectProject, Settings,
+    TrayNavHandler, TunnelBandwidth,
 };
 
 #[cfg(feature = "desktop")]
@@ -118,6 +119,9 @@ enum Route {
     JoinProxy {},
     #[route("/settings")]
     Settings {},
+    /// Project-less tunnels, for people who are not logged in.
+    #[route("/local")]
+    LocalTunnelsPage {},
 }
 
 fn main() {
@@ -621,6 +625,21 @@ fn App() -> Element {
                     return;
                 }
                 auth_changed.set(auth_changed().wrapping_add(1));
+            }
+        }
+    });
+
+    // Mirror local tunnel changes (statuses, paired devices, paths) into the UI.
+    let state_for_local_tunnels = consume_context::<AppState>();
+    use_future(move || {
+        let state = state_for_local_tunnels.clone();
+        async move {
+            let mut changes = state.local_tunnels().subscribe();
+            loop {
+                state.refresh_local_tunnel_list();
+                if changes.changed().await.is_err() {
+                    return;
+                }
             }
         }
     });
