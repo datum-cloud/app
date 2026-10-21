@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 arc-swap = { workspace = true, features = ["serde"] }
 color-backtrace.workspace = true
+connect-share.workspace = true
 axum.workspace = true
 chrono.workspace = true
 data-encoding.workspace = true

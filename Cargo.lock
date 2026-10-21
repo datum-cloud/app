@@ -1170,6 +1170,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "connect-share"
+version = "0.1.0"
+source = "git+https://github.com/datum-cloud/connect?rev=e56042c02c011d72fcbc569f29d487d9d1c4ef97#e56042c02c011d72fcbc569f29d487d9d1c4ef97"
+dependencies = [
+ "base64 0.22.1",
+ "connect-transport",
+ "data-encoding",
+ "iroh",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "connect-transport"
+version = "0.1.0"
+source = "git+https://github.com/datum-cloud/connect?rev=e56042c02c011d72fcbc569f29d487d9d1c4ef97#e56042c02c011d72fcbc569f29d487d9d1c4ef97"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "futures-util",
+ "h3",
+ "h3-datagram",
+ "http 1.4.0",
+ "iroh",
+ "rand 0.9.4",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3672,6 +3709,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "h3"
+version = "0.0.8"
+source = "git+https://github.com/hyperium/h3?rev=0e54a16df76102809ad99b03663b559dfc203917#0e54a16df76102809ad99b03663b559dfc203917"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http 1.4.0",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "h3-datagram"
+version = "0.0.2"
+source = "git+https://github.com/datum-cloud/connect?rev=e56042c02c011d72fcbc569f29d487d9d1c4ef97#e56042c02c011d72fcbc569f29d487d9d1c4ef97"
+dependencies = [
+ "bytes",
+ "h3",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5179,6 +5239,7 @@ dependencies = [
  "axum 0.7.9",
  "chrono",
  "color-backtrace",
+ "connect-share",
  "data-encoding",
  "derive_more 2.1.1",
  "dirs-next",
