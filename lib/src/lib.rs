@@ -5,6 +5,7 @@ pub mod datum_cloud;
 pub mod diagnostics;
 pub mod heartbeat;
 mod http_user_agent;
+pub mod local_tunnels;
 mod node;
 pub mod project_control_plane;
 mod repo;
@@ -17,6 +18,7 @@ pub use config::{Config, DiscoveryMode};
 pub use diagnostics::DiagnosticsSettings;
 pub use heartbeat::HeartbeatAgent;
 pub use http_user_agent::datum_http_user_agent;
+pub use local_tunnels::{LocalTunnel, LocalTunnelKind, LocalTunnelStatus, LocalTunnels};
 pub use node::*;
 pub use project_control_plane::{
     ProjectControlPlaneClient, error_looks_like_quota, is_kube_auth_failure,
