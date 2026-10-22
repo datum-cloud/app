@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use connect_share::{DialEvent, DialOptions, ShareEvent, ShareOptions, ShareTicket};
+use connect_share::{DialEvent, DialOptions, ShareEvent, ShareKey, ShareOptions, ShareTicket};
 use iroh::SecretKey;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
@@ -256,6 +256,9 @@ struct SavedTunnel {
     name_from_user: bool,
     #[serde(flatten)]
     kind: LocalTunnelKind,
+    /// A share's key, so its ticket survives restarts. See [`ShareKey`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -278,6 +281,13 @@ struct Inner {
     tunnels: Vec<LocalTunnel>,
     sessions: HashMap<String, Session>,
     next_token: u64,
+    /// Each share's key, by tunnel id. Kept out of [`LocalTunnel`] so the UI
+    /// never holds the secret.
+    keys: HashMap<String, ShareKey>,
+    /// The last session started for each tunnel, done once its endpoint has
+    /// closed. A new session waits for it, so two endpoints with one share's
+    /// key never run at once.
+    endings: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
 impl Inner {
@@ -345,6 +355,18 @@ impl LocalTunnels {
             Err(err) => return Err(err).std_context("reading local tunnels"),
         };
         let device_key = load_or_create_key(&repo.path().join(Self::DEVICE_KEY_FILE)).await?;
+        // A missing or unreadable key is replaced when the share next starts,
+        // which gives it a new ticket.
+        let keys = saved
+            .iter()
+            .filter_map(|s| {
+                let key = s.key.as_deref()?.parse::<ShareKey>();
+                if key.is_err() {
+                    warn!(id = %s.id, "local tunnels: replacing unreadable share key");
+                }
+                Some((s.id.clone(), key.ok()?))
+            })
+            .collect();
         let tunnels = saved
             .into_iter()
             .map(|s| LocalTunnel {
@@ -360,6 +382,7 @@ impl LocalTunnels {
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 tunnels,
+                keys,
                 ..Default::default()
             })),
             file,
@@ -432,10 +455,13 @@ impl LocalTunnels {
         } else {
             chosen.to_string()
         };
+        let Some(key) = share_key_for(address) else {
+            n0_error::bail_any!("{address} has no port to share");
+        };
         let kind = LocalTunnelKind::Share {
             address: address.to_string(),
         };
-        self.add(base, !chosen.is_empty(), kind)
+        self.add(base, !chosen.is_empty(), kind, Some(key))
     }
 
     /// Adds a connection to the share named by `ticket` and starts it. An
@@ -455,10 +481,17 @@ impl LocalTunnels {
             base,
             !chosen.is_empty(),
             LocalTunnelKind::Connect { ticket, port },
+            None,
         )
     }
 
-    fn add(&self, base: String, name_from_user: bool, kind: LocalTunnelKind) -> Result<String> {
+    fn add(
+        &self,
+        base: String,
+        name_from_user: bool,
+        kind: LocalTunnelKind,
+        key: Option<ShareKey>,
+    ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         {
             let mut inner = self.lock();
@@ -478,6 +511,9 @@ impl LocalTunnels {
                 path: None,
                 devices: Vec::new(),
             });
+            if let Some(key) = key {
+                inner.keys.insert(id.clone(), key);
+            }
             self.save(&inner);
         }
         self.start(&id);
@@ -499,6 +535,22 @@ impl LocalTunnels {
         tunnel.devices.clear();
         let kind = tunnel.kind.clone();
         let name = tunnel.name.clone();
+        // Shares saved before keys existed get one now, and keep it.
+        let key = match &kind {
+            LocalTunnelKind::Share { address } => match inner.keys.get(id) {
+                Some(key) => Some(key.clone()),
+                None => {
+                    let key = share_key_for(address);
+                    if let Some(key) = &key {
+                        inner.keys.insert(id.to_string(), key.clone());
+                        self.save(&inner);
+                    }
+                    key
+                }
+            },
+            LocalTunnelKind::Connect { .. } => None,
+        };
+        let previous = inner.endings.remove(id);
         inner.sessions.insert(
             id.to_string(),
             Session {
@@ -515,10 +567,15 @@ impl LocalTunnels {
             let this = this.clone();
             let id = id.clone();
             self.runtime.spawn(async move {
+                // Already cancelled; wait for its endpoint to close.
+                if let Some(previous) = previous {
+                    let _ = previous.await;
+                }
                 match kind {
-                    LocalTunnelKind::Share { address } => {
-                        this.run_share(&id, token, address, name, cancel).await
-                    }
+                    LocalTunnelKind::Share { address } => match key {
+                        Some(key) => this.run_share(&id, token, address, name, key, cancel).await,
+                        None => Err(format!("{address} has no port to share")),
+                    },
                     LocalTunnelKind::Connect { ticket, port } => {
                         this.run_connect(&id, token, ticket, port, cancel).await
                     }
@@ -527,7 +584,8 @@ impl LocalTunnels {
         };
         // Awaiting the session separately turns a panic into a failed status
         // rather than a tunnel stuck starting.
-        self.runtime.spawn(async move {
+        let ending_id = id.clone();
+        let ending = self.runtime.spawn(async move {
             let result = match session.await {
                 Ok(result) => result,
                 Err(error) => Err(format!("stopped unexpectedly: {error}")),
@@ -537,6 +595,7 @@ impl LocalTunnels {
             }
             this.finish(&id, token, result.err());
         });
+        self.lock().endings.insert(ending_id, ending);
     }
 
     async fn run_share(
@@ -545,6 +604,7 @@ impl LocalTunnels {
         token: u64,
         address: String,
         name: String,
+        key: ShareKey,
         cancel: CancellationToken,
     ) -> std::result::Result<(), String> {
         let options = ShareOptions {
@@ -554,6 +614,7 @@ impl LocalTunnels {
             name: Some(name),
             udp_port: None,
             public_addrs: Vec::new(),
+            key: Some(key),
         };
         connect_share::share(options, cancel, |event| {
             self.update(id, token, |tunnel| match event {
@@ -660,10 +721,38 @@ impl LocalTunnels {
     }
 
     /// Stops and forgets tunnel `id`.
+    /// Gives share `id` a new ticket. Devices holding the old one can no
+    /// longer pair, and a running share restarts to drop those already paired.
+    pub fn new_ticket(&self, id: &str) {
+        let mut inner = self.lock();
+        let Some(LocalTunnelKind::Share { address }) = inner.get_mut(id).map(|t| t.kind.clone())
+        else {
+            return;
+        };
+        let key = match inner.keys.get(id) {
+            Some(old) => Some(ShareKey::generate(old.port())),
+            None => share_key_for(&address),
+        };
+        let Some(key) = key else {
+            return;
+        };
+        inner.keys.insert(id.to_string(), key);
+        self.save(&inner);
+        let running = inner.sessions.contains_key(id);
+        drop(inner);
+        if running {
+            self.start(id);
+        } else {
+            self.notify();
+        }
+    }
+
     pub fn remove(&self, id: &str) {
         let mut inner = self.lock();
         inner.end_session(id);
         inner.tunnels.retain(|t| t.id != id);
+        inner.keys.remove(id);
+        inner.endings.remove(id);
         self.save(&inner);
         drop(inner);
         self.notify();
@@ -754,6 +843,7 @@ impl LocalTunnels {
                     name: t.name.clone(),
                     name_from_user: t.name_from_user,
                     kind: t.kind.clone(),
+                    key: inner.keys.get(&t.id).map(ToString::to_string),
                 })
                 .collect(),
         };
@@ -764,6 +854,12 @@ impl LocalTunnels {
             warn!(path = %self.file.display(), %error, "local tunnels: failed to save");
         }
     }
+}
+
+/// A new key for sharing `address`, naming its port in tickets.
+fn share_key_for(address: &str) -> Option<ShareKey> {
+    let port = TcpProxyData::from_host_port_str(address.trim()).ok()?.port;
+    (port != 0).then(|| ShareKey::generate(port))
 }
 
 /// Starts a single-threaded runtime on its own thread for shares and dials.
@@ -931,6 +1027,77 @@ mod tests {
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
         assert_eq!(buf, b"hello");
+        tunnels.stop_all();
+    }
+
+    /// A share keeps its ticket across stop and start, and after a new
+    /// ticket the old one no longer connects.
+    #[tokio::test]
+    async fn share_keeps_its_ticket_until_a_new_one() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let service = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let service_addr = service.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = service.accept().await {
+                let _ = stream.write_all(b"hello").await;
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::open_or_create(dir.path()).await.unwrap();
+        let tunnels = LocalTunnels::load(&repo).await.unwrap();
+        let mut changes = tunnels.subscribe();
+        let sharing = |status: &LocalTunnelStatus| match status {
+            LocalTunnelStatus::Sharing { ticket } => Some(ticket.clone()),
+            _ => None,
+        };
+        let endpoint = |ticket: &str| parse_ticket(ticket).unwrap().endpoint_id;
+
+        let share = tunnels.add_share("svc", &service_addr.to_string()).unwrap();
+        let first = wait_for(&tunnels, &mut changes, &share, sharing).await;
+        tunnels.stop(&share);
+        tunnels.start(&share);
+        let second = wait_for(&tunnels, &mut changes, &share, sharing).await;
+        assert_eq!(endpoint(&second), endpoint(&first));
+        let saved = std::fs::read_to_string(dir.path().join(LocalTunnels::FILE)).unwrap();
+        assert!(saved.contains("\"key\": \"DCKEY1"), "{saved}");
+
+        // The ticket from before the restart still connects.
+        let connect = tunnels.add_connect(&first, "", Some(0)).unwrap();
+        let open = |status: &LocalTunnelStatus| match status {
+            LocalTunnelStatus::Open { local_addr } => Some(local_addr.clone()),
+            _ => None,
+        };
+        let local_addr = wait_for(&tunnels, &mut changes, &connect, open).await;
+        let mut stream = tokio::net::TcpStream::connect(&local_addr).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(buf, b"hello");
+        tunnels.remove(&connect);
+
+        tunnels.new_ticket(&share);
+        let first_id = endpoint(&first);
+        let third = wait_for(&tunnels, &mut changes, &share, |status| {
+            sharing(status).filter(|ticket| endpoint(ticket) != first_id)
+        })
+        .await;
+        assert_ne!(endpoint(&third), first_id);
+
+        let stale = tunnels.add_connect(&first, "", Some(0)).unwrap();
+        let failed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let tunnel = tunnels.list().into_iter().find(|t| t.id == stale).unwrap();
+                match tunnel.status {
+                    LocalTunnelStatus::Failed(_) => return true,
+                    LocalTunnelStatus::Open { .. } => return false,
+                    _ => changes.changed().await.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("stale ticket settled");
+        assert!(failed, "the old ticket still connected");
         tunnels.stop_all();
     }
 
