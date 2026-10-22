@@ -1198,7 +1198,7 @@ dependencies = [
 [[package]]
 name = "connect-share"
 version = "0.1.0"
-source = "git+https://github.com/datum-cloud/connect?rev=677028c94119d4b92be2cd8de2f99a86dbb286ab#677028c94119d4b92be2cd8de2f99a86dbb286ab"
+source = "git+https://github.com/datum-cloud/connect?rev=ed53af397d5e6fa8360cfba73e51cd7a887f11e2#ed53af397d5e6fa8360cfba73e51cd7a887f11e2"
 dependencies = [
  "base64 0.22.1",
  "connect-transport",
@@ -1216,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "connect-transport"
 version = "0.1.0"
-source = "git+https://github.com/datum-cloud/connect?rev=677028c94119d4b92be2cd8de2f99a86dbb286ab#677028c94119d4b92be2cd8de2f99a86dbb286ab"
+source = "git+https://github.com/datum-cloud/connect?rev=ed53af397d5e6fa8360cfba73e51cd7a887f11e2#ed53af397d5e6fa8360cfba73e51cd7a887f11e2"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -3758,7 +3758,7 @@ dependencies = [
 [[package]]
 name = "h3-datagram"
 version = "0.0.2"
-source = "git+https://github.com/datum-cloud/connect?rev=677028c94119d4b92be2cd8de2f99a86dbb286ab#677028c94119d4b92be2cd8de2f99a86dbb286ab"
+source = "git+https://github.com/datum-cloud/connect?rev=ed53af397d5e6fa8360cfba73e51cd7a887f11e2#ed53af397d5e6fa8360cfba73e51cd7a887f11e2"
 dependencies = [
  "bytes",
  "h3",
