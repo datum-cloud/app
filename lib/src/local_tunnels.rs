@@ -1027,6 +1027,26 @@ mod tests {
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
         assert_eq!(buf, b"hello");
+        // Stopping the share flips the connection to failed rather than
+        // leaving it open while requests hang.
+        tunnels.stop(&share);
+        let bound = connect_share::SHARER_LOST_TIMEOUT + std::time::Duration::from_secs(5);
+        let failed = tokio::time::timeout(bound, async {
+            loop {
+                let tunnel = tunnels
+                    .list()
+                    .into_iter()
+                    .find(|t| t.id == connect)
+                    .unwrap();
+                if let LocalTunnelStatus::Failed(error) = tunnel.status {
+                    return error;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("connection noticed the share stopped");
+        assert!(failed.contains("no longer reachable"), "{failed}");
         tunnels.stop_all();
     }
 
