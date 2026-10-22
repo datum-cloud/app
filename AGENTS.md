@@ -2,6 +2,17 @@
 
 How to build, run, and exercise the Datum desktop app locally. The workspace has three crates: `lib` (shared logic), `ui` (the Dioxus desktop app, package `datum-connect-gui`, binary `Datum`), and `cli`.
 
+## Get the dependencies with `nix develop`
+
+The flake's dev shell is the canonical toolchain on macOS and Linux. It provides Rust, the Dioxus CLI (`dx`), Node, pkg-config, and OpenSSL, plus the Apple SDK on macOS and WebKitGTK and GTK on Linux. Run every command below inside it, either interactively or one at a time:
+
+```bash
+nix develop                         # interactive shell
+nix develop -c cargo check --locked # or one command
+```
+
+The only prerequisite is Nix with flakes enabled. Avoid mixing in a rustup or Homebrew toolchain: `connect-share` needs Rust 1.98 or newer, and the shell's toolchain tracks it through `flake.lock`. When a dependency needs a newer Rust, run `nix flake update rust-overlay`.
+
 ## Protect the installed app first
 
 A dev build shares the installed app's data folder and updates itself by default. Set both of these before the first launch, in the shell you launch from:
@@ -19,29 +30,17 @@ printf 'auto_update_enabled: false\n' > "$DATUM_CONNECT_REPO/update_settings.yml
 
 ## macOS
 
-Prerequisites:
+With the environment from the previous section, run a dev build with hot reload:
 
 ```bash
-xcode-select --install
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup update stable   # connect-share needs Rust 1.98 or newer
+cd ui && nix develop -c dx serve --platform desktop
 ```
 
-`ui/assets/tailwind.css` is committed, so no npm step is needed to run the app.
+`nix run .#desktop` from the repository root does the same, with extra logging for project tunnels. Environment variables such as `DATUM_CONNECT_REPO` pass through to it.
 
-Run a dev build from the repository root, with the environment from the section above:
+Without hot reload, `nix develop -c cargo run -p datum-connect-gui --bin Datum` from the repository root also works. `ui/assets/tailwind.css` is committed, so no npm step is needed to run the app.
 
-```bash
-cargo run -p datum-connect-gui --bin Datum
-```
-
-Or with hot reload, using the Dioxus CLI:
-
-```bash
-cd ui && dx serve --platform desktop
-```
-
-CI bundles with dx 0.7.2, because `dx bundle` path handling regressed in 0.7.3 and later (see `.github/workflows/bundle.yml`). For `dx serve` and `dx build`, 0.7.3 has worked.
+CI bundles with dx 0.7.2, because `dx bundle` path handling regressed in 0.7.3 and later (see `.github/workflows/bundle.yml`). The dev shell's dx works for `dx serve` and `dx build`.
 
 To build a `.app` bundle: `cd ui && dx bundle --desktop --release --package-types macos`. It is ad-hoc signed and not notarized. Keep it out of `/Applications`: it has the installed app's bundle ID, and auto-update targets that path. Launch its binary directly, `"$APP/Contents/MacOS/Datum"`, so `DATUM_CONNECT_REPO` carries over; `open` does not pass shell variables.
 
@@ -62,18 +61,18 @@ A share keeps its ticket across restarts; **New ticket** in its menu replaces it
 
 ## Linux, including headless
 
-The flake's dev shell provides Rust, `dx`, WebKitGTK, and GTK:
+Build inside the dev shell, from `ui/`:
 
 ```bash
-nix develop -c dx build --platform desktop   # run from ui/
+nix develop -c dx build --platform desktop
 ```
 
-The dev shell lacks two runtime libraries. Supply them from the flake's nixpkgs:
+The dev shell lacks two runtime libraries. Take them from the flake's nixpkgs, so they match the shell:
 
 - `libxdo`, needed to link: `LIBRARY_PATH=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#xdotool)/lib`
 - `libayatana-appindicator`, needed for the tray icon at startup: add its `lib` directory to `LD_LIBRARY_PATH`.
 
-To run under Xvfb, WebKit needs software EGL from the same nixpkgs as the build:
+To run under Xvfb, WebKit needs software EGL from the same nixpkgs:
 
 ```bash
 MESA=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#mesa)
@@ -83,9 +82,13 @@ DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 \
   target/dx/Datum/debug/linux/app/Datum
 ```
 
-Drive it with `xdotool` and capture it with `import -window root`. Give `xdotool type` a `--delay` of 50 ms or more, or WebKit drops repeated keystrokes.
+Store paths built with `--no-link` can be garbage-collected. If the app fails again with "Could not create default EGL display", rebuild them.
+
+Drive the app with `xdotool` and capture it with `import -window root`. Give `xdotool type` a `--delay` of 50 ms or more, or WebKit drops repeated keystrokes.
 
 ## Checks before committing
+
+Inside the dev shell:
 
 ```bash
 cargo fmt --check --all
@@ -93,4 +96,4 @@ cargo check --locked
 cargo test -p lib --locked     # local tunnel tests use the public iroh relays
 ```
 
-After adding Tailwind classes, regenerate the stylesheet from `ui/`: `npx @tailwindcss/cli -i ./theme.css -o ./assets/tailwind.css`. Commit only the rules your change needs; Tailwind also picks up ordinary words in Rust source, such as `running`.
+After adding Tailwind classes, regenerate the stylesheet from `ui/` (Node comes from the dev shell): `npx @tailwindcss/cli -i ./theme.css -o ./assets/tailwind.css`. Commit only the rules your change needs; Tailwind also picks up ordinary words in Rust source, such as `running`.
