@@ -88,6 +88,7 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
     let tunnels = state.local_tunnel_list();
     let mut renaming = use_signal(|| None::<LocalTunnel>);
     let mut deleting = use_signal(|| None::<LocalTunnel>);
+    let mut rotating = use_signal(|| None::<LocalTunnel>);
 
     if show_heading && tunnels().is_empty() {
         return rsx! {};
@@ -110,12 +111,14 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
                         tunnel,
                         on_rename: move |t| renaming.set(Some(t)),
                         on_delete: move |t| deleting.set(Some(t)),
+                        on_new_ticket: move |t| rotating.set(Some(t)),
                     }
                 }
             }
         }
         RenameLocalTunnelDialog { tunnel: renaming, on_close: move |_| renaming.set(None) }
         DeleteLocalTunnelDialog { tunnel: deleting, on_close: move |_| deleting.set(None) }
+        NewTicketDialog { tunnel: rotating, on_close: move |_| rotating.set(None) }
     }
 }
 
@@ -124,6 +127,7 @@ fn LocalTunnelCard(
     tunnel: LocalTunnel,
     on_rename: EventHandler<LocalTunnel>,
     on_delete: EventHandler<LocalTunnel>,
+    on_new_ticket: EventHandler<LocalTunnel>,
 ) -> Element {
     let state = consume_context::<AppState>();
     let LocalTicketTarget(mut ticket_target) = consume_context::<LocalTicketTarget>();
@@ -180,7 +184,7 @@ fn LocalTunnelCard(
                     _ => rsx! {
                         Row {
                             icon: "power-cable",
-                            text: "Stopped. Turn on to get a new ticket.",
+                            text: "Stopped. Turn on to share again.",
                             muted: true,
                         }
                     },
@@ -251,12 +255,14 @@ fn LocalTunnelCard(
         LocalTunnelKind::Connect { ticket, .. } => Some(ticket.clone()),
         _ => None,
     };
-    let first_index = usize::from(show_ticket)
-        + usize::from(open_url.is_some())
-        + usize::from(connect_ticket.is_some());
+    let open_index = usize::from(show_ticket);
+    let copy_index = open_index + usize::from(open_url.is_some());
+    let new_ticket_index = copy_index + usize::from(connect_ticket.is_some());
+    let rename_index = new_ticket_index + usize::from(is_share);
     let id_for_ticket = tunnel.id.clone();
     let tunnel_for_rename = tunnel.clone();
     let tunnel_for_delete = tunnel.clone();
+    let tunnel_for_new_ticket = tunnel.clone();
 
     rsx! {
         div { class: "bg-tunnel-card-background rounded-lg border border-app-border shadow-card relative",
@@ -309,7 +315,7 @@ fn LocalTunnelCard(
                             if let Some(url) = open_url {
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "open".to_string()),
-                                    index: use_signal(move || usize::from(show_ticket)),
+                                    index: use_signal(move || open_index),
                                     disabled: use_signal(|| false),
                                     on_select: move |_| {
                                         let _ = that(&url);
@@ -320,7 +326,7 @@ fn LocalTunnelCard(
                             if let Some(ticket) = connect_ticket {
                                 DropdownMenuItem::<String> {
                                     value: use_signal(|| "copy".to_string()),
-                                    index: use_signal(move || first_index - 1),
+                                    index: use_signal(move || copy_index),
                                     disabled: use_signal(|| false),
                                     on_select: move |_| {
                                         if let Err(error) = copy_to_clipboard(&ticket) {
@@ -330,9 +336,18 @@ fn LocalTunnelCard(
                                     "Copy ticket"
                                 }
                             }
+                            if is_share {
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "new-ticket".to_string()),
+                                    index: use_signal(move || new_ticket_index),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| on_new_ticket.call(tunnel_for_new_ticket.clone()),
+                                    "New ticket…"
+                                }
+                            }
                             DropdownMenuItem::<String> {
                                 value: use_signal(|| "rename".to_string()),
-                                index: use_signal(move || first_index),
+                                index: use_signal(move || rename_index),
                                 disabled: use_signal(|| false),
                                 on_select: move |_| on_rename.call(tunnel_for_rename.clone()),
                                 "Rename"
@@ -340,7 +355,7 @@ fn LocalTunnelCard(
                             DropdownMenuSeparator {}
                             DropdownMenuItem::<String> {
                                 value: use_signal(|| "delete".to_string()),
-                                index: use_signal(move || first_index + 1),
+                                index: use_signal(move || rename_index + 1),
                                 disabled: use_signal(|| false),
                                 on_select: move |_| on_delete.call(tunnel_for_delete.clone()),
                                 destructive: true,
@@ -497,8 +512,9 @@ pub fn LocalTicketDialog() -> Element {
                                     }
                                 }
                                 div { class: "text-1xs text-foreground/60 leading-relaxed",
-                                    "Anyone with this ticket can pair until you turn the share off, up to four devices. "
-                                    "It contains this computer's IP addresses. Turning the share off and on makes a new ticket."
+                                    "Anyone with this ticket can pair while the share is on, up to four devices at a time. "
+                                    "It keeps working when the share restarts; use New ticket to cut off every device that has it. "
+                                    "It contains this computer's IP addresses."
                                 }
                                 if !tunnel.devices.is_empty() {
                                     div { class: "border-t border-tunnel-card-border pt-3 space-y-1",
@@ -677,6 +693,57 @@ fn DeleteLocalTunnelDialog(
                         onclick: move |_| {
                             state.local_tunnels().remove(&id);
                             on_close.call(());
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Confirms giving a share a new ticket, which cuts off devices holding the
+/// old one. A running share then shows its new ticket.
+#[component]
+fn NewTicketDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandler<()>) -> Element {
+    let state = consume_context::<AppState>();
+    let LocalTicketTarget(mut ticket_target) = consume_context::<LocalTicketTarget>();
+    let Some(current) = tunnel() else {
+        return rsx! {};
+    };
+    let message = format!(
+        "Give \"{}\" a new ticket? Devices using the current ticket lose access and must scan the new one.",
+        current.name
+    );
+    let id = current.id.clone();
+    let running = current.status.is_active();
+
+    rsx! {
+        DialogRoot {
+            open: true,
+            on_open_change: move |open: bool| {
+                if !open {
+                    on_close.call(());
+                }
+            },
+            is_modal: true,
+            DialogContent {
+                DialogTitle { "New ticket" }
+                p { class: "mt-4 mb-6 text-sm text-foreground/80 max-w-md", "{message}" }
+                div { class: "flex items-center gap-2.5 justify-end",
+                    Button {
+                        kind: ButtonKind::Ghost,
+                        text: "Cancel",
+                        onclick: move |_| on_close.call(()),
+                    }
+                    Button {
+                        kind: ButtonKind::Primary,
+                        text: "New ticket",
+                        onclick: move |_| {
+                            state.local_tunnels().new_ticket(&id);
+                            on_close.call(());
+                            if running {
+                                ticket_target.set(Some(id.clone()));
+                            }
                         },
                     }
                 }

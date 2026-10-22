@@ -11,7 +11,7 @@ resolver = "2"
 iroh-proxy-utils = "0.3"
 # Project-less local tunnels: the same share/dial code `datumctl connect local`
 # and the Android app use. Pinned until datum-cloud/connect publishes it.
-connect-share = { git = "https://github.com/datum-cloud/connect", rev = "e56042c02c011d72fcbc569f29d487d9d1c4ef97" }
+connect-share = { git = "https://github.com/datum-cloud/connect", rev = "677028c94119d4b92be2cd8de2f99a86dbb286ab" }
 lib = { path = "lib" }
 # n0-snafu 0.2.2 requires ^0.7.0 but color-backtrace 0.7.3 removed
 # `is_dependency_code` which n0-snafu uses. This constraint intersects with
@@ -64,7 +64,7 @@ sentry = { version = "0.48.2", features = ["tracing"] }
 # [patch] does not carry over from a dependency's workspace.
 [patch.crates-io]
 h3 = { git = "https://github.com/hyperium/h3", rev = "0e54a16df76102809ad99b03663b559dfc203917" }
-h3-datagram = { git = "https://github.com/datum-cloud/connect", rev = "e56042c02c011d72fcbc569f29d487d9d1c4ef97" }
+h3-datagram = { git = "https://github.com/datum-cloud/connect", rev = "677028c94119d4b92be2cd8de2f99a86dbb286ab" }
 
 [profile]
 
