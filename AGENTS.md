@@ -54,7 +54,7 @@ Local tunnels pair devices with a ticket through `connect-share`. They need no D
 
 1. Start something to share: `python3 -m http.server 8000`.
 2. On the login screen, click **Continue without an account**.
-3. Click **Add New**, choose **Share with devices**, and enter `127.0.0.1:8000`. The app shows a QR code and a `DCSHARE2…` ticket.
+3. Click **Add New**, choose **Share with devices**, and enter `127.0.0.1:8000`. The app shows a QR code and a `DATUMTUN1…` ticket.
 4. To connect back, choose **Add New**, then **Open a ticket**, paste the ticket, and pick a local port. The service opens at `http://127.0.0.1:PORT`.
 
 The other side can also be the Datum Connect Android app (scan the QR code), `datumctl connect dial TICKET`, or a second app instance launched with a different `DATUM_CONNECT_REPO`.

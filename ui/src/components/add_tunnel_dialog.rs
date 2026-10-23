@@ -446,7 +446,7 @@ pub fn AddTunnelDialog(
                                 textarea {
                                     id: "connect-ticket",
                                     class: if ticket_invalid { "w-full h-16 resize-none rounded-lg border border-alert-red-dark bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-alert-red-dark" } else { "w-full h-16 resize-none rounded-lg border border-app-border bg-card-background px-2 py-2 font-mono text-1xs text-foreground placeholder:text-form-description focus:outline-none focus:ring-2 focus:ring-app-border" },
-                                    placeholder: "DCSHARE2…",
+                                    placeholder: "DATUMTUN1…",
                                     spellcheck: "false",
                                     autocapitalize: "off",
                                     autocomplete: "off",

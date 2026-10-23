@@ -212,9 +212,10 @@ fn LocalTunnelCard(
                     LocalTunnelStatus::Starting => rsx! {
                         Row { icon: "loader-circle", spin: true, text: "Pairing…" }
                     },
-                    LocalTunnelStatus::Open { local_addr } => {
+                    LocalTunnelStatus::Open { local_addr, unreachable } => {
                         let url = format!("http://{local_addr}");
                         let url_for_click = url.clone();
+                        let unreachable = unreachable.clone();
                         rsx! {
                             div { class: "flex items-center gap-2.5 text-icon-tunnel",
                                 Icon {
@@ -238,6 +239,13 @@ fn LocalTunnelCard(
                                         .unwrap_or_else(|| "Path appears once traffic flows".to_string())
                                 }
                             }
+                            if let Some(error) = unreachable {
+                                ErrorRow {
+                                    text: format!(
+                                        "The last request didn't reach the shared service: {error}. It may be down on the sharing device, or the share may point at the wrong port."
+                                    ),
+                                }
+                            }
                         }
                     }
                     LocalTunnelStatus::Failed(error) => rsx! {
@@ -254,7 +262,7 @@ fn LocalTunnelCard(
     // Menu items, numbered in display order for keyboard navigation.
     let show_ticket = is_share && matches!(tunnel.status, LocalTunnelStatus::Sharing { .. });
     let open_url = match &tunnel.status {
-        LocalTunnelStatus::Open { local_addr } => Some(format!("http://{local_addr}")),
+        LocalTunnelStatus::Open { local_addr, .. } => Some(format!("http://{local_addr}")),
         _ => None,
     };
     let connect_ticket = match &tunnel.kind {
@@ -679,7 +687,7 @@ fn LocalPortDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandl
             let initial = match &t.kind {
                 LocalTunnelKind::Connect { port, .. } if *port != 0 => port.to_string(),
                 LocalTunnelKind::Connect { .. } => match &t.status {
-                    LocalTunnelStatus::Open { local_addr } => local_addr
+                    LocalTunnelStatus::Open { local_addr, .. } => local_addr
                         .parse::<SocketAddr>()
                         .map(|addr| addr.port().to_string())
                         .unwrap_or_default(),

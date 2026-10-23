@@ -32,7 +32,11 @@ use crate::{Repo, TcpProxyData};
 pub const MAX_NAME: usize = 64;
 /// Distinct devices that may pair with one share, as with `datumctl connect local`.
 const MAX_PEERS: usize = 4;
-const TICKET_PREFIX: &str = "DCSHARE2";
+/// Ticket prefixes this app reads. Tickets now start with `DATUMTUN1`; the
+/// older `DCSHARE2` form is still accepted, as tickets already handed out and
+/// saved by other devices keep working. Longest first, so the newer form wins
+/// if text somehow holds both.
+const TICKET_PREFIXES: [&str; 2] = ["DATUMTUN1", "DCSHARE2"];
 const FILE_FORMAT: &str = "datum-connect-local-tunnels";
 const FILE_VERSION: u32 = 1;
 
@@ -59,6 +63,10 @@ pub enum LocalTunnelStatus {
     /// A connection is open at `local_addr`, for example `127.0.0.1:8080`.
     Open {
         local_addr: String,
+        /// Why the last forwarded connection failed: the sharer is
+        /// reachable but could not reach its own service, or refused this
+        /// device. Cleared when a connection is forwarded again.
+        unreachable: Option<String>,
     },
     Failed(String),
 }
@@ -153,12 +161,17 @@ pub struct TicketInfo {
 /// Finds a ticket in pasted text, such as a full `datumctl connect dial` command.
 pub fn extract_ticket(text: &str) -> Option<String> {
     let upper = text.to_ascii_uppercase();
-    let start = upper.find(TICKET_PREFIX)?;
-    let ticket: String = upper[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_uppercase() || ('2'..='7').contains(c))
-        .collect();
-    (ticket.len() > TICKET_PREFIX.len()).then_some(ticket)
+    TICKET_PREFIXES.iter().find_map(|prefix| {
+        let start = upper.find(prefix)?;
+        // Only the base32 body follows the prefix. Scanning from the end of
+        // the prefix keeps a digit in the prefix, such as `DATUMTUN1`, from
+        // being read as the start of the body.
+        let body: String = upper[start + prefix.len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_uppercase() || ('2'..='7').contains(c))
+            .collect();
+        (!body.is_empty()).then(|| format!("{prefix}{body}"))
+    })
 }
 
 /// Parses a ticket. The error is a message for the user.
@@ -314,7 +327,7 @@ impl Inner {
                     _ => None,
                 };
                 let bound = match &t.status {
-                    LocalTunnelStatus::Open { local_addr } => local_addr
+                    LocalTunnelStatus::Open { local_addr, .. } => local_addr
                         .parse::<SocketAddr>()
                         .ok()
                         .map(|addr| addr.port()),
@@ -680,9 +693,23 @@ impl LocalTunnels {
                 self.update(id, token, |tunnel| {
                     tunnel.status = LocalTunnelStatus::Open {
                         local_addr: ready.local_addr.to_string(),
+                        unreachable: None,
                     };
                 });
             }
+            DialEvent::ConnectFailed(error) => {
+                warn!(%error, "local tunnel: connection not forwarded");
+                self.update(id, token, |tunnel| {
+                    if let LocalTunnelStatus::Open { unreachable, .. } = &mut tunnel.status {
+                        *unreachable = Some(error);
+                    }
+                });
+            }
+            DialEvent::Forwarded => self.update(id, token, |tunnel| {
+                if let LocalTunnelStatus::Open { unreachable, .. } = &mut tunnel.status {
+                    *unreachable = None;
+                }
+            }),
             DialEvent::Path(path) => self.update(id, token, |tunnel| {
                 tunnel.path = Some(path.into());
             }),
@@ -962,9 +989,15 @@ mod tests {
     #[test]
     fn extracts_ticket_from_command() {
         assert_eq!(
+            extract_ticket("datumctl connect dial datumtun1abc234 --port 1"),
+            Some("DATUMTUN1ABC234".to_string())
+        );
+        // Tickets handed out before the rename still work.
+        assert_eq!(
             extract_ticket("datumctl connect dial dcshare2abc234 --port 1"),
             Some("DCSHARE2ABC234".to_string())
         );
+        assert_eq!(extract_ticket("DATUMTUN1"), None);
         assert_eq!(extract_ticket("DCSHARE2"), None);
         assert_eq!(extract_ticket("nothing here"), None);
     }
@@ -1047,7 +1080,7 @@ mod tests {
 
         let connect = tunnels.add_connect(&ticket, "", Some(0)).unwrap();
         let local_addr = wait_for(&tunnels, &mut changes, &connect, |status| match status {
-            LocalTunnelStatus::Open { local_addr } => Some(local_addr.clone()),
+            LocalTunnelStatus::Open { local_addr, .. } => Some(local_addr.clone()),
             _ => None,
         })
         .await;
@@ -1120,7 +1153,7 @@ mod tests {
         })
         .await;
         let open = |status: &LocalTunnelStatus| match status {
-            LocalTunnelStatus::Open { local_addr } => Some(local_addr.clone()),
+            LocalTunnelStatus::Open { local_addr, .. } => Some(local_addr.clone()),
             _ => None,
         };
 
@@ -1190,12 +1223,12 @@ mod tests {
         let second = wait_for(&tunnels, &mut changes, &share, sharing).await;
         assert_eq!(endpoint(&second), endpoint(&first));
         let saved = std::fs::read_to_string(dir.path().join(LocalTunnels::FILE)).unwrap();
-        assert!(saved.contains("\"key\": \"DCKEY1"), "{saved}");
+        assert!(saved.contains("\"key\": \"DATUMKEY1"), "{saved}");
 
         // The ticket from before the restart still connects.
         let connect = tunnels.add_connect(&first, "", Some(0)).unwrap();
         let open = |status: &LocalTunnelStatus| match status {
-            LocalTunnelStatus::Open { local_addr } => Some(local_addr.clone()),
+            LocalTunnelStatus::Open { local_addr, .. } => Some(local_addr.clone()),
             _ => None,
         };
         let local_addr = wait_for(&tunnels, &mut changes, &connect, open).await;
@@ -1227,6 +1260,90 @@ mod tests {
         .await
         .expect("stale ticket settled");
         assert!(failed, "the old ticket still connected");
+        tunnels.stop_all();
+    }
+
+    /// A share of a service that is down at the sharer: the connection
+    /// still opens, and its status says why requests fail.
+    #[tokio::test]
+    async fn unreachable_shared_service_shows_on_the_connection() {
+        // Reserve then release a port, leaving nothing listening on it.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::open_or_create(dir.path()).await.unwrap();
+        let tunnels = LocalTunnels::load(&repo).await.unwrap();
+        let mut changes = tunnels.subscribe();
+        let share = tunnels
+            .add_share("dead", &format!("127.0.0.1:{dead}"))
+            .unwrap();
+        let ticket = wait_for(&tunnels, &mut changes, &share, |status| match status {
+            LocalTunnelStatus::Sharing { ticket } => Some(ticket.clone()),
+            _ => None,
+        })
+        .await;
+        let connect = tunnels.add_connect(&ticket, "", Some(0)).unwrap();
+        let local_addr = wait_for(&tunnels, &mut changes, &connect, |status| match status {
+            LocalTunnelStatus::Open {
+                local_addr,
+                unreachable: None,
+            } => Some(local_addr.clone()),
+            _ => None,
+        })
+        .await;
+
+        // A request through the connection cannot reach the dead service.
+        let _stream = tokio::net::TcpStream::connect(&local_addr).await.unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let tunnel = tunnels
+                    .list()
+                    .into_iter()
+                    .find(|t| t.id == connect)
+                    .unwrap();
+                if let LocalTunnelStatus::Open {
+                    unreachable: Some(error),
+                    ..
+                } = tunnel.status
+                {
+                    return error;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("connection reported the failure");
+        assert!(!error.is_empty());
+
+        // The service comes back on its port; the next request clears the
+        // warning instead of leaving it up for the rest of the session.
+        let service = std::net::TcpListener::bind(("127.0.0.1", dead)).unwrap();
+        std::thread::spawn(move || {
+            for stream in service.incoming().flatten() {
+                drop(stream);
+            }
+        });
+        let _stream = std::net::TcpStream::connect(&local_addr).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let tunnel = tunnels
+                    .list()
+                    .into_iter()
+                    .find(|t| t.id == connect)
+                    .unwrap();
+                if let LocalTunnelStatus::Open {
+                    unreachable: None, ..
+                } = tunnel.status
+                {
+                    return;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("connection cleared the warning");
         tunnels.stop_all();
     }
 
