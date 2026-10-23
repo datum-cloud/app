@@ -46,6 +46,7 @@ fn svg_content_for(name: &str) -> Option<&'static str> {
         "search" => Some(include_str!("../../assets/icons/search.svg")),
         "move-right" => Some(include_str!("../../assets/icons/move-right.svg")),
         "check" => Some(include_str!("../../assets/icons/check.svg")),
+        "camera" => Some(include_str!("../../assets/icons/camera.svg")),
         _ => None,
     }
 }

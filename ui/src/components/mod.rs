@@ -10,6 +10,7 @@ mod icon;
 mod installing_splash;
 mod invite_user_dialog;
 mod splash;
+mod ticket_scanner;
 mod typography;
 mod update_toast;
 
@@ -22,6 +23,7 @@ pub use icon::{Icon, IconSource};
 pub use installing_splash::InstallingSplash;
 pub use invite_user_dialog::InviteUserDialog;
 pub use splash::Splash;
+pub use ticket_scanner::TicketScanner;
 #[allow(unused)]
 pub use typography::Subhead;
 #[allow(unused)]

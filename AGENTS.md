@@ -44,6 +44,8 @@ CI bundles with dx 0.7.2, because `dx bundle` path handling regressed in 0.7.3 a
 
 To build a `.app` bundle: `cd ui && dx bundle --desktop --release --package-types macos`. It is ad-hoc signed and not notarized. Keep it out of `/Applications`: it has the installed app's bundle ID, and auto-update targets that path. Launch its binary directly, `"$APP/Contents/MacOS/Datum"`, so `DATUM_CONNECT_REPO` carries over; `open` does not pass shell variables.
 
+After a local bundle, run `ui/packaging/macos/add-camera-usage-description.sh ui/dist/Datum.app` so the ticket QR scanner can use the camera; without it macOS denies the camera and the scanner falls back to pasting the ticket. CI applies the same script during DMG packaging.
+
 Closing the window only hides it. Reopen it from the tray menu's **Show Window**, and quit with Cmd+Q. Quit the installed app first to avoid two tray icons.
 
 ## Try local tunnels without an account

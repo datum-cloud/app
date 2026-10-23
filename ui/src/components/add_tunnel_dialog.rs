@@ -11,10 +11,10 @@ use crate::{
     components::{
         dialog::{DialogContent, DialogRoot, DialogTitle},
         input::Input,
-        Button, ButtonKind,
+        Button, ButtonKind, IconSource, TicketScanner,
     },
     state::AppState,
-    util::project_quotas_portal_url,
+    util::{project_quotas_portal_url, read_ticket_from_clipboard},
     views::LocalTicketTarget,
 };
 
@@ -108,6 +108,8 @@ pub fn AddTunnelDialog(
     let mut kind = use_signal(|| NewTunnelKind::Share);
     let mut ticket = use_signal(String::new);
     let mut port = use_signal(String::new);
+    let mut scanning = use_signal(|| false);
+    let mut paste_error = use_signal(|| None::<String>);
 
     let state_for_kind = state.clone();
     let can_publish = move || {
@@ -457,6 +459,31 @@ pub fn AddTunnelDialog(
                                 div { class: if ticket_invalid { "text-1xs text-alert-red-dark" } else { "text-1xs text-form-description" },
                                     "{ticket_hint}"
                                 }
+                                div { class: "flex items-center gap-2",
+                                    Button {
+                                        kind: ButtonKind::Ghost,
+                                        leading_icon: Some(IconSource::Named("camera".into())),
+                                        text: "Scan QR code",
+                                        onclick: move |_| {
+                                            paste_error.set(None);
+                                            scanning.set(true);
+                                        },
+                                    }
+                                    Button {
+                                        kind: ButtonKind::Ghost,
+                                        text: "Paste ticket",
+                                        onclick: move |_| match read_ticket_from_clipboard() {
+                                            Ok(found) => {
+                                                paste_error.set(None);
+                                                ticket.set(found);
+                                            }
+                                            Err(error) => paste_error.set(Some(error)),
+                                        },
+                                    }
+                                }
+                                if let Some(error) = paste_error() {
+                                    div { class: "text-1xs text-alert-red-dark", "{error}" }
+                                }
                             }
                             div { class: "grid grid-cols-[1fr_9rem] gap-3 items-start",
                                 Input {
@@ -537,6 +564,15 @@ pub fn AddTunnelDialog(
                         }
                     }
                 }
+            }
+        }
+        if current_kind == NewTunnelKind::Connect && scanning() {
+            TicketScanner {
+                on_found: move |text: String| {
+                    scanning.set(false);
+                    ticket.set(extract_ticket(&text).unwrap_or(text));
+                },
+                on_cancel: move |_| scanning.set(false),
             }
         }
     }
