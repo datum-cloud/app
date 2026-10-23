@@ -841,6 +841,26 @@ impl LocalTunnels {
         Ok(())
     }
 
+    /// Moves tunnel `id` to position `to` in the list, clamped to the ends.
+    /// The list order is the order the UI shows; running sessions are keyed
+    /// by ID, so they keep running across the move.
+    pub fn reorder(&self, id: &str, to: usize) -> std::result::Result<(), String> {
+        let mut inner = self.lock();
+        let Some(from) = inner.tunnels.iter().position(|t| t.id == id) else {
+            return Err("That tunnel no longer exists".to_string());
+        };
+        let to = to.min(inner.tunnels.len() - 1);
+        if from == to {
+            return Ok(());
+        }
+        let tunnel = inner.tunnels.remove(from);
+        inner.tunnels.insert(to, tunnel);
+        self.save(&inner);
+        drop(inner);
+        self.notify();
+        Ok(())
+    }
+
     /// Stops every running tunnel, for example before the app quits.
     pub fn stop_all(&self) {
         let mut inner = self.lock();
@@ -962,7 +982,7 @@ async fn load_or_create_key(path: &Path) -> Result<SecretKey> {
 
 /// Writes `data` to `path` through a temporary file, so a crash mid-write
 /// leaves the old copy, with permissions limited to this user.
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("tmp");
     let mut options = std::fs::OpenOptions::new();
@@ -1053,6 +1073,32 @@ mod tests {
             }
         );
         assert_eq!(tunnels.device_key.public(), restored.device_key.public());
+    }
+
+    #[tokio::test]
+    async fn reorders_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::open_or_create(dir.path()).await.unwrap();
+        let tunnels = LocalTunnels::load(&repo).await.unwrap();
+        let a = tunnels.add_share("a", "127.0.0.1:1").unwrap();
+        let b = tunnels.add_share("b", "127.0.0.1:2").unwrap();
+        let c = tunnels.add_share("c", "127.0.0.1:3").unwrap();
+        tunnels.stop_all();
+        let order = |tunnels: &LocalTunnels| -> Vec<String> {
+            tunnels.list().into_iter().map(|t| t.id).collect()
+        };
+        assert_eq!(order(&tunnels), [a.clone(), b.clone(), c.clone()]);
+
+        tunnels.reorder(&c, 0).unwrap();
+        assert_eq!(order(&tunnels), [c.clone(), a.clone(), b.clone()]);
+
+        // Positions past the end land on it, and unknown IDs are an error.
+        tunnels.reorder(&c, 99).unwrap();
+        assert_eq!(order(&tunnels), [a.clone(), b.clone(), c.clone()]);
+        assert!(tunnels.reorder("missing", 0).is_err());
+
+        let restored = LocalTunnels::load(&repo).await.unwrap();
+        assert_eq!(order(&restored), [a, b, c]);
     }
 
     #[tokio::test]

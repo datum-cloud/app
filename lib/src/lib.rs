@@ -11,6 +11,7 @@ pub mod project_control_plane;
 mod repo;
 mod state;
 pub mod tunnel_activity;
+pub mod tunnel_order;
 pub mod tunnels;
 pub mod update;
 
@@ -27,6 +28,7 @@ pub use project_control_plane::{
 pub use repo::Repo;
 pub use state::*;
 pub use tunnel_activity::{TunnelActivityEntry, TunnelActivityTracker};
+pub use tunnel_order::TunnelOrder;
 pub use tunnels::{
     CONNECTOR_ADVERTISEMENT_QUOTA_RESOURCE_TYPE, HTTPPROXY_QUOTA_RESOURCE_TYPE, TunnelCreateQuota,
     TunnelDeleteOutcome, TunnelService, TunnelSummary, tunnel_create_quota_from_buckets,
