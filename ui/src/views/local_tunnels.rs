@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 
 use dioxus::events::FormEvent;
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use lib::{
     local_tunnels::{parse_ticket, LocalPath},
@@ -20,7 +21,7 @@ use crate::{
             DropdownMenuTrigger,
         },
         input::Input,
-        Button, ButtonKind, Icon, IconSource, Switch, SwitchThumb,
+        target_index, Button, ButtonKind, DragReorder, Icon, IconSource, Switch, SwitchThumb,
     },
     state::AppState,
     util::copy_to_clipboard,
@@ -92,11 +93,15 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
     let mut deleting = use_signal(|| None::<LocalTunnel>);
     let mut rotating = use_signal(|| None::<LocalTunnel>);
     let mut porting = use_signal(|| None::<LocalTunnel>);
+    let drag = DragReorder::new("local");
 
     if show_heading && tunnels().is_empty() {
         return rsx! {};
     }
 
+    let state_for_drop = state.clone();
+    let list = tunnels();
+    let len = list.len();
     rsx! {
         div { class: if show_heading { "mt-8" } else { "" },
             if show_heading {
@@ -107,11 +112,39 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
                     }
                 }
             }
-            div { class: "space-y-5",
-                for tunnel in tunnels() {
+            div {
+                class: if drag.is_dragging() { "space-y-5 select-none cursor-grabbing" } else { "space-y-5" },
+                "data-reorder-list": "local",
+                onmousemove: move |event| {
+                    let point = event.client_coordinates();
+                    let held = event.held_buttons().contains(MouseButton::Primary);
+                    if drag.pointer_moved(point.x, point.y, held) {
+                        event.prevent_default();
+                    }
+                },
+                onmouseup: move |_| {
+                    let Some((id, insertion)) = drag.release() else {
+                        return;
+                    };
+                    let list = tunnels();
+                    let Some(from) = list.iter().position(|tunnel| tunnel.id == id) else {
+                        return;
+                    };
+                    if let Err(error) = state_for_drop
+                        .local_tunnels()
+                        .reorder(&id, target_index(from, insertion))
+                    {
+                        tracing::warn!("reordering local tunnels failed: {error}");
+                    }
+                },
+                onmouseleave: move |_| drag.cancel(),
+                for (index, tunnel) in list.into_iter().enumerate() {
                     LocalTunnelCard {
                         key: "{tunnel.id}",
                         tunnel,
+                        index,
+                        last: index + 1 == len,
+                        drag,
                         on_rename: move |t| renaming.set(Some(t)),
                         on_delete: move |t| deleting.set(Some(t)),
                         on_new_ticket: move |t| rotating.set(Some(t)),
@@ -130,6 +163,11 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
 #[component]
 fn LocalTunnelCard(
     tunnel: LocalTunnel,
+    /// This card's place in the list, for the insertion line.
+    index: usize,
+    /// Whether this is the last card, so a drop past it shows below.
+    last: bool,
+    drag: DragReorder,
     on_rename: EventHandler<LocalTunnel>,
     on_delete: EventHandler<LocalTunnel>,
     on_new_ticket: EventHandler<LocalTunnel>,
@@ -141,6 +179,8 @@ fn LocalTunnelCard(
     let is_share = matches!(tunnel.kind, LocalTunnelKind::Share { .. });
     let active = tunnel.status.is_active();
     let starting = tunnel.status == LocalTunnelStatus::Starting;
+    let dragging = drag.dragging().as_deref() == Some(tunnel.id.as_str());
+    let id_for_drag = tunnel.id.clone();
 
     let id_for_toggle = tunnel.id.clone();
     let state_for_toggle = state.clone();
@@ -281,8 +321,31 @@ fn LocalTunnelCard(
     let tunnel_for_port = tunnel.clone();
 
     rsx! {
-        div { class: "bg-tunnel-card-background rounded-lg border border-app-border shadow-card relative",
-            div { class: "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg",
+        div {
+            class: if dragging {
+                "bg-tunnel-card-background rounded-lg border border-app-border shadow-card relative opacity-60"
+            } else {
+                "bg-tunnel-card-background rounded-lg border border-app-border shadow-card relative"
+            },
+            "data-reorder-card": "",
+            if drag.drops_before(index) {
+                div { class: "pointer-events-none absolute inset-x-0 -top-3 h-0.5 rounded-full bg-icon-tunnel" }
+            }
+            if last && drag.drops_at_end(index + 1) {
+                div { class: "pointer-events-none absolute inset-x-0 -bottom-3 h-0.5 rounded-full bg-icon-tunnel" }
+            }
+            div {
+                class: if drag.is_dragging() {
+                    "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg cursor-grabbing select-none"
+                } else {
+                    "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg cursor-grab select-none"
+                },
+                onmousedown: move |event| {
+                    if event.held_buttons().contains(MouseButton::Primary) {
+                        let point = event.client_coordinates();
+                        drag.press(&id_for_drag, point.x, point.y);
+                    }
+                },
                 div { class: "flex items-center gap-2 min-w-0",
                     h2 { class: "text-md font-normal text-foreground truncate", "{tunnel.name}" }
                     span { class: "shrink-0 rounded-full border border-app-border px-2 py-0.5 text-[10px] text-foreground/60",
