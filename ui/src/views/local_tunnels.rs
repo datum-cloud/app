@@ -2,6 +2,8 @@
 //! with using a ticket, and connections to services other devices share.
 //! None of this needs a Datum account, so it is also reachable logged out.
 
+use std::net::SocketAddr;
+
 use dioxus::events::FormEvent;
 use dioxus::prelude::*;
 use lib::{
@@ -89,6 +91,7 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
     let mut renaming = use_signal(|| None::<LocalTunnel>);
     let mut deleting = use_signal(|| None::<LocalTunnel>);
     let mut rotating = use_signal(|| None::<LocalTunnel>);
+    let mut porting = use_signal(|| None::<LocalTunnel>);
 
     if show_heading && tunnels().is_empty() {
         return rsx! {};
@@ -112,6 +115,7 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
                         on_rename: move |t| renaming.set(Some(t)),
                         on_delete: move |t| deleting.set(Some(t)),
                         on_new_ticket: move |t| rotating.set(Some(t)),
+                        on_port: move |t| porting.set(Some(t)),
                     }
                 }
             }
@@ -119,6 +123,7 @@ pub fn LocalTunnelList(show_heading: bool) -> Element {
         RenameLocalTunnelDialog { tunnel: renaming, on_close: move |_| renaming.set(None) }
         DeleteLocalTunnelDialog { tunnel: deleting, on_close: move |_| deleting.set(None) }
         NewTicketDialog { tunnel: rotating, on_close: move |_| rotating.set(None) }
+        LocalPortDialog { tunnel: porting, on_close: move |_| porting.set(None) }
     }
 }
 
@@ -128,6 +133,7 @@ fn LocalTunnelCard(
     on_rename: EventHandler<LocalTunnel>,
     on_delete: EventHandler<LocalTunnel>,
     on_new_ticket: EventHandler<LocalTunnel>,
+    on_port: EventHandler<LocalTunnel>,
 ) -> Element {
     let state = consume_context::<AppState>();
     let LocalTicketTarget(mut ticket_target) = consume_context::<LocalTicketTarget>();
@@ -257,12 +263,14 @@ fn LocalTunnelCard(
     };
     let open_index = usize::from(show_ticket);
     let copy_index = open_index + usize::from(open_url.is_some());
-    let new_ticket_index = copy_index + usize::from(connect_ticket.is_some());
+    let port_index = copy_index + usize::from(connect_ticket.is_some());
+    let new_ticket_index = port_index + usize::from(connect_ticket.is_some());
     let rename_index = new_ticket_index + usize::from(is_share);
     let id_for_ticket = tunnel.id.clone();
     let tunnel_for_rename = tunnel.clone();
     let tunnel_for_delete = tunnel.clone();
     let tunnel_for_new_ticket = tunnel.clone();
+    let tunnel_for_port = tunnel.clone();
 
     rsx! {
         div { class: "bg-tunnel-card-background rounded-lg border border-app-border shadow-card relative",
@@ -334,6 +342,15 @@ fn LocalTunnelCard(
                                         }
                                     },
                                     "Copy ticket"
+                                }
+                            }
+                            if !is_share {
+                                DropdownMenuItem::<String> {
+                                    value: use_signal(|| "port".to_string()),
+                                    index: use_signal(move || port_index),
+                                    disabled: use_signal(|| false),
+                                    on_select: move |_| on_port.call(tunnel_for_port.clone()),
+                                    "Local port…"
                                 }
                             }
                             if is_share {
@@ -627,6 +644,111 @@ fn RenameLocalTunnelDialog(
                         maxlength: "64",
                         oninput: move |e: FormEvent| {
                             name.set(e.value());
+                            error.set(None);
+                        },
+                    }
+                    div { class: "flex items-center gap-2.5 justify-start",
+                        Button {
+                            kind: ButtonKind::Primary,
+                            text: "Save",
+                            onclick: move |_| save(),
+                        }
+                        Button {
+                            kind: ButtonKind::Ghost,
+                            text: "Cancel",
+                            onclick: move |_| on_close.call(()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Changes the local port a connection serves on. A running connection
+/// restarts on the new port; empty input lets the system pick. Prefills
+/// the requested port, or the one it is bound to while it runs.
+#[component]
+fn LocalPortDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandler<()>) -> Element {
+    let state = consume_context::<AppState>();
+    let mut port = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+
+    use_effect(move || {
+        if let Some(t) = tunnel() {
+            let initial = match &t.kind {
+                LocalTunnelKind::Connect { port, .. } if *port != 0 => port.to_string(),
+                LocalTunnelKind::Connect { .. } => match &t.status {
+                    LocalTunnelStatus::Open { local_addr } => local_addr
+                        .parse::<SocketAddr>()
+                        .map(|addr| addr.port().to_string())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                },
+                LocalTunnelKind::Share { .. } => String::new(),
+            };
+            port.set(initial);
+            error.set(None);
+        }
+    });
+
+    let Some(current) = tunnel() else {
+        return rsx! {};
+    };
+    let id = current.id.clone();
+    let mut save = move || {
+        let raw = port().trim().to_string();
+        let chosen: u16 = if raw.is_empty() {
+            0
+        } else {
+            match raw.parse() {
+                Ok(port) => port,
+                Err(_) => {
+                    error.set(Some(
+                        "Port must be a number from 1 to 65535, or empty.".to_string(),
+                    ));
+                    return;
+                }
+            }
+        };
+        match state.local_tunnels().set_port(&id, chosen) {
+            Ok(()) => on_close.call(()),
+            Err(message) => error.set(Some(message)),
+        }
+    };
+    let mut save_on_enter = save.clone();
+
+    rsx! {
+        DialogRoot {
+            open: true,
+            on_open_change: move |open: bool| {
+                if !open {
+                    on_close.call(());
+                }
+            },
+            is_modal: true,
+            DialogContent {
+                DialogTitle { "Change local port" }
+                form {
+                    class: "space-y-5 mt-5 w-[380px]",
+                    autocomplete: "off",
+                    onsubmit: move |e: FormEvent| {
+                        e.prevent_default();
+                        save_on_enter();
+                    },
+                    Input {
+                        id: Some("local-tunnel-port".into()),
+                        label: Some("Local port".into()),
+                        value: "{port}",
+                        placeholder: "Automatic",
+                        description: Some(
+                            "The connection restarts on the new port. Leave empty for the system to pick."
+                                .to_string(),
+                        ),
+                        error: error(),
+                        inputmode: "numeric",
+                        oninput: move |e: FormEvent| {
+                            port.set(e.value().chars().filter(char::is_ascii_digit).take(5).collect());
                             error.set(None);
                         },
                     }

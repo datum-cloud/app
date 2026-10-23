@@ -303,6 +303,28 @@ impl Inner {
             .collect()
     }
 
+    /// Ports held or requested by active connections other than `except`.
+    fn used_ports_except(&self, except: &str) -> HashSet<u16> {
+        self.tunnels
+            .iter()
+            .filter(|t| t.id != except && t.status.is_active())
+            .flat_map(|t| {
+                let requested = match &t.kind {
+                    LocalTunnelKind::Connect { port, .. } if *port != 0 => Some(*port),
+                    _ => None,
+                };
+                let bound = match &t.status {
+                    LocalTunnelStatus::Open { local_addr } => local_addr
+                        .parse::<SocketAddr>()
+                        .ok()
+                        .map(|addr| addr.port()),
+                    _ => None,
+                };
+                requested.into_iter().chain(bound)
+            })
+            .collect()
+    }
+
     /// Invalidates the session's callbacks, then cancels it.
     fn end_session(&mut self, id: &str) {
         if let Some(session) = self.sessions.remove(id) {
@@ -421,25 +443,7 @@ impl LocalTunnels {
 
     /// Ports held or requested by active connections.
     pub fn used_ports(&self) -> HashSet<u16> {
-        self.lock()
-            .tunnels
-            .iter()
-            .filter(|t| t.status.is_active())
-            .flat_map(|t| {
-                let requested = match &t.kind {
-                    LocalTunnelKind::Connect { port, .. } if *port != 0 => Some(*port),
-                    _ => None,
-                };
-                let bound = match &t.status {
-                    LocalTunnelStatus::Open { local_addr } => local_addr
-                        .parse::<SocketAddr>()
-                        .ok()
-                        .map(|addr| addr.port()),
-                    _ => None,
-                };
-                requested.into_iter().chain(bound)
-            })
-            .collect()
+        self.lock().used_ports_except("")
     }
 
     /// Adds a share of `address` and starts it. An empty `name` uses
@@ -747,6 +751,39 @@ impl LocalTunnels {
         }
     }
 
+    /// Changes the local port connection `id` serves on. A running
+    /// connection restarts on the new port; a stopped one uses it the
+    /// next time it starts. Port 0 lets the system pick. Returns a
+    /// message for the user on failure.
+    pub fn set_port(&self, id: &str, port: u16) -> std::result::Result<(), String> {
+        let mut inner = self.lock();
+        let taken = inner.used_ports_except(id);
+        let Some(tunnel) = inner.get_mut(id) else {
+            return Err("That tunnel no longer exists".to_string());
+        };
+        let ticket = match tunnel.kind.clone() {
+            LocalTunnelKind::Connect { ticket, .. } => ticket,
+            LocalTunnelKind::Share { .. } => {
+                return Err("Only a connection has a local port".to_string());
+            }
+        };
+        if port != 0 && taken.contains(&port) {
+            return Err(format!(
+                "Port {port} is already in use by another connection"
+            ));
+        }
+        tunnel.kind = LocalTunnelKind::Connect { ticket, port };
+        self.save(&inner);
+        let running = inner.sessions.contains_key(id);
+        drop(inner);
+        if running {
+            self.start(id);
+        } else {
+            self.notify();
+        }
+        Ok(())
+    }
+
     pub fn remove(&self, id: &str) {
         let mut inner = self.lock();
         inner.end_session(id);
@@ -1048,6 +1085,78 @@ mod tests {
         .expect("connection noticed the share stopped");
         assert!(failed.contains("no longer reachable"), "{failed}");
         tunnels.stop_all();
+    }
+
+    /// A connection moves to a changed port, keeps it across restarts, and
+    /// a port another connection holds is refused.
+    #[tokio::test]
+    async fn set_port_moves_a_connection_and_persists() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let service = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let service_addr = service.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = service.accept().await {
+                let _ = stream.write_all(b"hello").await;
+            }
+        });
+
+        // Two distinct free ports: one to move to, one for another tunnel.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let chosen = probe.local_addr().unwrap().port();
+        let other_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let other_port = other_probe.local_addr().unwrap().port();
+        assert_ne!(chosen, other_port);
+        drop((probe, other_probe));
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::open_or_create(dir.path()).await.unwrap();
+        let tunnels = LocalTunnels::load(&repo).await.unwrap();
+        let mut changes = tunnels.subscribe();
+        let share = tunnels.add_share("svc", &service_addr.to_string()).unwrap();
+        let ticket = wait_for(&tunnels, &mut changes, &share, |status| match status {
+            LocalTunnelStatus::Sharing { ticket } => Some(ticket.clone()),
+            _ => None,
+        })
+        .await;
+        let open = |status: &LocalTunnelStatus| match status {
+            LocalTunnelStatus::Open { local_addr } => Some(local_addr.clone()),
+            _ => None,
+        };
+
+        let connect = tunnels.add_connect(&ticket, "", Some(0)).unwrap();
+        wait_for(&tunnels, &mut changes, &connect, open).await;
+
+        tunnels.set_port(&connect, chosen).unwrap();
+        let moved = wait_for(&tunnels, &mut changes, &connect, open).await;
+        assert_eq!(moved, format!("127.0.0.1:{chosen}"));
+        let mut stream = tokio::net::TcpStream::connect(&moved).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(buf, b"hello");
+
+        // Another connection now holds its own port.
+        let other = tunnels
+            .add_connect(&ticket, "second", Some(other_port))
+            .unwrap();
+        wait_for(&tunnels, &mut changes, &other, open).await;
+        assert!(tunnels.set_port(&connect, other_port).is_err());
+        // A share has no local port to change.
+        assert!(tunnels.set_port(&share, 8080).is_err());
+
+        // The new port survives a restart.
+        tunnels.stop_all();
+        let restored = LocalTunnels::load(&repo).await.unwrap();
+        let stored = restored
+            .list()
+            .into_iter()
+            .find(|t| t.id == connect)
+            .unwrap()
+            .kind;
+        match stored {
+            LocalTunnelKind::Connect { port, .. } => assert_eq!(port, chosen),
+            LocalTunnelKind::Share { .. } => panic!("changed into a share"),
+        }
     }
 
     /// A share keeps its ticket across stop and start, and after a new
