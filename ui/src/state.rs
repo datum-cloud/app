@@ -2,7 +2,7 @@ use dioxus::prelude::WritableExt;
 use lib::{
     datum_cloud::{ApiEnv, DatumCloudClient},
     HeartbeatAgent, ListenNode, LocalTunnel, LocalTunnels, Node, Repo, SelectedContext,
-    TunnelActivityTracker, TunnelCreateQuota, TunnelService, TunnelSummary,
+    TunnelActivityTracker, TunnelCreateQuota, TunnelOrder, TunnelService, TunnelSummary,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,10 @@ pub struct AppState {
     local_tunnels: LocalTunnels,
     /// Snapshot of `local_tunnels`, refreshed by the App whenever it changes.
     local_tunnel_list: dioxus::signals::Signal<Vec<LocalTunnel>>,
+    /// The display order of project tunnels, arranged on this computer.
+    tunnel_order: TunnelOrder,
+    /// Bumped whenever `tunnel_order` changes, so the list re-sorts.
+    tunnel_order_revision: dioxus::signals::Signal<u64>,
 }
 
 impl AppState {
@@ -38,10 +42,11 @@ impl AppState {
         let repo_path = Repo::default_location();
         info!(repo_path = %repo_path.display(), "ui: loading repo");
         let repo = Repo::open_or_create(repo_path).await?;
-        let (node, datum, local_tunnels) = tokio::try_join! {
+        let (node, datum, local_tunnels, tunnel_order) = tokio::try_join! {
             Node::new(repo.clone()),
             DatumCloudClient::with_repo(ApiEnv::default(), repo.clone()),
             LocalTunnels::load(&repo),
+            TunnelOrder::load(&repo),
         }?;
         let local_tunnel_list = dioxus::signals::Signal::new(local_tunnels.list());
         let heartbeat = HeartbeatAgent::new(datum.clone(), node.listen.clone());
@@ -57,6 +62,8 @@ impl AppState {
             tunnel_create_quota: dioxus::signals::Signal::new(None),
             local_tunnels,
             local_tunnel_list,
+            tunnel_order,
+            tunnel_order_revision: dioxus::signals::Signal::new(0),
         };
         Ok(app_state)
     }
@@ -131,6 +138,22 @@ impl AppState {
 
     pub fn local_tunnels(&self) -> &LocalTunnels {
         &self.local_tunnels
+    }
+
+    pub fn tunnel_order(&self) -> &TunnelOrder {
+        &self.tunnel_order
+    }
+
+    /// Changes whenever the project tunnel order does.
+    pub fn tunnel_order_revision(&self) -> dioxus::signals::Signal<u64> {
+        self.tunnel_order_revision
+    }
+
+    /// Saves the order project tunnels were arranged in and re-sorts the list.
+    pub fn set_tunnel_order(&self, project_id: &str, ids: Vec<String>) {
+        self.tunnel_order.set(project_id, ids);
+        let mut revision = self.tunnel_order_revision;
+        revision.set(revision() + 1);
     }
 
     pub fn local_tunnel_list(&self) -> dioxus::signals::Signal<Vec<LocalTunnel>> {

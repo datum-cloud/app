@@ -1,4 +1,5 @@
 use dioxus::events::FormEvent;
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use lib::TunnelSummary;
 use open::that;
@@ -37,8 +38,8 @@ use crate::{
         },
         input::Input,
         skeleton::Skeleton,
-        AddTunnelDialog, Button, ButtonKind, DeleteTunnelDialog, Icon, IconSource, Switch,
-        SwitchThumb,
+        target_index, AddTunnelDialog, Button, ButtonKind, DeleteTunnelDialog, DragReorder, Icon,
+        IconSource, Switch, SwitchThumb,
     },
     state::AppState,
     util::{project_quotas_portal_url, tunnel_edge_portal_url},
@@ -49,7 +50,21 @@ use crate::{
 #[component]
 pub fn ProxiesList() -> Element {
     let state = consume_context::<AppState>();
-    let tunnels = state.tunnel_cache();
+    let drag = DragReorder::new("remote");
+    // The Datum Cloud API has no field for tunnel order, so the order arranged
+    // on this computer is applied here, over the cache the poll loop fills.
+    let state_for_order = state.clone();
+    let tunnels = use_memo(move || {
+        // Read the revision so an arrangement change re-sorts the list.
+        let _revision = state_for_order.tunnel_order_revision()();
+        let tunnels = state_for_order.tunnel_cache()();
+        match state_for_order.selected_context() {
+            Some(context) => state_for_order
+                .tunnel_order()
+                .apply(&context.project_id, tunnels),
+            None => tunnels,
+        }
+    });
     // Check if we already have cached data - if so, we're already "loaded"
     let has_loaded = use_signal(|| !tunnels().is_empty());
     let load_error = use_signal(|| None::<String>);
@@ -316,8 +331,38 @@ pub fn ProxiesList() -> Element {
         }
     } else {
         let tunnel_to_delete_for_cards = tunnel_to_delete;
+        let drag_enabled = query.is_empty();
+        let state_for_drop = state.clone();
+        let ordered_for_drop = tunnels;
+        let card_count = filtered_tunnels.len();
         rsx! {
-            div { class: "space-y-5",
+            div {
+                class: if drag.is_dragging() { "space-y-5 select-none cursor-grabbing" } else { "space-y-5" },
+                "data-reorder-list": "remote",
+                onmousemove: move |event| {
+                    let point = event.client_coordinates();
+                    let held = event.held_buttons().contains(MouseButton::Primary);
+                    if drag.pointer_moved(point.x, point.y, held) {
+                        event.prevent_default();
+                    }
+                },
+                onmouseup: move |_| {
+                    let Some((id, insertion)) = drag.release() else {
+                        return;
+                    };
+                    let Some(context) = state_for_drop.selected_context() else {
+                        return;
+                    };
+                    let list = ordered_for_drop();
+                    let Some(from) = list.iter().position(|tunnel| tunnel.id == id) else {
+                        return;
+                    };
+                    let mut ids: Vec<String> = list.into_iter().map(|tunnel| tunnel.id).collect();
+                    let id = ids.remove(from);
+                    ids.insert(target_index(from, insertion).min(ids.len()), id);
+                    state_for_drop.set_tunnel_order(&context.project_id, ids);
+                },
+                onmouseleave: move |_| drag.cancel(),
                 if show_search {
                     div { class: "mb-4",
                         Input {
@@ -328,13 +373,16 @@ pub fn ProxiesList() -> Element {
                         }
                     }
                 }
-                for tunnel in filtered_tunnels.into_iter() {
+                for (index, tunnel) in filtered_tunnels.into_iter().enumerate() {
                     TunnelCard {
                         key: "{tunnel.id}",
                         tunnel,
                         show_view_item: true,
                         show_bandwidth: false,
                         tunnel_to_delete: tunnel_to_delete_for_cards,
+                        index,
+                        last: index + 1 == card_count,
+                        drag: drag_enabled.then_some(drag),
                         on_delete: on_delete_handler,
                         on_edit: move |t| {
                             editing_tunnel.set(Some(t));
@@ -433,6 +481,15 @@ pub fn TunnelCard(
     tunnel_to_delete: ReadSignal<Option<TunnelSummary>>,
     on_delete: EventHandler<TunnelSummary>,
     on_edit: EventHandler<TunnelSummary>,
+    /// This card's place in the list, for the insertion line.
+    #[props(default)]
+    index: usize,
+    /// Whether this is the last card, so a drop past it shows below.
+    #[props(default)]
+    last: bool,
+    /// Dragging state, when the list this card is in can be reordered.
+    #[props(default)]
+    drag: Option<DragReorder>,
 ) -> Element {
     let tunnel_id = tunnel.id.clone();
     let mut menu_open = use_signal(|| None::<bool>);
@@ -505,11 +562,25 @@ pub fn TunnelCard(
     } else {
         "bg-tunnel-card-background rounded-lg border border-app-border shadow-card"
     };
+    let dragging = drag
+        .map(|drag| drag.dragging().as_deref() == Some(tunnel_id.as_str()))
+        .unwrap_or(false);
+    let dragging_class = if dragging { " opacity-60" } else { "" };
+    let header_class = match drag {
+        Some(drag) if drag.is_dragging() => {
+            "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg select-none cursor-grabbing"
+        }
+        Some(_) => {
+            "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg select-none cursor-grab"
+        }
+        None => "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg",
+    };
 
     // Clone tunnel_id and tunnel before they're moved into closures
     let tunnel_id_for_deleting = tunnel_id.clone();
     let tunnel_id_for_disabled = tunnel_id.clone();
     let tunnel_id_for_view = tunnel_id.clone();
+    let tunnel_id_for_drag = tunnel_id.clone();
     let tunnel_for_edit = tunnel.clone();
     let tunnel_for_delete = tunnel.clone();
     let tunnel_for_memo = tunnel.clone();
@@ -533,13 +604,32 @@ pub fn TunnelCard(
     });
 
     rsx! {
-        div { class: "{wrapper_class} relative rounded-lg",
+        div {
+            class: "{wrapper_class} relative rounded-lg{dragging_class}",
+            "data-reorder-card": "",
+            if let Some(drag) = drag {
+                if drag.drops_before(index) {
+                    div { class: "pointer-events-none absolute inset-x-0 -top-3 h-0.5 rounded-full bg-icon-tunnel" }
+                }
+                if last && drag.drops_at_end(index + 1) {
+                    div { class: "pointer-events-none absolute inset-x-0 -bottom-3 h-0.5 rounded-full bg-icon-tunnel" }
+                }
+            }
             if is_disabled() {
                 div { class: "absolute inset-0 bg-tunnel-card-background/30 rounded-lg z-10 pointer-events-none" }
             }
             div { class: if is_disabled() { "opacity-90" } else { "" },
                 // header row: title + toggle
-                div { class: "px-4 py-2.5 flex items-center justify-between bg-card-background rounded-t-lg",
+                div {
+                    class: header_class,
+                    onmousedown: move |event| {
+                        if let Some(drag) = drag {
+                            if event.held_buttons().contains(MouseButton::Primary) {
+                                let point = event.client_coordinates();
+                                drag.press(&tunnel_id_for_drag, point.x, point.y);
+                            }
+                        }
+                    },
                     h2 { class: "text-md font-normal text-foreground", {tunnel.label.clone()} }
                     if is_ready && !is_deleting() {
                         Switch {
