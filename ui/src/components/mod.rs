@@ -5,6 +5,7 @@
 mod add_tunnel_dialog;
 mod button;
 mod delete_tunnel_dialog;
+mod drag_reorder;
 mod head;
 mod icon;
 mod installing_splash;
@@ -18,6 +19,7 @@ pub use add_tunnel_dialog::AddTunnelDialog;
 pub use button::Button;
 pub use button::ButtonKind;
 pub use delete_tunnel_dialog::DeleteTunnelDialog;
+pub use drag_reorder::{target_index, DragReorder};
 pub use head::Head;
 pub use icon::{Icon, IconSource};
 pub use installing_splash::InstallingSplash;

@@ -231,6 +231,12 @@
   .inset-0 {
     inset: calc(var(--spacing) * 0);
   }
+  .inset-x-0 {
+    inset-inline: calc(var(--spacing) * 0);
+  }
+  .-top-3 {
+    top: calc(var(--spacing) * -3);
+  }
   .top-0 {
     top: calc(var(--spacing) * 0);
   }
@@ -245,6 +251,9 @@
   }
   .right-auto {
     right: auto;
+  }
+  .-bottom-3 {
+    bottom: calc(var(--spacing) * -3);
   }
   .bottom-0 {
     bottom: calc(var(--spacing) * 0);
@@ -391,6 +400,9 @@
   .size-4 {
     width: calc(var(--spacing) * 4);
     height: calc(var(--spacing) * 4);
+  }
+  .h-0\.5 {
+    height: calc(var(--spacing) * 0.5);
   }
   .h-3 {
     height: calc(var(--spacing) * 3);
@@ -618,6 +630,12 @@
   }
   .cursor-default {
     cursor: default;
+  }
+  .cursor-grab {
+    cursor: grab;
+  }
+  .cursor-grabbing {
+    cursor: grabbing;
   }
   .cursor-not-allowed {
     cursor: not-allowed;
@@ -890,6 +908,9 @@
     @supports (color: color-mix(in lab, red, red)) {
       background-color: color-mix(in oklab, var(--foreground) 30%, transparent);
     }
+  }
+  .bg-icon-tunnel {
+    background-color: var(--icon-tunnel);
   }
   .bg-red-50 {
     background-color: var(--color-red-50);
@@ -1310,6 +1331,10 @@
   .select-all {
     -webkit-user-select: all;
     user-select: all;
+  }
+  .select-none {
+    -webkit-user-select: none;
+    user-select: none;
   }
   .fade-in {
     --tw-enter-opacity: 0;
