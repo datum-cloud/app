@@ -16,9 +16,13 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
-use connect_share::{DialEvent, DialOptions, ShareEvent, ShareKey, ShareOptions, ShareTicket};
+use connect_share::{
+    DialEvent, DialOptions, ShareEvent, ShareKey, ShareOptions, ShareTicket, Traffic,
+    TrafficSnapshot,
+};
 use iroh::SecretKey;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
@@ -128,6 +132,60 @@ impl From<connect_share::PathInfo> for LocalPath {
     }
 }
 
+/// What a connection has forwarded since it opened, and its bandwidth over
+/// the last second. Sent is from apps on this computer to the sharer,
+/// received the other way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalTraffic {
+    pub sent: u64,
+    pub received: u64,
+    /// Bytes per second.
+    pub send_rate: u64,
+    /// Bytes per second.
+    pub receive_rate: u64,
+    /// Local connections being forwarded now.
+    pub open_connections: u64,
+}
+
+impl LocalTraffic {
+    /// Both directions together.
+    pub fn total(&self) -> u64 {
+        self.sent.saturating_add(self.received)
+    }
+
+    /// Both directions together, in bytes per second.
+    pub fn rate(&self) -> u64 {
+        self.send_rate.saturating_add(self.receive_rate)
+    }
+}
+
+/// How often a connection's counters are read for [`LocalTraffic`].
+const TRAFFIC_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Turns two readings of a dial's counters into [`LocalTraffic`]. The first
+/// reading, with no `previous`, has no rate yet.
+fn meter(
+    previous: Option<(TrafficSnapshot, Instant)>,
+    current: TrafficSnapshot,
+    now: Instant,
+) -> LocalTraffic {
+    let elapsed_ms = previous.map_or(0, |(_, at)| now.saturating_duration_since(at).as_millis());
+    let rate = |before: Option<u64>, now: u64| match before {
+        Some(before) if elapsed_ms > 0 && now >= before => {
+            (u128::from(now - before) * 1000 / elapsed_ms).min(u128::from(u64::MAX)) as u64
+        }
+        _ => 0,
+    };
+    let before = previous.map(|(snapshot, _)| snapshot);
+    LocalTraffic {
+        sent: current.bytes_sent,
+        received: current.bytes_received,
+        send_rate: rate(before.map(|b| b.bytes_sent), current.bytes_sent),
+        receive_rate: rate(before.map(|b| b.bytes_received), current.bytes_received),
+        open_connections: current.open_connections,
+    }
+}
+
 /// A device that paired with a running share.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairedDevice {
@@ -147,6 +205,8 @@ pub struct LocalTunnel {
     pub status: LocalTunnelStatus,
     /// Connect only: the path to the sharer while open.
     pub path: Option<LocalPath>,
+    /// Connect only: bytes and bandwidth while open, once first measured.
+    pub traffic: Option<LocalTraffic>,
     /// Share only: devices paired since the share started.
     pub devices: Vec<PairedDevice>,
 }
@@ -411,6 +471,7 @@ impl LocalTunnels {
                 kind: s.kind,
                 status: LocalTunnelStatus::Stopped,
                 path: None,
+                traffic: None,
                 devices: Vec::new(),
             })
             .collect();
@@ -526,6 +587,7 @@ impl LocalTunnels {
                 kind,
                 status: LocalTunnelStatus::Stopped,
                 path: None,
+                traffic: None,
                 devices: Vec::new(),
             });
             if let Some(key) = key {
@@ -549,6 +611,7 @@ impl LocalTunnels {
         };
         tunnel.status = LocalTunnelStatus::Starting;
         tunnel.path = None;
+        tunnel.traffic = None;
         tunnel.devices.clear();
         let kind = tunnel.kind.clone();
         let name = tunnel.name.clone();
@@ -678,15 +741,16 @@ impl LocalTunnels {
         let ticket: ShareTicket = ticket
             .parse()
             .map_err(|e: connect_share::TicketError| e.to_string())?;
+        let traffic = Traffic::default();
         let options = DialOptions {
             ticket,
             bind: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             secret_key: Some(self.device_key.clone()),
             name: Some(self.device_name.clone()),
             relay_urls: None,
-            traffic: Default::default(),
+            traffic: traffic.clone(),
         };
-        connect_share::dial(options, cancel, |event| match event {
+        let dial = connect_share::dial(options, cancel, |event| match event {
             DialEvent::Ready(ready) => {
                 if let Some(name) = &ready.sharer_name {
                     self.offer_sharer_name(id, token, name);
@@ -714,9 +778,33 @@ impl LocalTunnels {
             DialEvent::Path(path) => self.update(id, token, |tunnel| {
                 tunnel.path = Some(path.into());
             }),
-        })
-        .await
-        .map_err(|error| error.to_string())
+        });
+        tokio::pin!(dial);
+        // Read the counters once a second while the dial runs. The list
+        // changes only when the numbers do, so an idle connection costs a
+        // few atomic loads and no redraw.
+        let mut ticks = tokio::time::interval(TRAFFIC_SAMPLE_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut previous = None;
+        loop {
+            tokio::select! {
+                result = &mut dial => return result.map_err(|error| error.to_string()),
+                _ = ticks.tick() => {
+                    let now = Instant::now();
+                    let snapshot = traffic.snapshot();
+                    let metered = meter(previous, snapshot, now);
+                    previous = Some((snapshot, now));
+                    self.update_if(id, token, |tunnel| {
+                        let open = matches!(tunnel.status, LocalTunnelStatus::Open { .. });
+                        if !open || tunnel.traffic == Some(metered) {
+                            return false;
+                        }
+                        tunnel.traffic = Some(metered);
+                        true
+                    });
+                }
+            }
+        }
     }
 
     /// Records how a session ended, unless it was stopped or replaced.
@@ -732,6 +820,7 @@ impl LocalTunnels {
                 None => LocalTunnelStatus::Stopped,
             };
             tunnel.path = None;
+            tunnel.traffic = None;
         }
         drop(inner);
         self.notify();
@@ -747,6 +836,7 @@ impl LocalTunnels {
             tunnel.status = LocalTunnelStatus::Stopped;
         }
         tunnel.path = None;
+        tunnel.traffic = None;
         tunnel.devices.clear();
         drop(inner);
         self.notify();
@@ -893,15 +983,24 @@ impl LocalTunnels {
 
     /// Applies `change` to tunnel `id` while session `token` is current.
     fn update(&self, id: &str, token: u64, change: impl FnOnce(&mut LocalTunnel)) {
+        self.update_if(id, token, |tunnel| {
+            change(tunnel);
+            true
+        });
+    }
+
+    /// Like [`Self::update`], but tells subscribers only when `change`
+    /// returns true, for updates that are usually no-ops.
+    fn update_if(&self, id: &str, token: u64, change: impl FnOnce(&mut LocalTunnel) -> bool) {
         let mut inner = self.lock();
         if inner.sessions.get(id).map(|s| s.token) != Some(token) {
             return;
         }
-        if let Some(tunnel) = inner.get_mut(id) {
-            change(tunnel);
-        }
+        let changed = inner.get_mut(id).is_some_and(change);
         drop(inner);
-        self.notify();
+        if changed {
+            self.notify();
+        }
     }
 
     fn notify(&self) {
@@ -1053,6 +1152,56 @@ mod tests {
         assert!(share_address_error("127.0.0.1:0").is_some());
     }
 
+    #[test]
+    fn meter_works_out_bandwidth() {
+        let snapshot = |sent, received, open| TrafficSnapshot {
+            bytes_sent: sent,
+            bytes_received: received,
+            connections: 2,
+            open_connections: open,
+        };
+        let start = Instant::now();
+        let first = snapshot(1_000, 4_000, 1);
+        // The first reading has totals but no rate yet.
+        assert_eq!(
+            meter(None, first, start),
+            LocalTraffic {
+                sent: 1_000,
+                received: 4_000,
+                send_rate: 0,
+                receive_rate: 0,
+                open_connections: 1,
+            }
+        );
+
+        let later = meter(
+            Some((first, start)),
+            snapshot(1_500, 2_004_000, 0),
+            start + Duration::from_secs(2),
+        );
+        assert_eq!(
+            later,
+            LocalTraffic {
+                sent: 1_500,
+                received: 2_004_000,
+                send_rate: 250,
+                receive_rate: 1_000_000,
+                open_connections: 0,
+            }
+        );
+        assert_eq!(later.total(), 2_005_500);
+        assert_eq!(later.rate(), 1_000_250);
+
+        // No time passed, or counters that went backwards: no rate.
+        assert_eq!(meter(Some((first, start)), first, start).rate(), 0);
+        let reset = meter(
+            Some((first, start)),
+            snapshot(10, 20, 0),
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(reset.rate(), 0);
+    }
+
     #[tokio::test]
     async fn saves_and_restores_stopped() {
         let dir = tempfile::tempdir().unwrap();
@@ -1144,6 +1293,23 @@ mod tests {
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
         assert_eq!(buf, b"hello");
+        // The connection counts what it delivered, within a sample or two.
+        let traffic = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let tunnel = tunnels
+                    .list()
+                    .into_iter()
+                    .find(|t| t.id == connect)
+                    .unwrap();
+                if let Some(traffic) = tunnel.traffic.filter(|t| t.received >= 5) {
+                    return traffic;
+                }
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("connection counted its traffic");
+        assert_eq!(traffic.received, 5);
         // Stopping the share flips the connection to failed rather than
         // leaving it open while requests hang.
         tunnels.stop(&share);
@@ -1156,6 +1322,8 @@ mod tests {
                     .find(|t| t.id == connect)
                     .unwrap();
                 if let LocalTunnelStatus::Failed(error) = tunnel.status {
+                    // A connection that is no longer open shows no traffic.
+                    assert_eq!(tunnel.traffic, None);
                     return error;
                 }
                 changes.changed().await.unwrap();
