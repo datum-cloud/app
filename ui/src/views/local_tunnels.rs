@@ -8,7 +8,7 @@ use dioxus::events::FormEvent;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use lib::{
-    local_tunnels::{parse_ticket, LocalPath},
+    local_tunnels::{parse_ticket, LocalPath, LocalTraffic},
     LocalTunnel, LocalTunnelKind, LocalTunnelStatus,
 };
 use open::that;
@@ -24,7 +24,7 @@ use crate::{
         target_index, Button, ButtonKind, DragReorder, Icon, IconSource, Switch, SwitchThumb,
     },
     state::AppState,
-    util::copy_to_clipboard,
+    util::{copy_to_clipboard, humanize_bytes},
     views::OpenEditTunnelDialog,
 };
 
@@ -279,6 +279,10 @@ fn LocalTunnelCard(
                                         .unwrap_or_else(|| "Path appears once traffic flows".to_string())
                                 }
                             }
+                            if let Some(traffic) = tunnel.traffic {
+                                div { class: "pl-6 text-1xs text-foreground/60", "{traffic_summary(&traffic)}" }
+                                div { class: "pl-6 text-1xs text-foreground/60", "{traffic_detail(&traffic)}" }
+                            }
                             if let Some(error) = unreachable {
                                 ErrorRow {
                                     text: format!("The last request didn't go through: {error}"),
@@ -497,6 +501,30 @@ fn path_label(path: &Option<LocalPath>) -> String {
     path.as_ref()
         .map(LocalPath::summary)
         .unwrap_or_else(|| "Idle".to_string())
+}
+
+/// For display: "3.4 MB transferred · 1.2 MB/s".
+fn traffic_summary(traffic: &LocalTraffic) -> String {
+    format!(
+        "{} transferred · {}/s",
+        humanize_bytes(traffic.total()),
+        humanize_bytes(traffic.rate())
+    )
+}
+
+/// For display: "↓ 3.4 MB · ↑ 1.2 KB · 2 connections open". Down is what
+/// this computer received from the sharer.
+fn traffic_detail(traffic: &LocalTraffic) -> String {
+    let open = match traffic.open_connections {
+        0 => String::new(),
+        1 => " · 1 connection open".to_string(),
+        n => format!(" · {n} connections open"),
+    };
+    format!(
+        "↓ {} · ↑ {}{open}",
+        humanize_bytes(traffic.received),
+        humanize_bytes(traffic.sent)
+    )
 }
 
 /// QR code for `ticket` as an SVG document. Always dark on light, whatever
@@ -940,5 +968,38 @@ fn NewTicketDialog(tunnel: ReadSignal<Option<LocalTunnel>>, on_close: EventHandl
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describes_traffic() {
+        let traffic = LocalTraffic {
+            sent: 1_536,
+            received: 3 * 1024 * 1024,
+            send_rate: 0,
+            receive_rate: 1024 * 1024,
+            open_connections: 2,
+        };
+        assert_eq!(traffic_summary(&traffic), "3.0 MB transferred · 1.0 MB/s");
+        assert_eq!(
+            traffic_detail(&traffic),
+            "↓ 3.0 MB · ↑ 1.5 KB · 2 connections open"
+        );
+
+        let idle = LocalTraffic {
+            open_connections: 0,
+            ..LocalTraffic::default()
+        };
+        assert_eq!(traffic_summary(&idle), "0 B transferred · 0 B/s");
+        assert_eq!(traffic_detail(&idle), "↓ 0 B · ↑ 0 B");
+        let one = LocalTraffic {
+            open_connections: 1,
+            ..idle
+        };
+        assert_eq!(traffic_detail(&one), "↓ 0 B · ↑ 0 B · 1 connection open");
     }
 }

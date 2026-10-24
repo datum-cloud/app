@@ -7,8 +7,8 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use crate::components::{Head, InstallingSplash, Splash, UpdateToast};
 use crate::state::AppState;
 use crate::views::{
-    Chrome, JoinProxy, LocalTunnelsPage, Login, ProxiesList, SelectProject, Settings,
-    TrayNavHandler, TunnelBandwidth,
+    Chrome, JoinProxy, LocalTunnelsPage, Login, OpenLocalTunnelsFromTray, ProxiesList,
+    SelectProject, Settings, TrayNavHandler, TunnelBandwidth,
 };
 
 #[cfg(feature = "desktop")]
@@ -511,6 +511,7 @@ fn App() -> Element {
 
     let mut open_add_tunnel_from_tray = use_signal(|| false);
     let mut open_tunnel_from_tray = use_signal(|| None::<String>);
+    let mut open_local_tunnels_from_tray = use_signal(|| false);
     let mut login_state_for_tray = use_signal(|| None::<lib::datum_cloud::LoginState>);
     let mut tray_menu_version = use_signal(|| 0u32);
     #[cfg(feature = "desktop")]
@@ -534,6 +535,13 @@ fn App() -> Element {
         let tray_for_handler = tray_holder;
         use_muda_event_handler(move |event| -> () {
             let id = event.id.0.as_str();
+            // Connections need no account, so these work logged out.
+            if id.starts_with("local_connection:") {
+                window.set_visible(true);
+                window.set_focus();
+                open_local_tunnels_from_tray.set(true);
+                return;
+            }
             if let Some(idx) = id
                 .strip_prefix("recent_tunnel:")
                 .and_then(|s| s.parse::<usize>().ok())
@@ -729,6 +737,7 @@ fn App() -> Element {
     // Tray can trigger opening the add tunnel dialog; Chrome (inside Router) handles navigation + dialog.
     provide_context(open_add_tunnel_from_tray);
     provide_context(open_tunnel_from_tray);
+    provide_context(OpenLocalTunnelsFromTray(open_local_tunnels_from_tray));
 
     // Sample tunnel traffic and refresh tray recent-tunnels section.
     #[cfg(feature = "desktop")]
@@ -776,6 +785,17 @@ fn App() -> Element {
                 .map(|tracker| tracker.recent_active(5))
                 .unwrap_or_default();
             sync_tray_recent_menu(&tray, &entries, logged_in);
+        });
+
+        // Local tunnels report changes only when their numbers move, so
+        // this runs about once a second while a connection carries traffic.
+        let state_for_tray_connections = consume_context::<AppState>();
+        use_effect(move || {
+            let tunnels = state_for_tray_connections.local_tunnel_list()();
+            let Some(tray) = tray_holder_for_sync() else {
+                return;
+            };
+            sync_tray_connections(&tray, &tunnels);
         });
     }
 
@@ -914,6 +934,91 @@ struct TrayState {
     /// How many tunnel rows are currently inserted in the menu (0–5).
     mounted_tunnel_slots: std::sync::Mutex<usize>,
     recent_section_open: std::sync::Mutex<bool>,
+    /// Open local connections, shown logged in or out, above the version.
+    connections_sep: PredefinedMenuItem,
+    connections_header: MenuItem,
+    connection_items: [IconMenuItem; 5],
+    /// How many connection rows are currently inserted in the menu (0–5).
+    mounted_connection_slots: std::sync::Mutex<usize>,
+}
+
+#[cfg(feature = "desktop")]
+fn format_tray_connection_label(tunnel: &lib::LocalTunnel) -> String {
+    let label = truncate_tray_label(&tunnel.name, 32);
+    match tunnel.traffic.map(|t| t.rate()) {
+        Some(rate) if rate > 0 => format!("{label} — {}/s", util::humanize_bytes(rate)),
+        _ => format!("{label} — No traffic"),
+    }
+}
+
+/// Shows up to five open connections and their bandwidth. Rows are updated
+/// in place and only inserted or removed when the count changes, so an open
+/// menu doesn't flicker as the numbers move.
+#[cfg(feature = "desktop")]
+fn sync_tray_connections(tray: &TrayState, tunnels: &[lib::LocalTunnel]) {
+    let open: Vec<&lib::LocalTunnel> = tunnels
+        .iter()
+        .filter(|t| matches!(t.status, lib::LocalTunnelStatus::Open { .. }))
+        .take(5)
+        .collect();
+    let mut mounted = tray
+        .mounted_connection_slots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let header_at = tray
+        .menu
+        .items()
+        .iter()
+        .position(|item| item.id() == tray.connections_header.id());
+
+    if open.is_empty() {
+        if header_at.is_some() {
+            for i in (0..*mounted).rev() {
+                let _ = tray.menu.remove(&tray.connection_items[i]);
+            }
+            let _ = tray.menu.remove(&tray.connections_header);
+            let _ = tray.menu.remove(&tray.connections_sep);
+            *mounted = 0;
+        }
+        return;
+    }
+
+    let header_at = match header_at {
+        Some(at) => at,
+        None => {
+            // Above the final separator and the version line.
+            let at = tray.menu.items().len().saturating_sub(2);
+            let _ = tray.menu.insert(&tray.connections_sep, at);
+            let _ = tray.menu.insert(&tray.connections_header, at + 1);
+            at + 1
+        }
+    };
+    while *mounted > open.len() {
+        *mounted -= 1;
+        let _ = tray.menu.remove(&tray.connection_items[*mounted]);
+    }
+    for (i, tunnel) in open.iter().enumerate() {
+        let unreachable = matches!(
+            tunnel.status,
+            lib::LocalTunnelStatus::Open {
+                unreachable: Some(_),
+                ..
+            }
+        );
+        let icon = if unreachable {
+            tray.icon_offline.clone()
+        } else {
+            tray.icon_online.clone()
+        };
+        tray.connection_items[i].set_text(format_tray_connection_label(tunnel));
+        tray.connection_items[i].set_icon(Some(icon));
+        if i >= *mounted {
+            let _ = tray
+                .menu
+                .insert(&tray.connection_items[i], header_at + 1 + i);
+        }
+    }
+    *mounted = open.len();
 }
 
 #[cfg(feature = "desktop")]
@@ -1046,6 +1151,11 @@ fn init_tray() -> std::sync::Arc<TrayState> {
     let recent_item_2 = IconMenuItem::with_id("recent_tunnel:2", "", true, None, None);
     let recent_item_3 = IconMenuItem::with_id("recent_tunnel:3", "", true, None, None);
     let recent_item_4 = IconMenuItem::with_id("recent_tunnel:4", "", true, None, None);
+    let connections_sep = PredefinedMenuItem::separator();
+    let connections_header = MenuItem::with_id("connections_header", "Connections", false, None);
+    let connection_items = std::array::from_fn(|i| {
+        IconMenuItem::with_id(format!("local_connection:{i}"), "", true, None, None)
+    });
     let icon_online = make_status_menu_icon(0x86, 0xa1, 0x82);
     let icon_offline = make_status_menu_icon(0xf0, 0x8c, 0x8c);
     let sep = PredefinedMenuItem::separator();
@@ -1094,6 +1204,10 @@ fn init_tray() -> std::sync::Arc<TrayState> {
         slot_tunnel_ids: std::sync::Mutex::new([None, None, None, None, None]),
         mounted_tunnel_slots: std::sync::Mutex::new(0),
         recent_section_open: std::sync::Mutex::new(false),
+        connections_sep,
+        connections_header,
+        connection_items,
+        mounted_connection_slots: std::sync::Mutex::new(0),
     })
 }
 

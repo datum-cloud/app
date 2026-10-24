@@ -95,3 +95,16 @@ pub const OVERLAY_TITLEBAR_OFFSET: &str = "mt-[32px]";
 
 #[cfg(not(target_os = "macos"))]
 pub const OVERLAY_TITLEBAR_OFFSET: &str = "";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanizes_bytes_in_binary_steps() {
+        assert_eq!(humanize_bytes(0), "0 B");
+        assert_eq!(humanize_bytes(512), "512.0 B");
+        assert_eq!(humanize_bytes(1536), "1.5 KB");
+        assert_eq!(humanize_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+}
