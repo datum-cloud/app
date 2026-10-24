@@ -684,6 +684,7 @@ impl LocalTunnels {
             secret_key: Some(self.device_key.clone()),
             name: Some(self.device_name.clone()),
             relay_urls: None,
+            traffic: Default::default(),
         };
         connect_share::dial(options, cancel, |event| match event {
             DialEvent::Ready(ready) => {

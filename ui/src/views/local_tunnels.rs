@@ -281,9 +281,7 @@ fn LocalTunnelCard(
                             }
                             if let Some(error) = unreachable {
                                 ErrorRow {
-                                    text: format!(
-                                        "The last request didn't reach the shared service: {error}. It may be down on the sharing device, or the share may point at the wrong port."
-                                    ),
+                                    text: format!("The last request didn't go through: {error}"),
                                 }
                             }
                         }
