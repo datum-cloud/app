@@ -12,11 +12,11 @@ brew install datum-cloud/tap/desktop
 
 **Direct download:**
 
-[![Download for macOS](https://img.shields.io/badge/Download-macOS-000000?logo=apple&logoColor=white)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum.dmg)
-[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum-setup.exe)
-[![Download for Linux](https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/datum-cloud/datum-connect/releases/latest/download/Datum.AppImage)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS-000000?logo=apple&logoColor=white)](https://github.com/datum-cloud/app/releases/latest/download/Datum.dmg)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/datum-cloud/app/releases/latest/download/Datum-setup.exe)
+[![Download for Linux](https://img.shields.io/badge/Download-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/datum-cloud/app/releases/latest/download/Datum.AppImage)
 
-[Latest release →](https://github.com/datum-cloud/datum-connect/releases/latest)
+[Latest release →](https://github.com/datum-cloud/app/releases/latest)
 
 ### Development
 
