@@ -32,7 +32,7 @@ COPY . .
 
 ARG VERSION
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=datum-connect-target-$TARGETARCH \
     if [ -n "$VERSION" ]; then \
       sed -i "s/^version = \".*\"/version = \"${VERSION#v}\"/" cli/Cargo.toml lib/Cargo.toml \
