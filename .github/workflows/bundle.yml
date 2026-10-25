@@ -161,7 +161,7 @@ jobs:
           else
             SHORT_SHA=${FULL_SHA::7}
             BUILD_DATE=$(date +'%Y.%-m.%-d' 2>/dev/null || date +'%Y.%m.%d' | sed 's/\.0\([0-9]\)/.\1/g')
-            VERSION="${BUILD_DATE}-${SHORT_SHA}"
+            VERSION="${BUILD_DATE}-g${SHORT_SHA}"
           fi
           echo "Setting version to: $VERSION"
           # Update Cargo.toml version
@@ -184,7 +184,7 @@ jobs:
           } else {
             $SHORT_SHA = $env:FULL_SHA.Substring(0, 7)
             $BUILD_DATE = Get-Date -Format "yyyy.M.d"
-            $VERSION = "$BUILD_DATE-$SHORT_SHA"
+            $VERSION = "$BUILD_DATE-g$SHORT_SHA"
           }
           Write-Host "Setting version to: $VERSION"
           # Update Cargo.toml version
