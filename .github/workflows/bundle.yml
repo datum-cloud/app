@@ -610,6 +610,12 @@ jobs:
           private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
           repositories: homebrew-tap
 
+      - name: Checkout commit script
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - name: Download macOS artifacts
         uses: actions/download-artifact@v7
         with:
@@ -620,36 +626,4 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ github.ref_name }}
-        run: |
-          VERSION="${TAG#v}"
-          DMG_FILE=$(find macos-dist -name "*.dmg" | head -1)
-          DMG_SHA=$(sha256sum "$DMG_FILE" | cut -d' ' -f1)
-          REPO="datum-cloud/app"
-
-          git clone https://x-access-token:${GH_TOKEN}@github.com/datum-cloud/homebrew-tap.git tap
-          mkdir -p tap/Casks
-          rm -f tap/Casks/datum.rb
-
-          cat > tap/Casks/desktop.rb <<RUBY
-          cask "desktop" do
-            version "${VERSION}"
-            sha256 "${DMG_SHA}"
-
-            url "https://github.com/${REPO}/releases/download/v#{version}/Datum.dmg"
-            name "Datum"
-            desc "Quickly and safely expose local environments to the internet, for free."
-            homepage "https://www.datum.net/"
-
-            depends_on macos: :big_sur
-
-            app "Datum.app"
-          end
-          RUBY
-
-          cd tap
-          git config user.name "Datum Release Bot"
-          git config user.email "releases@datum.net"
-          git add Casks/
-          git diff --cached --quiet && exit 0
-          git commit -m "Brew cask update for Datum Desktop version ${TAG}"
-          git push
+        run: scripts/update-homebrew-tap

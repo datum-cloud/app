@@ -27,7 +27,8 @@ jobs:
           /tmp/update-nix-hash --no-verify
 
       - name: Commit updated flake.nix
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update nix outputHashes"
-          file_pattern: flake.nix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.head_ref }}
+          SCRIPT_REF: ${{ github.event.pull_request.base.sha }}
+        run: scripts/commit-nix-hash
