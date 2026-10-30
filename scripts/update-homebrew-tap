@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${GH_TOKEN:?}" "${TAG:?}" "${GITHUB_WORKSPACE:?}"
+
+version="${TAG#v}"
+dmg_file=$(find macos-dist -name "*.dmg" | head -1)
+dmg_sha=$(sha256sum "$dmg_file" | cut -d' ' -f1)
+sign_commit="$GITHUB_WORKSPACE/scripts/sign-commit"
+
+git clone "https://x-access-token:${GH_TOKEN}@github.com/datum-cloud/homebrew-tap.git" tap
+cd tap
+mkdir -p Casks
+
+cat > Casks/desktop.rb <<RUBY
+cask "desktop" do
+  version "${version}"
+  sha256 "${dmg_sha}"
+
+  url "https://github.com/datum-cloud/app/releases/download/v#{version}/Datum.dmg"
+  name "Datum"
+  desc "Quickly and safely expose local environments to the internet, for free."
+  homepage "https://www.datum.net/"
+
+  depends_on macos: :big_sur
+
+  app "Datum.app"
+end
+RUBY
+
+git rm -q --ignore-unmatch Casks/datum.rb
+git add Casks/
+if git diff --cached --quiet; then
+  echo "Cask is already up to date."
+  exit 0
+fi
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+EXPECTED_HEAD=$(git rev-parse HEAD)
+export EXPECTED_HEAD
+export GITHUB_REPOSITORY=datum-cloud/homebrew-tap
+git diff --cached -z --name-only --no-renames | env -u BASE_SHA "$sign_commit" -z "$branch" "Brew cask update for Datum Desktop version ${TAG}"
