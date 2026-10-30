@@ -458,6 +458,15 @@ jobs:
             'export XDG_DATA_DIRS="$APPDIR/usr/share:/usr/share:${XDG_DATA_DIRS:-}"' \
             > squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
 
+          # appimagetool refuses to package an AppDir whose contents are not
+          # readable, or whose AppRun/AppRun.wrapped are not executable, for
+          # all users: such an AppImage fails to start for other users with
+          # 'Permission denied'. The extracted AppDir inherits the modes from
+          # the dx-built AppImage, so normalize them before repacking.
+          chmod -R a+rX squashfs-root
+          chmod a+rx squashfs-root/AppRun
+          chmod a+rx squashfs-root/AppRun.wrapped 2>/dev/null || true
+
           # Download appimagetool and repack
           wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
