@@ -47,6 +47,10 @@ FROM debian:trixie-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
   && rm -rf /var/lib/apt/lists/* \
+  && sed -i -E 's#^(mozilla/emSign_(ECC_)?Root_CA_-_(C1|C3|G3)\.crt)$#!\1#' /etc/ca-certificates.conf \
+  && update-ca-certificates --fresh \
+  && test -s /etc/ssl/certs/ca-certificates.crt \
+  && ! grep -qE 'MIIDczCCAlugAwIBAgILAK7PALrEzzL4Q7IwDQYJKoZIhvcNAQELBQAwVjELMAkG|MIICKzCCAbGgAwIBAgIKe3G2gla4EnycqDAKBggqhkjOPQQDAzBaMQswCQYDVQQG|MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG' /etc/ssl/certs/ca-certificates.crt \
   && useradd -u 65532 -r -s /usr/sbin/nologin datum \
   && install -d -o 65532 -g 65532 /var/lib/datum-connect
 
