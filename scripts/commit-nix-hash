@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${GH_TOKEN:?}" "${BRANCH:?}" "${SCRIPT_REF:?}"
+
+sign_commit="$RUNNER_TEMP/sign-commit"
+err=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/${GITHUB_REPOSITORY}/contents/scripts/sign-commit?ref=${SCRIPT_REF}" 2>&1 >"$sign_commit") || {
+  if [[ $err == *"HTTP 404"* ]]; then
+    echo "::notice::The base branch has no scripts/sign-commit yet, so the hash update was not committed."
+    exit 0
+  fi
+  echo "$err" >&2
+  exit 1
+}
+chmod +x "$sign_commit"
+
+if git diff --quiet -- flake.nix; then
+  echo "flake.nix is already up to date."
+  exit 0
+fi
+
+EXPECTED_HEAD=$(git rev-parse HEAD)
+export EXPECTED_HEAD
+env -u BASE_SHA "$sign_commit" "$BRANCH" "chore: update nix outputHashes" flake.nix
