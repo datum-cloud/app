@@ -37,7 +37,7 @@ jobs:
       DATUM_API_ENV: production
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -611,7 +611,7 @@ jobs:
           repositories: homebrew-tap
 
       - name: Checkout commit script
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           sparse-checkout: scripts
           persist-credentials: false
