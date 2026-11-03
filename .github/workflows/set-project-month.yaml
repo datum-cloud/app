@@ -10,5 +10,5 @@ concurrency:
 
 jobs:
   set-month:
-    uses: datum-cloud/actions/.github/workflows/set-project-month.yaml@v1.24.0
+    uses: datum-cloud/actions/.github/workflows/set-project-month.yaml@v1.26.0
     secrets: inherit
