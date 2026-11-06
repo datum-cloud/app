@@ -12,6 +12,6 @@
     "patch-package": "8.0.1"
   },
   "overrides": {
-    "image-size": "2.0.3"
+    "image-size": "2.1.0"
   }
 }
