@@ -1,0 +1,23 @@
+name: Vulnerability scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vuln-scan:
+    uses: datum-cloud/actions/.github/workflows/vuln-scan.yaml@v1.29.0
+    with:
+      ecosystems: node
