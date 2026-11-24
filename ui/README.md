@@ -20,12 +20,12 @@ project/
 
 ### Tailwind
 
-1. Install npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
-2. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation
-3. Run the following command in the root of the project to start the Tailwind CSS compiler:
+1. Install Node.js and pnpm 12.23.0, the version `packageManager` in `package.json` pins: https://pnpm.io/installation
+2. Run the following commands in this directory (`ui/`) to install the Tailwind CSS CLI and start the compiler:
 
 ```bash
-npm run tailwind
+pnpm install
+pnpm tailwind
 ```
 
 ### Serving Your App
