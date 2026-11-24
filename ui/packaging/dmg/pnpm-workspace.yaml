@@ -1,0 +1,35 @@
+# pnpm settings for the appdmg tool the macOS release jobs use to lay out
+# Datum.dmg. A single package, not a workspace: there is no `packages:` list.
+
+# Don't install a version until it has been public for one day (in minutes).
+minimumReleaseAge: 1440
+
+# Our own packages are published and consumed across repos on the same day, so
+# the one-day release delay must not hold them back.
+minimumReleaseAgeExclude:
+  - '@datum-cloud/*'
+
+# Reject a version published with weaker provenance than the versions before it.
+trustPolicy: no-downgrade
+
+# semver 5.7.2 (through appdmg > execa@1 > cross-spawn@6) was published in
+# 2023 without the provenance that semver 6 and 7 releases carry, so
+# no-downgrade flags it. It is the last 5.x release and cross-spawn 6 needs ^5.
+trustPolicyExclude:
+  - semver@5.7.2
+
+# Dependencies whose install scripts may run; anything not listed is skipped.
+# appdmg needs both native addons (node-gyp builds) to write the DMG's Finder
+# metadata, so CI installs without --ignore-scripts.
+allowBuilds:
+  fs-xattr: true
+  macos-alias: true
+
+# appdmg 0.6.6 is the newest release and still depends on image-size 0.7.
+# GHSA-w3rx-r6r6-pgpr (ICNS parser infinite loop) is fixed in 2.0.3, so take
+# 2.0.3 and patch appdmg's one call site to the 2.x API.
+overrides:
+  image-size: 2.0.3
+
+patchedDependencies:
+  appdmg@0.6.6: patches/appdmg@0.6.6.patch

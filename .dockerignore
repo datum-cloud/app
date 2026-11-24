@@ -5,7 +5,7 @@
 target
 .env
 n0des-local
-ui/node_modules
+**/node_modules
 ui/target
 ui/dist
 ui/.dioxus

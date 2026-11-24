@@ -83,17 +83,25 @@ jobs:
           Expand-Archive -Path $tmp -DestinationPath $dst -Force
           & (Join-Path $dst 'dx.exe') --version
 
+      - name: Install pnpm
+        if: runner.os == 'macOS'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ui/packaging/dmg/package.json
+
       - uses: actions/setup-node@v7
         if: runner.os == 'macOS'
         with:
           node-version: "26"
-          cache: npm
-          cache-dependency-path: ui/packaging/dmg/package-lock.json
+          cache: pnpm
+          cache-dependency-path: ui/packaging/dmg/pnpm-lock.yaml
 
-      - name: Install appdmg (npm ci)
+      # Runs only the install scripts allowBuilds names: appdmg's two native
+      # addons, built with the node-gyp the package declares.
+      - name: Install appdmg (pnpm install)
         if: runner.os == 'macOS'
         working-directory: ui/packaging/dmg
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Import Apple Certificate
         if: runner.os == 'macOS'

@@ -1,0 +1,20 @@
+# pnpm settings for the Tailwind CLI that builds assets/tailwind.css. A single
+# package, not a workspace: there is no `packages:` list. ui/packaging/dmg has
+# its own settings and lockfile.
+
+# Don't install a version until it has been public for one day (in minutes).
+minimumReleaseAge: 1440
+
+# Our own packages are published and consumed across repos on the same day, so
+# the one-day release delay must not hold them back.
+minimumReleaseAgeExclude:
+  - '@datum-cloud/*'
+
+# Reject a version published with weaker provenance than the versions before it.
+trustPolicy: no-downgrade
+
+# Dependencies whose install scripts may run; anything not listed is skipped.
+# @parcel/watcher's script only builds from source when no prebuilt binary
+# matches the platform; the prebuilt optional packages cover macOS and Linux.
+allowBuilds:
+  '@parcel/watcher': false

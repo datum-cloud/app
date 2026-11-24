@@ -78,8 +78,8 @@ if [[ ! -d "$UI_ROOT/dist/Datum.app" ]]; then
 fi
 
 if [[ ! -d "$DMG_DIR/node_modules" ]]; then
-  echo "Installing npm dependencies (appdmg)…"
-  (cd "$DMG_DIR" && npm ci)
+  echo "Installing pnpm dependencies (appdmg)…"
+  (cd "$DMG_DIR" && pnpm install --frozen-lockfile)
 fi
 
 if [[ "$UNSIGNED" != true ]] && [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then

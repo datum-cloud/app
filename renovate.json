@@ -3,9 +3,6 @@
   "extends": [
     "local>datum-cloud/.github:renovate-config"
   ],
-  "constraints": {
-    "npm": "<12"
-  },
   "ignorePaths": [
     "**/node_modules/**",
     "**/bower_components/**",

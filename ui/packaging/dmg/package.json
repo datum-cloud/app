@@ -2,16 +2,11 @@
   "name": "datum-dmg-packaging",
   "private": true,
   "description": "Pinned appdmg for macOS CI DMG layout",
-  "scripts": {
-    "postinstall": "patch-package"
-  },
+  "packageManager": "pnpm@12.23.0",
   "dependencies": {
     "appdmg": "0.6.6"
   },
   "devDependencies": {
-    "patch-package": "8.0.1"
-  },
-  "overrides": {
-    "image-size": "2.0.3"
+    "node-gyp": "13.1.0"
   }
 }

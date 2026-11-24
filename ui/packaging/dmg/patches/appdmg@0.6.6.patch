@@ -1,7 +1,7 @@
-diff --git a/node_modules/appdmg/lib/appdmg.js b/node_modules/appdmg/lib/appdmg.js
+diff --git a/lib/appdmg.js b/lib/appdmg.js
 index 77748bf..dc66bf4 100644
---- a/node_modules/appdmg/lib/appdmg.js
-+++ b/node_modules/appdmg/lib/appdmg.js
+--- a/lib/appdmg.js
++++ b/lib/appdmg.js
 @@ -6,7 +6,7 @@ const path = require('path')
  
  const async = require('async')
