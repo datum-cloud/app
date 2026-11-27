@@ -1715,7 +1715,7 @@ dependencies = [
  "iroh-base",
  "lib",
  "n0-error",
- "rand 0.9.4",
+ "rand 0.9.5",
  "sentry",
  "serde",
  "serde_yml",
@@ -1751,7 +1751,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "open",
- "rand 0.9.4",
+ "rand 0.9.5",
  "rustls",
  "sentry",
  "snafu",
@@ -2060,7 +2060,7 @@ dependencies = [
  "objc",
  "objc_id",
  "percent-encoding",
- "rand 0.9.4",
+ "rand 0.9.5",
  "rfd",
  "rustc-hash 2.1.2",
  "serde",
@@ -5166,7 +5166,7 @@ dependencies = [
  "open",
  "openidconnect",
  "postcard",
- "rand 0.9.4",
+ "rand 0.9.5",
  "reqwest 0.12.28",
  "secrecy",
  "semver",
@@ -7378,7 +7378,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand 0.9.4",
+ "rand 0.9.5",
  "ring",
  "rustc-hash 2.1.2",
  "rustls",
@@ -7452,9 +7452,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
+checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
@@ -7601,7 +7601,7 @@ dependencies = [
  "num-traits",
  "paste",
  "profiling",
- "rand 0.9.4",
+ "rand 0.9.5",
  "rand_chacha 0.9.0",
  "simd_helpers",
  "thiserror 2.0.18",
@@ -8358,7 +8358,7 @@ version = "0.48.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecf0b1a4a4e9ec88395b52e6fa4868b95564c1fa96b26a0606f5f6288a0f7149"
 dependencies = [
- "rand 0.9.4",
+ "rand 0.9.5",
  "sentry-types",
  "serde",
  "serde_json",
@@ -8406,7 +8406,7 @@ checksum = "2239099d47e76857b0825a182ecdb90159add7aa1097b60247c6e7ca6bf49c6a"
 dependencies = [
  "debugid",
  "hex",
- "rand 0.9.4",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -9736,7 +9736,7 @@ dependencies = [
  "http 1.4.2",
  "httparse",
  "log",
- "rand 0.9.4",
+ "rand 0.9.5",
  "sha1",
  "thiserror 2.0.18",
  "utf-8",
@@ -9754,7 +9754,7 @@ dependencies = [
  "httparse",
  "log",
  "native-tls",
- "rand 0.9.4",
+ "rand 0.9.5",
  "rustls",
  "sha1",
  "thiserror 2.0.18",
