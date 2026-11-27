@@ -234,6 +234,7 @@ impl HeartbeatAgent {
 
 struct ConnectorCache {
     name: String,
+    uid: Option<String>,
     lease_name: Option<String>,
     lease_duration_seconds: Option<i32>,
     last_details: Option<serde_json::Value>,
@@ -290,6 +291,7 @@ async fn run_project(
                         .map(|details| details.home_relay.clone());
                     cache = Some(ConnectorCache {
                         name: connector.name_any(),
+                        uid: connector.uid(),
                         lease_name,
                         lease_duration_seconds: None,
                         last_details: None,
@@ -332,6 +334,7 @@ async fn run_project(
                         cache = Some(cached);
                         continue;
                     }
+                    cached.uid = connector.uid();
                     cached.last_home_relay = connector
                         .status
                         .as_ref()
@@ -357,7 +360,9 @@ async fn run_project(
             }
         }
 
-        let details = match provider.connection_details(cached.last_home_relay.as_deref()) {
+        let details = match provider
+            .connection_details(cached.uid.as_deref(), cached.last_home_relay.as_deref())
+        {
             Some(details) => details,
             None => {
                 warn!(%project_id, connector = %cached.name, "heartbeat: missing home relay");
@@ -513,6 +518,7 @@ trait HeartbeatDetailsProvider: Send + Sync {
     fn endpoint_id(&self) -> String;
     fn connection_details(
         &self,
+        connector_uid: Option<&str>,
         fallback_home_relay: Option<&str>,
     ) -> Option<ConnectorConnectionDetails>;
 }
@@ -534,6 +540,7 @@ impl HeartbeatDetailsProvider for ListenNodeDetailsProvider {
 
     fn connection_details(
         &self,
+        connector_uid: Option<&str>,
         fallback_home_relay: Option<&str>,
     ) -> Option<ConnectorConnectionDetails> {
         let endpoint = self.listen.endpoint();
@@ -551,14 +558,19 @@ impl HeartbeatDetailsProvider for ListenNodeDetailsProvider {
             })
             .collect();
 
-        Some(ConnectorConnectionDetails {
+        let details = ConnectorConnectionDetails {
             connection_type: ConnectorConnectionType::PublicKey,
             public_key: Some(ConnectorConnectionDetailsPublicKey {
                 id: endpoint.id().to_string(),
                 discovery_mode: Some(PublicKeyDiscoveryMode::Dns),
                 home_relay,
                 addresses,
+                binding: None,
             }),
+        };
+        Some(match connector_uid {
+            Some(uid) => details.bind(endpoint.secret_key(), uid),
+            None => details,
         })
     }
 }
@@ -617,6 +629,7 @@ mod tests {
 
         fn connection_details(
             &self,
+            _connector_uid: Option<&str>,
             _fallback_home_relay: Option<&str>,
         ) -> Option<ConnectorConnectionDetails> {
             None

@@ -899,14 +899,15 @@ impl TunnelService {
         let project_id_owned = project_id.to_string();
 
         let connection_details = build_connection_details(&self.listen);
+        let secret_key = self.listen.endpoint().secret_key().clone();
         let device_annotations_value = device_annotations();
 
         let connector = pcp
             .with_auth_retry(|client| {
                 let selector = selector.clone();
-                let endpoint_id = endpoint_id.clone();
                 let project_id = project_id_owned.clone();
                 let connection_details = connection_details.clone();
+                let secret_key = secret_key.clone();
                 let device_annotations_value = device_annotations_value.clone();
                 async move {
                     let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
@@ -925,21 +926,36 @@ impl TunnelService {
                             }
                             return Ok(None);
                         }
-                        let mut connector = fallback.items.into_iter().next().unwrap();
-                        let needs_patch = connector
+                        fallback.items.into_iter().next().unwrap()
+                    } else {
+                        if list.items.len() > 1 {
+                            debug!(
+                                %selector,
+                                count = list.items.len(),
+                                "Multiple connectors found for endpoint, using first"
+                            );
+                        }
+                        list.items.into_iter().next().unwrap()
+                    };
+                    if let Some(details) = connection_details.as_ref()
+                        && let Some(uid) = connector.uid()
+                    {
+                        let details = details.clone().bind(&secret_key, &uid);
+                        let current = connector
                             .status
                             .as_ref()
                             .and_then(|status| status.connection_details.as_ref())
-                            .and_then(|details| details.public_key.as_ref())
-                            .map(|details| details.id.as_str() != endpoint_id.as_str())
-                            .unwrap_or(true);
-                        if needs_patch && let Some(details) = connection_details.as_ref() {
-                            let details_value = match serde_json::to_value(details) {
-                                Ok(v) => v,
-                                Err(err) => {
-                                    return Err(kube::Error::SerdeError(err));
-                                }
-                            };
+                            .and_then(|details| details.public_key.as_ref());
+                        let desired = details.public_key.as_ref();
+                        let needs_patch = match (current, desired) {
+                            (Some(current), Some(desired)) => {
+                                current.id != desired.id || current.binding != desired.binding
+                            }
+                            _ => true,
+                        };
+                        if needs_patch {
+                            let details_value =
+                                serde_json::to_value(&details).map_err(kube::Error::SerdeError)?;
                             let patch = json!({ "status": { "connectionDetails": details_value } });
                             if let Err(err) = connectors
                                 .patch_status(
@@ -957,17 +973,7 @@ impl TunnelService {
                                 connector = connectors.get(&connector.name_any()).await?;
                             }
                         }
-                        connector
-                    } else {
-                        if list.items.len() > 1 {
-                            debug!(
-                                %selector,
-                                count = list.items.len(),
-                                "Multiple connectors found for endpoint, using first"
-                            );
-                        }
-                        list.items.into_iter().next().unwrap()
-                    };
+                    }
                     patch_device_annotations(
                         &connectors,
                         &mut connector,
@@ -988,6 +994,7 @@ impl TunnelService {
 
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let connection_details = build_connection_details(&self.listen);
+        let secret_key = self.listen.endpoint().secret_key().clone();
         let device_annotations_value = device_annotations();
 
         let connector = pcp
@@ -1010,9 +1017,13 @@ impl TunnelService {
                     .create(&PostParams::default(), &connector)
                     .await?;
 
-                if let Some(details) = connection_details.as_ref() {
+                if let Some(details) = connection_details {
+                    let details = match connector.uid() {
+                        Some(uid) => details.bind(&secret_key, &uid),
+                        None => details,
+                    };
                     let details_value =
-                        serde_json::to_value(details).map_err(kube::Error::SerdeError)?;
+                        serde_json::to_value(&details).map_err(kube::Error::SerdeError)?;
                     let patch = json!({ "status": { "connectionDetails": details_value } });
                     if let Err(err) = connectors
                         .patch_status(
@@ -1098,6 +1109,7 @@ fn build_connection_details(listen: &ListenNode) -> Option<ConnectorConnectionDe
             discovery_mode: Some(PublicKeyDiscoveryMode::Dns),
             home_relay,
             addresses,
+            binding: None,
         }),
     })
 }
