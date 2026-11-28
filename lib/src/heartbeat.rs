@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -19,7 +19,8 @@ use tracing::{debug, warn};
 use crate::ListenNode;
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
-    ConnectorConnectionType, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
+    ConnectorConnectionType, ConnectorKeyBinding, PublicKeyConnectorAddress,
+    PublicKeyDiscoveryMode,
 };
 use crate::datum_apis::lease::Lease;
 use crate::datum_cloud::{DatumCloudClient, LoginState};
@@ -40,6 +41,8 @@ const DEFAULT_PCP_NAMESPACE: &str = "default";
 const DEFAULT_LEASE_DURATION_SECS: i32 = 30;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(2);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+const READBACK_INTERVAL: Duration = Duration::from_secs(300);
+const READBACK_MAX: Duration = Duration::from_secs(3600);
 
 #[derive(derive_more::Debug, Clone)]
 pub struct HeartbeatAgent {
@@ -234,10 +237,107 @@ impl HeartbeatAgent {
 
 struct ConnectorCache {
     name: String,
+    uid: Option<String>,
     lease_name: Option<String>,
     lease_duration_seconds: Option<i32>,
     last_details: Option<serde_json::Value>,
     last_home_relay: Option<String>,
+    sent_binding: Option<ConnectorKeyBinding>,
+    readback_interval: Duration,
+    next_readback: Instant,
+    warned_missing_uid: bool,
+}
+
+impl ConnectorCache {
+    fn new(connector: &Connector) -> Self {
+        Self {
+            name: connector.name_any(),
+            uid: connector.uid(),
+            lease_name: connector
+                .status
+                .as_ref()
+                .and_then(|status| status.lease_ref.as_ref())
+                .map(|lease| lease.name.clone()),
+            lease_duration_seconds: None,
+            last_details: None,
+            last_home_relay: observed_public_key(connector)
+                .map(|details| details.home_relay.clone()),
+            sent_binding: None,
+            readback_interval: READBACK_INTERVAL,
+            next_readback: Instant::now() + READBACK_INTERVAL,
+            warned_missing_uid: false,
+        }
+    }
+
+    fn apply_readback(&mut self, connector: &Connector) -> Readback {
+        let observed_uid = connector.uid();
+        let action = readback_action(
+            self.uid.as_deref(),
+            observed_uid.as_deref(),
+            self.sent_binding.as_ref(),
+            observed_public_key(connector).and_then(|details| details.binding.as_ref()),
+        );
+        match action {
+            Readback::Unchanged => {}
+            Readback::Resign => {
+                self.uid = observed_uid;
+                self.last_details = None;
+                self.sent_binding = None;
+                self.warned_missing_uid = false;
+            }
+            Readback::Repatch => {
+                self.last_details = None;
+            }
+        }
+        self.readback_interval = next_readback_interval(action, self.readback_interval);
+        self.next_readback = Instant::now() + self.readback_interval;
+        action
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readback {
+    Unchanged,
+    Resign,
+    Repatch,
+}
+
+fn readback_action(
+    cached_uid: Option<&str>,
+    observed_uid: Option<&str>,
+    sent_binding: Option<&ConnectorKeyBinding>,
+    observed_binding: Option<&ConnectorKeyBinding>,
+) -> Readback {
+    if cached_uid != observed_uid {
+        return Readback::Resign;
+    }
+    match sent_binding {
+        Some(sent) if observed_binding != Some(sent) => Readback::Repatch,
+        _ => Readback::Unchanged,
+    }
+}
+
+fn next_readback_interval(action: Readback, current: Duration) -> Duration {
+    match action {
+        Readback::Repatch => (current * 2).clamp(READBACK_INTERVAL, READBACK_MAX),
+        Readback::Unchanged | Readback::Resign => READBACK_INTERVAL,
+    }
+}
+
+fn details_need_patch(last_sent: Option<&serde_json::Value>, details: &serde_json::Value) -> bool {
+    last_sent != Some(details)
+}
+
+fn observed_public_key(connector: &Connector) -> Option<&ConnectorConnectionDetailsPublicKey> {
+    connector
+        .status
+        .as_ref()
+        .and_then(|status| status.connection_details.as_ref())
+        .and_then(|details| details.public_key.as_ref())
+}
+
+fn is_kube_not_found(err: &kube::Error) -> bool {
+    matches!(err, kube::Error::Api(resp) if resp.code == 404)
 }
 
 async fn run_project(
@@ -277,24 +377,7 @@ async fn run_project(
         if cache.is_none() {
             match find_connector(&connectors, provider.endpoint_id()).await {
                 Ok(Some(connector)) => {
-                    let lease_name = connector
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.lease_ref.as_ref())
-                        .map(|lease| lease.name.clone());
-                    let last_home_relay = connector
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.connection_details.as_ref())
-                        .and_then(|details| details.public_key.as_ref())
-                        .map(|details| details.home_relay.clone());
-                    cache = Some(ConnectorCache {
-                        name: connector.name_any(),
-                        lease_name,
-                        lease_duration_seconds: None,
-                        last_details: None,
-                        last_home_relay,
-                    });
+                    cache = Some(ConnectorCache::new(&connector));
                     backoff.reset();
                 }
                 Ok(None) => {
@@ -332,12 +415,9 @@ async fn run_project(
                         cache = Some(cached);
                         continue;
                     }
-                    cached.last_home_relay = connector
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.connection_details.as_ref())
-                        .and_then(|details| details.public_key.as_ref())
-                        .map(|details| details.home_relay.clone());
+                    cached.apply_readback(&connector);
+                    cached.last_home_relay =
+                        observed_public_key(&connector).map(|details| details.home_relay.clone());
                 }
                 Err(err) => {
                     warn!(
@@ -357,7 +437,51 @@ async fn run_project(
             }
         }
 
-        let details = match provider.connection_details(cached.last_home_relay.as_deref()) {
+        if Instant::now() >= cached.next_readback {
+            match connectors.get(&cached.name).await {
+                Ok(connector) => {
+                    if cached.apply_readback(&connector) == Readback::Repatch {
+                        debug!(
+                            %project_id,
+                            connector = %cached.name,
+                            retry_in = ?cached.readback_interval,
+                            "heartbeat: connector key binding not in status; re-patching"
+                        );
+                    }
+                }
+                Err(err) if is_kube_not_found(&err) => {
+                    debug!(%project_id, connector = %cached.name, "heartbeat: connector gone");
+                    sleep_with_cancel(backoff.next(), &cancel).await;
+                    continue;
+                }
+                Err(err) => {
+                    warn!(
+                        %project_id,
+                        connector = %cached.name,
+                        "heartbeat: failed to read back connector: {err:#}"
+                    );
+                    if is_kube_auth_failure(&err) {
+                        warn!(%project_id, "heartbeat: kube auth failure; logging out");
+                        let _ = datum.auth().logout().await;
+                        return;
+                    }
+                    cached.next_readback = Instant::now() + cached.readback_interval;
+                }
+            }
+        }
+
+        if cached.uid.is_none() && !cached.warned_missing_uid {
+            warn!(
+                %project_id,
+                connector = %cached.name,
+                "heartbeat: connector has no uid; publishing details without a key binding"
+            );
+            cached.warned_missing_uid = true;
+        }
+
+        let details = match provider
+            .connection_details(cached.uid.as_deref(), cached.last_home_relay.as_deref())
+        {
             Some(details) => details,
             None => {
                 warn!(%project_id, connector = %cached.name, "heartbeat: missing home relay");
@@ -381,7 +505,7 @@ async fn run_project(
             }
         };
 
-        if cached.last_details.as_ref() != Some(&details_value) {
+        if details_need_patch(cached.last_details.as_ref(), &details_value) {
             let patch = json!({ "status": { "connectionDetails": details_value } });
             match connectors
                 .patch_status(&cached.name, &PatchParams::default(), &Patch::Merge(&patch))
@@ -389,6 +513,10 @@ async fn run_project(
             {
                 Ok(_) => {
                     cached.last_details = Some(patch["status"]["connectionDetails"].clone());
+                    cached.sent_binding = details
+                        .public_key
+                        .as_ref()
+                        .and_then(|details| details.binding.clone());
                 }
                 Err(err) => {
                     warn!(
@@ -454,6 +582,11 @@ async fn run_project(
                 let _ = datum.auth().logout().await;
                 return;
             }
+            if is_kube_not_found(&err) {
+                cached.lease_name = None;
+                cached.lease_duration_seconds = None;
+                cached.next_readback = Instant::now();
+            }
             cache = Some(cached);
             sleep_with_cancel(backoff.next(), &cancel).await;
             continue;
@@ -513,6 +646,7 @@ trait HeartbeatDetailsProvider: Send + Sync {
     fn endpoint_id(&self) -> String;
     fn connection_details(
         &self,
+        connector_uid: Option<&str>,
         fallback_home_relay: Option<&str>,
     ) -> Option<ConnectorConnectionDetails>;
 }
@@ -534,6 +668,7 @@ impl HeartbeatDetailsProvider for ListenNodeDetailsProvider {
 
     fn connection_details(
         &self,
+        connector_uid: Option<&str>,
         fallback_home_relay: Option<&str>,
     ) -> Option<ConnectorConnectionDetails> {
         let endpoint = self.listen.endpoint();
@@ -551,14 +686,19 @@ impl HeartbeatDetailsProvider for ListenNodeDetailsProvider {
             })
             .collect();
 
-        Some(ConnectorConnectionDetails {
+        let details = ConnectorConnectionDetails {
             connection_type: ConnectorConnectionType::PublicKey,
             public_key: Some(ConnectorConnectionDetailsPublicKey {
                 id: endpoint.id().to_string(),
                 discovery_mode: Some(PublicKeyDiscoveryMode::Dns),
                 home_relay,
                 addresses,
+                binding: None,
             }),
+        };
+        Some(match connector_uid {
+            Some(uid) => details.bind(endpoint.secret_key(), uid),
+            None => details,
         })
     }
 }
@@ -617,6 +757,7 @@ mod tests {
 
         fn connection_details(
             &self,
+            _connector_uid: Option<&str>,
             _fallback_home_relay: Option<&str>,
         ) -> Option<ConnectorConnectionDetails> {
             None
@@ -674,6 +815,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn binding(signature: &str) -> ConnectorKeyBinding {
+        ConnectorKeyBinding {
+            signature: signature.to_string(),
+        }
+    }
+
+    #[test]
+    fn readback_repatches_when_binding_missing() {
+        let sent = binding("sig");
+        assert_eq!(
+            readback_action(Some("uid"), Some("uid"), Some(&sent), None),
+            Readback::Repatch
+        );
+        assert_eq!(
+            readback_action(
+                Some("uid"),
+                Some("uid"),
+                Some(&sent),
+                Some(&binding("other"))
+            ),
+            Readback::Repatch
+        );
+    }
+
+    #[test]
+    fn readback_resigns_on_uid_change() {
+        let sent = binding("sig");
+        assert_eq!(
+            readback_action(Some("old"), Some("new"), Some(&sent), Some(&sent)),
+            Readback::Resign
+        );
+        assert_eq!(
+            next_readback_interval(Readback::Resign, READBACK_MAX),
+            READBACK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn readback_backs_off_while_binding_is_dropped() {
+        let sent = binding("sig");
+        let mut interval = READBACK_INTERVAL;
+        let mut previous = Duration::ZERO;
+        for _ in 0..20 {
+            let action = readback_action(Some("uid"), Some("uid"), Some(&sent), None);
+            assert_eq!(action, Readback::Repatch);
+            interval = next_readback_interval(action, interval);
+            assert!(interval >= previous && interval >= READBACK_INTERVAL);
+            assert!(interval <= READBACK_MAX);
+            previous = interval;
+        }
+        assert_eq!(interval, READBACK_MAX);
+    }
+
+    #[test]
+    fn readback_keeps_details_when_binding_matches() {
+        let sent = binding("sig");
+        assert_eq!(
+            readback_action(Some("uid"), Some("uid"), Some(&sent), Some(&sent)),
+            Readback::Unchanged
+        );
+        assert_eq!(readback_action(None, None, None, None), Readback::Unchanged);
+        let details = json!({ "publicKey": { "id": "ep", "binding": { "signature": "sig" } } });
+        assert!(!details_need_patch(Some(&details), &details));
+        assert!(details_need_patch(None, &details));
     }
 
     #[test]

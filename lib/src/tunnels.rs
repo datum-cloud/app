@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use iroh_proxy_utils::Authority;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -11,7 +12,8 @@ use tracing::{debug, warn};
 use crate::datum_apis::allowance_bucket::AllowanceBucket;
 use crate::datum_apis::connector::{
     Connector, ConnectorConnectionDetails, ConnectorConnectionDetailsPublicKey,
-    ConnectorConnectionType, ConnectorSpec, PublicKeyConnectorAddress, PublicKeyDiscoveryMode,
+    ConnectorConnectionType, ConnectorKeyBinding, ConnectorSpec, PublicKeyConnectorAddress,
+    PublicKeyDiscoveryMode,
 };
 use crate::datum_apis::connector_advertisement::{
     ConnectorAdvertisement, ConnectorAdvertisementLayer4, ConnectorAdvertisementLayer4Service,
@@ -152,6 +154,33 @@ pub struct TunnelService {
     listen: ListenNode,
     publish_tickets: bool,
     create_traffic_protection_policies: bool,
+    sent_bindings: Arc<Mutex<HashMap<String, SentBinding>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SentBinding {
+    binding: ConnectorKeyBinding,
+    readback: Option<ConnectorKeyBinding>,
+}
+
+fn connector_needs_patch(
+    current: Option<&ConnectorConnectionDetailsPublicKey>,
+    desired: &ConnectorConnectionDetailsPublicKey,
+    sent: Option<&SentBinding>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if current.id != desired.id {
+        return true;
+    }
+    if current.binding == desired.binding {
+        return false;
+    }
+    match (sent, desired.binding.as_ref()) {
+        (Some(sent), Some(desired)) => sent.binding != *desired || sent.readback != current.binding,
+        _ => true,
+    }
 }
 
 // TODO(zachsmith1): Use connectors + ConnectorAdvertisements across all projects to
@@ -187,6 +216,7 @@ impl TunnelService {
             listen,
             publish_tickets: publish_tickets_enabled(),
             create_traffic_protection_policies: create_traffic_protection_policies_enabled(),
+            sent_bindings: Arc::default(),
         }
     }
 
@@ -899,14 +929,16 @@ impl TunnelService {
         let project_id_owned = project_id.to_string();
 
         let connection_details = build_connection_details(&self.listen);
+        let secret_key = self.listen.endpoint().secret_key().clone();
         let device_annotations_value = device_annotations();
 
         let connector = pcp
             .with_auth_retry(|client| {
                 let selector = selector.clone();
-                let endpoint_id = endpoint_id.clone();
                 let project_id = project_id_owned.clone();
                 let connection_details = connection_details.clone();
+                let secret_key = secret_key.clone();
+                let sent_bindings = self.sent_bindings.clone();
                 let device_annotations_value = device_annotations_value.clone();
                 async move {
                     let connectors: Api<Connector> = Api::namespaced(client, DEFAULT_PCP_NAMESPACE);
@@ -925,21 +957,37 @@ impl TunnelService {
                             }
                             return Ok(None);
                         }
-                        let mut connector = fallback.items.into_iter().next().unwrap();
-                        let needs_patch = connector
-                            .status
-                            .as_ref()
-                            .and_then(|status| status.connection_details.as_ref())
-                            .and_then(|details| details.public_key.as_ref())
-                            .map(|details| details.id.as_str() != endpoint_id.as_str())
-                            .unwrap_or(true);
-                        if needs_patch && let Some(details) = connection_details.as_ref() {
-                            let details_value = match serde_json::to_value(details) {
-                                Ok(v) => v,
-                                Err(err) => {
-                                    return Err(kube::Error::SerdeError(err));
-                                }
-                            };
+                        fallback.items.into_iter().next().unwrap()
+                    } else {
+                        if list.items.len() > 1 {
+                            debug!(
+                                %selector,
+                                count = list.items.len(),
+                                "Multiple connectors found for endpoint, using first"
+                            );
+                        }
+                        list.items.into_iter().next().unwrap()
+                    };
+                    if let Some(details) = connection_details.as_ref()
+                        && let Some(uid) = connector.uid()
+                    {
+                        let details = details.clone().bind(&secret_key, &uid);
+                        let sent = sent_bindings.lock().unwrap().get(&uid).cloned();
+                        let needs_patch = match details.public_key.as_ref() {
+                            Some(desired) => connector_needs_patch(
+                                connector
+                                    .status
+                                    .as_ref()
+                                    .and_then(|status| status.connection_details.as_ref())
+                                    .and_then(|details| details.public_key.as_ref()),
+                                desired,
+                                sent.as_ref(),
+                            ),
+                            None => false,
+                        };
+                        if needs_patch {
+                            let details_value =
+                                serde_json::to_value(&details).map_err(kube::Error::SerdeError)?;
                             let patch = json!({ "status": { "connectionDetails": details_value } });
                             if let Err(err) = connectors
                                 .patch_status(
@@ -955,19 +1003,25 @@ impl TunnelService {
                                 );
                             } else {
                                 connector = connectors.get(&connector.name_any()).await?;
+                                if let Some(binding) = details
+                                    .public_key
+                                    .as_ref()
+                                    .and_then(|details| details.binding.clone())
+                                {
+                                    let readback = connector
+                                        .status
+                                        .as_ref()
+                                        .and_then(|status| status.connection_details.as_ref())
+                                        .and_then(|details| details.public_key.as_ref())
+                                        .and_then(|details| details.binding.clone());
+                                    sent_bindings
+                                        .lock()
+                                        .unwrap()
+                                        .insert(uid, SentBinding { binding, readback });
+                                }
                             }
                         }
-                        connector
-                    } else {
-                        if list.items.len() > 1 {
-                            debug!(
-                                %selector,
-                                count = list.items.len(),
-                                "Multiple connectors found for endpoint, using first"
-                            );
-                        }
-                        list.items.into_iter().next().unwrap()
-                    };
+                    }
                     patch_device_annotations(
                         &connectors,
                         &mut connector,
@@ -988,6 +1042,7 @@ impl TunnelService {
 
         let pcp = self.datum.project_control_plane_client(project_id).await?;
         let connection_details = build_connection_details(&self.listen);
+        let secret_key = self.listen.endpoint().secret_key().clone();
         let device_annotations_value = device_annotations();
 
         let connector = pcp
@@ -1010,9 +1065,13 @@ impl TunnelService {
                     .create(&PostParams::default(), &connector)
                     .await?;
 
-                if let Some(details) = connection_details.as_ref() {
+                if let Some(details) = connection_details {
+                    let details = match connector.uid() {
+                        Some(uid) => details.bind(&secret_key, &uid),
+                        None => details,
+                    };
                     let details_value =
-                        serde_json::to_value(details).map_err(kube::Error::SerdeError)?;
+                        serde_json::to_value(&details).map_err(kube::Error::SerdeError)?;
                     let patch = json!({ "status": { "connectionDetails": details_value } });
                     if let Err(err) = connectors
                         .patch_status(
@@ -1098,6 +1157,7 @@ fn build_connection_details(listen: &ListenNode) -> Option<ConnectorConnectionDe
             discovery_mode: Some(PublicKeyDiscoveryMode::Dns),
             home_relay,
             addresses,
+            binding: None,
         }),
     })
 }
@@ -1411,5 +1471,91 @@ mod endpoint_tests {
     fn strip_scheme_keeps_default_http_port() {
         assert_eq!(strip_scheme("http://127.0.0.1:80"), "127.0.0.1:80");
         assert_eq!(strip_scheme("http://127.0.0.1:5173"), "127.0.0.1:5173");
+    }
+}
+
+#[cfg(test)]
+mod connector_patch_tests {
+    use super::*;
+
+    fn binding(signature: &str) -> ConnectorKeyBinding {
+        ConnectorKeyBinding {
+            signature: signature.to_string(),
+        }
+    }
+
+    fn public_key(
+        id: &str,
+        binding: Option<ConnectorKeyBinding>,
+    ) -> ConnectorConnectionDetailsPublicKey {
+        ConnectorConnectionDetailsPublicKey {
+            id: id.to_string(),
+            discovery_mode: Some(PublicKeyDiscoveryMode::Dns),
+            home_relay: "https://relay.example".to_string(),
+            addresses: vec![],
+            binding,
+        }
+    }
+
+    #[test]
+    fn patches_when_binding_missing() {
+        let desired = public_key("ep", Some(binding("sig")));
+        assert!(connector_needs_patch(
+            Some(&public_key("ep", None)),
+            &desired,
+            None
+        ));
+        assert!(connector_needs_patch(None, &desired, None));
+    }
+
+    #[test]
+    fn patches_when_binding_is_for_a_stale_uid() {
+        let desired = public_key("ep", Some(binding("sig-new-uid")));
+        let current = public_key("ep", Some(binding("sig-old-uid")));
+        let sent = SentBinding {
+            binding: binding("sig-old-uid"),
+            readback: Some(binding("sig-old-uid")),
+        };
+        assert!(connector_needs_patch(Some(&current), &desired, Some(&sent)));
+        assert!(connector_needs_patch(Some(&current), &desired, None));
+    }
+
+    #[test]
+    fn skips_repatch_when_operator_drops_binding() {
+        let desired = public_key("ep", Some(binding("sig")));
+        let current = public_key("ep", None);
+        let sent = SentBinding {
+            binding: binding("sig"),
+            readback: None,
+        };
+        assert!(!connector_needs_patch(
+            Some(&current),
+            &desired,
+            Some(&sent)
+        ));
+    }
+
+    #[test]
+    fn patches_when_endpoint_id_differs() {
+        let desired = public_key("ep", Some(binding("sig")));
+        let sent = SentBinding {
+            binding: binding("sig"),
+            readback: None,
+        };
+        assert!(connector_needs_patch(
+            Some(&public_key("other", None)),
+            &desired,
+            Some(&sent)
+        ));
+    }
+
+    #[test]
+    fn skips_patch_when_binding_matches() {
+        let desired = public_key("ep", Some(binding("sig")));
+        assert!(!connector_needs_patch(
+            Some(&desired.clone()),
+            &desired,
+            None
+        ));
     }
 }
