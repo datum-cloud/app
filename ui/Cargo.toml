@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 dioxus = { version = "=0.7.9", features = ["router"] }
-dioxus-desktop = { version = "=0.7.9", optional = true }
+dioxus-desktop = { version = "=0.7.10", optional = true }
 image = "0.25"
 
 chrono.workspace = true
